@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   createMessageConnection,
   StreamMessageReader,
@@ -92,7 +92,7 @@ export class LspClient {
   async checkDocumentNow(filePath, text, languageId, signal) {
     if (!this.alive) throw new Error(`${this.serverId} is not running`);
 
-    const uri = pathToFileURL(filePath).href;
+    const uri = normalizeDocumentUri(pathToFileURL(filePath).href);
     const baseline = this.publications.get(uri)?.sequence ?? 0;
     const document = this.documents.get(uri);
     const version = (document?.version ?? 0) + 1;
@@ -179,19 +179,20 @@ export class LspClient {
 
   recordPublication(raw) {
     if (!raw || typeof raw !== "object" || typeof raw.uri !== "string") return;
-    const previous = this.publications.get(raw.uri);
+    const uri = normalizeDocumentUri(raw.uri);
+    const previous = this.publications.get(uri);
     const publication = {
       sequence: (previous?.sequence ?? 0) + 1,
       version: typeof raw.version === "number" ? raw.version : undefined,
       diagnostics: normalizeDiagnostics(Array.isArray(raw.diagnostics) ? raw.diagnostics : []),
     };
-    this.publications.set(raw.uri, publication);
-    const waiters = this.waiters.get(raw.uri) ?? [];
-    this.waiters.delete(raw.uri);
+    this.publications.set(uri, publication);
+    const waiters = this.waiters.get(uri) ?? [];
+    this.waiters.delete(uri);
     for (const waiter of waiters) waiter.resolve(publication);
   }
 
-  waitForPublication(uri, version, baseline, signal) {
+  waitForPublication(uri, version, baseline, signal, timeoutMs = DIAGNOSTIC_TIMEOUT_MS) {
     const current = this.publications.get(uri);
     if (current && current.sequence > baseline) return Promise.resolve(current);
 
@@ -200,7 +201,7 @@ export class LspClient {
         signal?.removeEventListener("abort", abort);
         this.removeWaiter(uri, waiter);
         resolve(undefined);
-      }, DIAGNOSTIC_TIMEOUT_MS);
+      }, timeoutMs);
       const abort = () => {
         clearTimeout(timeout);
         this.removeWaiter(uri, waiter);
@@ -247,6 +248,15 @@ function waitForSpawn(child) {
     child.once("spawn", resolve);
     child.once("error", reject);
   });
+}
+
+function normalizeDocumentUri(uri) {
+  try {
+    const filePath = fileURLToPath(uri);
+    return pathToFileURL(process.platform === "win32" ? filePath.toLowerCase() : filePath).href;
+  } catch {
+    return uri;
+  }
 }
 
 function normalizeDiagnostics(diagnostics) {

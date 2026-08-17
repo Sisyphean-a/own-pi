@@ -1,5 +1,16 @@
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function bundledNodeServer(entrypoint, args) {
+  return {
+    command: process.execPath,
+    args: [path.join(PACKAGE_ROOT, entrypoint), ...args],
+  };
+}
 
 const NODE_ROOT_MARKERS = [
   "tsconfig.json",
@@ -15,7 +26,7 @@ export const BUILTIN_SERVERS = [
     id: "vue",
     extensions: [".vue"],
     languageId: "vue",
-    commands: [{ command: "vue-language-server", args: ["--stdio"] }],
+    commands: [bundledNodeServer("node_modules/@vue/language-server/bin/vue-language-server.js", ["--stdio"])],
     rootMarkers: ["package.json", "pnpm-lock.yaml", "yarn.lock", "package-lock.json"],
     fallbackToWorkspace: true,
     needsTypeScriptSdk: true,
@@ -24,7 +35,7 @@ export const BUILTIN_SERVERS = [
     id: "typescript",
     extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"],
     languageId: "typescript",
-    commands: [{ command: "typescript-language-server", args: ["--stdio"] }],
+    commands: [bundledNodeServer("node_modules/typescript-language-server/lib/cli.mjs", ["--stdio"])],
     rootMarkers: NODE_ROOT_MARKERS,
     fallbackToWorkspace: true,
   },
@@ -33,6 +44,7 @@ export const BUILTIN_SERVERS = [
     extensions: [".go"],
     languageId: "go",
     commands: [{ command: "gopls", args: [] }],
+    managedInstaller: "gopls",
     rootMarkers: ["go.work", "go.mod"],
     fallbackToWorkspace: false,
   },
@@ -41,7 +53,7 @@ export const BUILTIN_SERVERS = [
     extensions: [".py", ".pyi"],
     languageId: "python",
     commands: [
-      { command: "pyright-langserver", args: ["--stdio"] },
+      bundledNodeServer("node_modules/pyright/langserver.index.js", ["--stdio"]),
       { command: "basedpyright-langserver", args: ["--stdio"] },
     ],
     rootMarkers: ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", ".git"],
@@ -51,7 +63,7 @@ export const BUILTIN_SERVERS = [
     id: "html",
     extensions: [".html", ".htm"],
     languageId: "html",
-    commands: [{ command: "vscode-html-language-server", args: ["--stdio"] }],
+    commands: [bundledNodeServer("node_modules/vscode-langservers-extracted/bin/vscode-html-language-server", ["--stdio"])],
     rootMarkers: ["package.json", ".git"],
     fallbackToWorkspace: true,
   },
@@ -76,6 +88,7 @@ export function mergeServerOverrides(overrides = {}) {
                 {
                   command: override.command,
                   args: Array.isArray(override.args) ? override.args : server.commands[0].args,
+                  bundled: false,
                 },
               ],
             }
@@ -114,7 +127,8 @@ export function findTypeScriptSdk(root, workspaceRoot) {
     if (current === absoluteWorkspace) break;
     current = path.dirname(current);
   }
-  return undefined;
+  const bundledSdk = path.join(PACKAGE_ROOT, "node_modules", "typescript", "lib");
+  return existsSync(bundledSdk) ? bundledSdk : undefined;
 }
 
 export function initializationOptions(server, root, workspaceRoot) {
@@ -127,21 +141,31 @@ export function commandCandidates(root, workspaceRoot, command) {
   if (path.isAbsolute(command) || command.includes(path.sep)) return [command];
 
   const candidates = [];
+  if (command === "gopls") candidates.push(...goCommandCandidates(command));
+
   const absoluteWorkspace = path.resolve(workspaceRoot);
   let current = path.resolve(root);
   while (true) {
-    const local = path.join(
-      current,
-      "node_modules",
-      ".bin",
-      process.platform === "win32" ? `${command}.cmd` : command,
-    );
+    const local = commandPath(path.join(current, "node_modules", ".bin"), command);
     if (existsSync(local)) candidates.push(local);
     if (current === absoluteWorkspace) break;
     current = path.dirname(current);
   }
   candidates.push(command);
   return [...new Set(candidates)];
+}
+
+function commandPath(binDirectory, command) {
+  return path.join(binDirectory, process.platform === "win32" ? `${command}.cmd` : command);
+}
+
+function goCommandCandidates(command) {
+  const configuredGoPaths = process.env.GOPATH?.split(path.delimiter).map((entry) => path.join(entry, "bin")) ?? [];
+  const directories = [process.env.GOBIN, ...configuredGoPaths, path.join(homedir(), "go", "bin")]
+    .filter((directory) => typeof directory === "string" && directory.length > 0);
+  return [...new Set(directories)]
+    .map((directory) => commandPath(directory, command))
+    .filter(existsSync);
 }
 
 function isWithin(root, candidate) {

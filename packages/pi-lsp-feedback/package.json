@@ -4,14 +4,36 @@
   "private": true,
   "type": "module",
   "description": "Diagnostic-only LSP feedback extension for pi",
-  "keywords": ["pi-package", "pi-extension", "lsp", "diagnostics"],
-  "files": ["extensions/", "src/", "README.md"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "lsp",
+    "diagnostics"
+  ],
+  "files": [
+    "extensions/",
+    "src/",
+    "README.md"
+  ],
   "scripts": {
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "vscode-jsonrpc": "^9.0.0"
+    "@vue/language-server": "^3.3.10",
+    "pyright": "^1.1.413",
+    "typescript": "^5.9.3",
+    "typescript-language-server": "^5.3.0",
+    "vscode-jsonrpc": "^9.0.0",
+    "vscode-langservers-extracted": "^4.10.0"
   },
+  "bundledDependencies": [
+    "@vue/language-server",
+    "pyright",
+    "typescript",
+    "typescript-language-server",
+    "vscode-jsonrpc",
+    "vscode-langservers-extracted"
+  ],
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
@@ -21,6 +43,8 @@
     }
   },
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": [
+      "./extensions"
+    ]
   }
 }

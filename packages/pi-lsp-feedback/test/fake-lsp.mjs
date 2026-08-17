@@ -95,6 +95,10 @@ function handle(message) {
 
 function publishIfPushOnly(uri, text) {
   if (process.env.FAKE_PUSH_ONLY !== "1") return;
+  publish(uri, text);
+}
+
+function publish(uri, text) {
   send({
     jsonrpc: "2.0",
     method: "textDocument/publishDiagnostics",

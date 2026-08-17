@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { LspClient } from "./lsp-client.js";
+import { installManagedServer } from "./managed-server-installer.js";
 import {
   commandCandidates,
   findWorkspaceRoot,
@@ -10,10 +11,18 @@ import {
 } from "./servers.js";
 
 export class DiagnosticService {
-  constructor({ workspaceRoot, overrides = {} }) {
+  constructor({
+    workspaceRoot,
+    overrides = {},
+    allowManagedInstall = false,
+    managedInstaller = installManagedServer,
+  }) {
     this.workspaceRoot = path.resolve(workspaceRoot);
     this.servers = mergeServerOverrides(overrides);
     this.clients = new Map();
+    this.managedInstallFailures = new Map();
+    this.allowManagedInstall = allowManagedInstall;
+    this.managedInstaller = managedInstaller;
   }
 
   async checkFile(filePath, signal) {
@@ -86,24 +95,56 @@ export class DiagnosticService {
 
     const initialization = initializationOptions(server, root, this.workspaceRoot);
     const attempts = [];
-    for (const commandSpec of server.commands) {
-      for (const command of commandCandidates(root, this.workspaceRoot, commandSpec.command)) {
-        try {
-          const client = await LspClient.start({
-            command,
-            args: commandSpec.args,
-            root,
-            serverId: server.id,
-            initializationOptions: initialization,
-            signal,
-          });
-          this.clients.set(key, client);
-          return client;
-        } catch (error) {
-          attempts.push(error instanceof Error ? error.message : String(error));
+    const launch = async () => {
+      for (const commandSpec of server.commands) {
+        for (const command of commandCandidates(root, this.workspaceRoot, commandSpec.command)) {
+          try {
+            const client = await LspClient.start({
+              command,
+              args: commandSpec.args,
+              root,
+              serverId: server.id,
+              initializationOptions: initialization,
+              signal,
+            });
+            this.clients.set(key, client);
+            return client;
+          } catch (error) {
+            attempts.push(error instanceof Error ? error.message : String(error));
+          }
         }
       }
+      return undefined;
+    };
+
+    const existingClient = await launch();
+    if (existingClient) return existingClient;
+
+    if (server.managedInstaller && this.allowManagedInstall) {
+      const priorFailure = this.managedInstallFailures.get(server.managedInstaller);
+      if (priorFailure) {
+        attempts.push(priorFailure);
+      } else {
+        try {
+          const installed = await this.managedInstaller(server.managedInstaller);
+          if (installed) {
+            const installedClient = await launch();
+            if (installedClient) return installedClient;
+          } else {
+            const reason = `${server.managedInstaller} installation did not complete`;
+            this.managedInstallFailures.set(server.managedInstaller, reason);
+            attempts.push(reason);
+          }
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          this.managedInstallFailures.set(server.managedInstaller, reason);
+          attempts.push(reason);
+        }
+      }
+    } else if (server.managedInstaller) {
+      attempts.push(`${server.managedInstaller} automatic installation requires a trusted project`);
     }
+
     throw new Error(`${server.id} could not start: ${attempts.at(-1) ?? "no command candidates"}`);
   }
 }

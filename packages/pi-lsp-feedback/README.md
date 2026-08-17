@@ -1,63 +1,51 @@
 # pi-lsp-feedback
 
-`pi-lsp-feedback` is a diagnostic-only extension for pi. After the agent writes or edits a supported file, it sends the final file contents to the matching language server and injects errors or warnings into the next agent context.
+`pi-lsp-feedback` 是 Pi 的只读诊断扩展。代理成功写入或编辑受支持文件后，扩展把最终内容交给匹配的语言服务器，并将错误或警告注入下一次代理上下文。
 
-It does not format files, apply fixes, install tools, scan the project, or modify source files.
+安装扩展一次即可在任意项目使用。项目不需要再安装 TypeScript、Vue、HTML 或 Python 语言服务器。扩展不格式化文件、不应用修复、不扫描项目，也不修改项目源码。
 
-## Supported languages
+## 支持语言
 
-| Files | Server | Root selection |
-| --- | --- | --- |
-| `.vue` | `vue-language-server` | nearest frontend `package.json` or lockfile |
-| TypeScript and JavaScript | `typescript-language-server` | nearest `tsconfig.json`, `jsconfig.json`, or `package.json` |
-| `.go` | `gopls` | nearest `go.work` or `go.mod` |
-| `.py`, `.pyi` | `pyright-langserver` or `basedpyright-langserver` | nearest Python project marker |
-| `.html`, `.htm` | `vscode-html-language-server` | nearest `package.json` or `.git` |
+| 文件 | 服务器 | 分发与启动方式 | 根目录选择 |
+| --- | --- | --- | --- |
+| `.vue` | `vue-language-server` | 包内携带 | 最近的前端 `package.json` 或锁文件 |
+| TypeScript 和 JavaScript | `typescript-language-server` | 包内携带 | 最近的 `tsconfig.json`、`jsconfig.json` 或 `package.json` |
+| `.go` | `gopls` | 在可信项目首次需要时由扩展自动安装 | 最近的 `go.work` 或 `go.mod` |
+| `.py`、`.pyi` | `pyright-langserver` | 包内携带 | 最近的 Python 项目标记 |
+| `.html`、`.htm` | `vscode-html-language-server` | 包内携带 | 最近的 `package.json` 或 `.git` |
 
-A Wails project normally uses two workspaces at once: `gopls` runs from the Go module root and Vue/TypeScript servers run from `frontend/`.
+Vue 在项目没有本地 TypeScript 时会使用扩展自带的 TypeScript SDK。Go 的自动安装不写入项目目录，但要求系统已安装并可执行 `go`；下载或安装失败会明确报告为不可用。非受信任项目不会触发 Go 安装。
 
-## Install
+## 安装
 
-Run this package directly while developing:
+开发时直接加载本地包：
 
 ```bash
 pi -e ./packages/pi-lsp-feedback
 ```
 
-Or add the absolute package path to pi settings with `pi install`:
+或安装包路径：
 
 ```bash
 pi install /absolute/path/to/pi-lsp-feedback
 ```
 
-Install the server binaries before starting pi. The extension reports an unavailable server to the agent. It does not download anything.
+发布的包会携带 Node 语言服务器依赖。实际项目无需额外执行 `npm install`、`pipx install` 或 `go install`。
 
-```bash
-# Wails frontend, run in frontend/
-npm install --save-dev typescript typescript-language-server @vue/language-server vscode-langservers-extracted
+## 反馈行为
 
-# Go backend
-go install golang.org/x/tools/gopls@latest
+- 支持拉取诊断的服务器会产生 `confirmed` 结果。
+- 带当前文档版本的 `publishDiagnostics` 通知也会产生 `confirmed` 结果。
+- 不带版本的诊断发布、超时或静默服务器会产生 `unconfirmed` 结果。扩展会提示代理不能将该文件视为干净。
+- 缺少 Go 运行时、安装失败或缺少 Go 模块标记时会产生 `unavailable` 结果。
+- 不受支持的文件类型会被静默忽略。
+- 已确认且无诊断的文件不会消耗代理上下文。
 
-# Python, choose one
-npm install --save-dev pyright
-# or: pipx install basedpyright
-```
+使用 `/lsp-feedback-status` 查看已配置服务器和已启动的客户端。
 
-## Feedback behavior
+## 项目覆盖
 
-- A server that supports pull diagnostics produces `confirmed` results.
-- A versioned `publishDiagnostics` notification also produces a confirmed result.
-- A versionless publication, timeout, or silent server produces `unconfirmed`. The extension tells the agent not to treat that file as clean.
-- Missing binaries and missing Go module markers produce `unavailable`.
-- Unsupported file types are silently ignored.
-- Confirmed clean files do not consume agent context.
-
-Use `/lsp-feedback-status` to see the configured server IDs and active client processes.
-
-## Project overrides
-
-For trusted projects, `.pi/lsp-feedback.json` may override a built-in server's command, arguments, root markers, or disable it:
+对于受信任项目，`.pi/lsp-feedback.json` 可以替换内置命令、参数、根目录标记，或禁用某个服务器。显式命令覆盖不会使用包内命令：
 
 ```json
 {
@@ -71,4 +59,4 @@ For trusted projects, `.pi/lsp-feedback.json` may override a built-in server's c
 }
 ```
 
-No configuration file is required for the default setup.
+默认配置不需要项目文件。

@@ -17,15 +17,19 @@ export default function lspFeedbackExtension(pi) {
     reportedUnavailability.clear();
     configurationIssue = undefined;
 
+    const trusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : false;
     let overrides = {};
     try {
-      const trusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : false;
       overrides = await loadProjectOverrides(ctx.cwd, trusted);
     } catch (error) {
       configurationIssue = error instanceof Error ? error.message : String(error);
       if (ctx.hasUI) ctx.ui.notify(`lsp-feedback: ${configurationIssue}`, "warning");
     }
-    service = new DiagnosticService({ workspaceRoot: ctx.cwd, overrides });
+    service = new DiagnosticService({
+      workspaceRoot: ctx.cwd,
+      overrides,
+      allowManagedInstall: trusted,
+    });
   }
 
   pi.on("session_start", async (_event, ctx) => {
