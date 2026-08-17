@@ -1,0 +1,26 @@
+{
+  "name": "pi-lsp-feedback",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Diagnostic-only LSP feedback extension for pi",
+  "keywords": ["pi-package", "pi-extension", "lsp", "diagnostics"],
+  "files": ["extensions/", "src/", "README.md"],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "vscode-jsonrpc": "^9.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}
