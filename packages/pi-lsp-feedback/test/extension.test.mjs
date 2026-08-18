@@ -72,6 +72,129 @@ test("injects diagnostics from a successful write at turn end", async () => {
   await handlers.get("session_shutdown")({}, ctx);
 });
 
+test("does not inject an unconfirmed result without diagnostics", async (t) => {
+  const previous = process.env.FAKE_PUSH_ONLY;
+  process.env.FAKE_PUSH_ONLY = "1";
+  t.after(() => {
+    if (previous === undefined) delete process.env.FAKE_PUSH_ONLY;
+    else process.env.FAKE_PUSH_ONLY = previous;
+  });
+
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-unconfirmed-"));
+  const filePath = path.join(workspace, "src", "sample.ts");
+  await mkdir(path.join(workspace, ".pi"), { recursive: true });
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await Promise.all([
+    writeFile(path.join(workspace, "package.json"), "{}\n"),
+    writeFile(filePath, "clean\n"),
+    writeFile(
+      path.join(workspace, ".pi", "lsp-feedback.json"),
+      JSON.stringify({
+        servers: {
+          typescript: {
+            command: process.execPath,
+            args: [fakeServer],
+            rootMarkers: ["package.json"],
+          },
+        },
+      }),
+    ),
+  ]);
+
+  const handlers = new Map();
+  const messages = [];
+  const pi = {
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
+    registerCommand() {},
+    sendMessage(message) {
+      messages.push(message);
+    },
+  };
+  const ctx = {
+    cwd: workspace,
+    hasUI: false,
+    signal: undefined,
+    isProjectTrusted: () => true,
+    ui: { setStatus() {}, notify() {} },
+  };
+
+  lspFeedbackExtension(pi);
+  await handlers.get("session_start")({}, ctx);
+  await handlers.get("tool_result")(
+    {
+      toolName: "write",
+      input: { path: filePath },
+      details: {},
+      isError: false,
+    },
+    ctx,
+  );
+  handlers.get("turn_end")({}, ctx);
+
+  assert.deepEqual(messages, []);
+
+  await handlers.get("session_shutdown")({}, ctx);
+});
+
+test("does not inject an unavailable LSP state", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-unavailable-"));
+  const filePath = path.join(workspace, "src", "sample.ts");
+  await mkdir(path.join(workspace, ".pi"), { recursive: true });
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await Promise.all([
+    writeFile(filePath, "clean\n"),
+    writeFile(
+      path.join(workspace, ".pi", "lsp-feedback.json"),
+      JSON.stringify({
+        servers: {
+          typescript: {
+            rootMarkers: ["missing-workspace-marker.json"],
+            fallbackToWorkspace: false,
+          },
+        },
+      }),
+    ),
+  ]);
+
+  const handlers = new Map();
+  const messages = [];
+  const pi = {
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
+    registerCommand() {},
+    sendMessage(message) {
+      messages.push(message);
+    },
+  };
+  const ctx = {
+    cwd: workspace,
+    hasUI: false,
+    signal: undefined,
+    isProjectTrusted: () => true,
+    ui: { setStatus() {}, notify() {} },
+  };
+
+  lspFeedbackExtension(pi);
+  await handlers.get("session_start")({}, ctx);
+  await handlers.get("tool_result")(
+    {
+      toolName: "write",
+      input: { path: filePath },
+      details: {},
+      isError: false,
+    },
+    ctx,
+  );
+  handlers.get("turn_end")({}, ctx);
+
+  assert.deepEqual(messages, []);
+
+  await handlers.get("session_shutdown")({}, ctx);
+});
+
 test("silently ignores writes to unsupported file types", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-unsupported-"));
   const filePath = path.join(workspace, "ticket.md");

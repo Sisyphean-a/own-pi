@@ -9,12 +9,10 @@ export default function lspFeedbackExtension(pi) {
   let service;
   let configurationIssue;
   const pending = new Map();
-  const reportedUnavailability = new Set();
 
   async function startSession(ctx) {
     await service?.close();
     pending.clear();
-    reportedUnavailability.clear();
     configurationIssue = undefined;
 
     const trusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : false;
@@ -102,18 +100,6 @@ export default function lspFeedbackExtension(pi) {
         const level = diagnostic.severity === 1 ? "error" : "warning";
         const code = diagnostic.code === undefined ? "" : ` ${String(diagnostic.code)}`;
         lines.push(`- ${relative(outcome.filePath)}:${line}:${column} ${level}${code} [${outcome.serverId}]: ${diagnostic.message}`);
-      }
-    }
-
-    for (const outcome of outcomes) {
-      if (outcome.status === "confirmed" || outcome.status === "cancelled") continue;
-      const key = `${outcome.serverId ?? "unsupported"}:${outcome.reason ?? outcome.status}`;
-      if (reportedUnavailability.has(key)) continue;
-      reportedUnavailability.add(key);
-      if (outcome.status === "unconfirmed") {
-        lines.push(`- ${relative(outcome.filePath)}: ${outcome.serverId} did not confirm a fresh diagnostic result. Do not treat this file as clean.`);
-      } else {
-        lines.push(`- ${relative(outcome.filePath)}: ${outcome.serverId ?? "LSP"} unavailable${outcome.reason ? ` (${outcome.reason})` : ""}.`);
       }
     }
 

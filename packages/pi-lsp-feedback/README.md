@@ -34,12 +34,11 @@ pi install /absolute/path/to/pi-lsp-feedback
 
 ## 反馈行为
 
-- 支持拉取诊断的服务器会产生 `confirmed` 结果。
-- 带当前文档版本的 `publishDiagnostics` 通知也会产生 `confirmed` 结果。
-- 不带版本的诊断发布、超时或静默服务器会产生 `unconfirmed` 结果。扩展会提示代理不能将该文件视为干净。
-- 缺少 Go 运行时、安装失败或缺少 Go 模块标记时会产生 `unavailable` 结果。
+- 只把最近编辑后发现的严重级别 1（错误）和 2（警告）诊断注入代理上下文，每轮最多 20 条。
+- 支持拉取诊断的服务器会产生 `confirmed` 结果；带当前文档版本的 `publishDiagnostics` 通知也会产生 `confirmed` 结果。
+- 不带版本的诊断发布、超时或静默服务器会产生 `unconfirmed` 结果；缺少 Go 运行时、安装失败或缺少 Go 模块标记会产生 `unavailable` 结果。这些状态本身不会注入代理上下文。
+- 已确认且干净的文件、不含可报告诊断的未确认结果，以及不可用结果都不会消耗代理上下文。
 - 不受支持的文件类型会被静默忽略。
-- 已确认且无诊断的文件不会消耗代理上下文。
 
 使用 `/lsp-feedback-status` 查看已配置服务器和已启动的客户端。
 
