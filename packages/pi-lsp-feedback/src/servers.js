@@ -28,7 +28,7 @@ export const BUILTIN_SERVERS = [
     languageId: "vue",
     commands: [bundledNodeServer("node_modules/@vue/language-server/bin/vue-language-server.js", ["--stdio"])],
     rootMarkers: ["package.json", "pnpm-lock.yaml", "yarn.lock", "package-lock.json"],
-    fallbackToWorkspace: true,
+    fallbackToWorkspace: false,
     needsTypeScriptSdk: true,
   },
   {
@@ -37,7 +37,8 @@ export const BUILTIN_SERVERS = [
     languageId: "typescript",
     commands: [bundledNodeServer("node_modules/typescript-language-server/lib/cli.mjs", ["--stdio"])],
     rootMarkers: NODE_ROOT_MARKERS,
-    fallbackToWorkspace: true,
+    fallbackToWorkspace: false,
+    needsNodeTypes: true,
   },
   {
     id: "go",
@@ -57,7 +58,7 @@ export const BUILTIN_SERVERS = [
       { command: "basedpyright-langserver", args: ["--stdio"] },
     ],
     rootMarkers: ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", ".git"],
-    fallbackToWorkspace: true,
+    fallbackToWorkspace: false,
   },
   {
     id: "html",
@@ -65,7 +66,7 @@ export const BUILTIN_SERVERS = [
     languageId: "html",
     commands: [bundledNodeServer("node_modules/vscode-langservers-extracted/bin/vscode-html-language-server", ["--stdio"])],
     rootMarkers: ["package.json", ".git"],
-    fallbackToWorkspace: true,
+    fallbackToWorkspace: false,
   },
 ];
 
@@ -129,6 +130,18 @@ export function findTypeScriptSdk(root, workspaceRoot) {
   }
   const bundledSdk = path.join(PACKAGE_ROOT, "node_modules", "typescript", "lib");
   return existsSync(bundledSdk) ? bundledSdk : undefined;
+}
+
+export function findNodeTypesRoot(filePath) {
+  // TypeScript 解析 node:fs 等内置模块类型时沿文件目录向上找 @types/node。
+  // 找不到说明该位置没有 Node 类型环境，缺环境下产生的 2307/7006 属噪音，应静默。
+  let current = path.resolve(path.dirname(filePath));
+  while (true) {
+    if (existsSync(path.join(current, "node_modules", "@types", "node"))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
 }
 
 export function initializationOptions(server, root, workspaceRoot) {

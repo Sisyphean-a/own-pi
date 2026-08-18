@@ -4,6 +4,7 @@ import { LspClient } from "./lsp-client.js";
 import { installManagedServer } from "./managed-server-installer.js";
 import {
   commandCandidates,
+  findNodeTypesRoot,
   findWorkspaceRoot,
   initializationOptions,
   mergeServerOverrides,
@@ -37,6 +38,16 @@ export class DiagnosticService {
       return result(absolutePath, "unavailable", {
         serverId: server.id,
         reason: `no ${server.rootMarkers.join(" or ")} workspace marker found`,
+      });
+    }
+
+    if (server.needsNodeTypes && !findNodeTypesRoot(absolutePath)) {
+      // 无 @types/node（Node 类型环境）时，tsserver 只会报 2307 无法解析 node:*
+      // 及连锁 7006/2580 一类“缺少对应环境”的噪音，并非真实代码错误。
+      // 按“有则报、无则静默”：返回 unavailable，不反馈这些诊断。
+      return result(absolutePath, "unavailable", {
+        serverId: server.id,
+        reason: "no @types/node available for Node runtime types",
       });
     }
 

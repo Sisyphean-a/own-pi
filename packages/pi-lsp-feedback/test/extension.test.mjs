@@ -15,6 +15,7 @@ test("injects diagnostics from a successful write at turn end", async () => {
   await Promise.all([
     writeFile(path.join(workspace, "package.json"), "{}\n"),
     writeFile(filePath, "broken\n"),
+    mkdir(path.join(workspace, "node_modules", "@types", "node"), { recursive: true }),
     writeFile(
       path.join(workspace, ".pi", "lsp-feedback.json"),
       JSON.stringify({
@@ -87,6 +88,7 @@ test("does not inject an unconfirmed result without diagnostics", async (t) => {
   await Promise.all([
     writeFile(path.join(workspace, "package.json"), "{}\n"),
     writeFile(filePath, "clean\n"),
+    mkdir(path.join(workspace, "node_modules", "@types", "node"), { recursive: true }),
     writeFile(
       path.join(workspace, ".pi", "lsp-feedback.json"),
       JSON.stringify({

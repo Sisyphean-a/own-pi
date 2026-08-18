@@ -12,6 +12,9 @@ import {
   findWorkspaceRoot,
 } from "../src/servers.js";
 
+const nodeTypesDir = (workspace) => path.join(workspace, "node_modules", "@types", "node");
+const WITH_NODE_TYPES = { recursive: true };
+
 const fakeServer = path.join(import.meta.dirname, "fake-lsp.mjs");
 
 test("uses the nearest frontend package as the Vue root in a Wails workspace", async () => {
@@ -43,6 +46,7 @@ test("reports an unavailable server instead of a false clean result", async (t) 
   await Promise.all([
     writeFile(path.join(workspace, "package.json"), "{}\n"),
     writeFile(filePath, "const value = 1;\n"),
+    mkdir(nodeTypesDir(workspace), WITH_NODE_TYPES),
   ]);
 
   const service = new DiagnosticService({
@@ -85,6 +89,7 @@ test("reports diagnostics through the bundled TypeScript server", async (t) => {
   await Promise.all([
     writeFile(path.join(workspace, "package.json"), "{}\n"),
     writeFile(filePath, "const value: string = 1;\n"),
+    mkdir(nodeTypesDir(workspace), WITH_NODE_TYPES),
   ]);
 
   const service = new DiagnosticService({ workspaceRoot: workspace });
@@ -106,6 +111,7 @@ test("runs a configured TypeScript language server and returns its diagnostics",
   await Promise.all([
     writeFile(path.join(workspace, "package.json"), "{}\n"),
     writeFile(filePath, "broken\n"),
+    mkdir(nodeTypesDir(workspace), WITH_NODE_TYPES),
   ]);
 
   const service = new DiagnosticService({
@@ -180,4 +186,20 @@ test("installs gopls only for trusted projects when it is unavailable", async (t
   const untrustedOutcome = await untrustedService.checkFile(filePath);
   assert.equal(untrustedOutcome.status, "unavailable");
   assert.match(untrustedOutcome.reason, /requires a trusted project/);
+});
+
+test("silences TypeScript checks when @types/node is not available", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-no-nodetypes-"));
+  const filePath = path.join(workspace, "sample.ts");
+  await Promise.all([
+    writeFile(path.join(workspace, "package.json"), "{}\n"),
+    writeFile(filePath, "import { readFileSync } from \"node:fs\";\n"),
+  ]);
+
+  const service = new DiagnosticService({ workspaceRoot: workspace });
+  t.after(() => service.close());
+
+  const outcome = await service.checkFile(filePath);
+  assert.equal(outcome.status, "unavailable");
+  assert.match(outcome.reason, /@types\/node/);
 });

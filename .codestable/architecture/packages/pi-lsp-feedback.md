@@ -16,7 +16,7 @@
 - `extensions/index.js` 负责 Pi 生命周期集成、按轮聚合、展示和状态报告。
 - `DiagnosticService` 负责文件分类、根目录解析、客户端复用和标准化结果；客户端缓存键为 `<server id>:<root>`。
 - `LspClient` 负责一个 JSON-RPC 服务器进程，并通过请求队列串行化文档检查。
-- `servers.js` 是内置语言映射、根目录标记、包内与本地命令查找、以及允许的受信任覆盖项的来源。
+- `servers.js` 是内置语言映射、根目录标记、包内与本地命令查找、以及允许的受信任覆盖项的来源。内置服务器在缺少项目标记时不再回退到工作区根（`fallbackToWorkspace: false`）；TypeScript/JavaScript 在 `findNodeTypesRoot` 解析不到 `@types/node` 时判为不可用，不启动服务器（`needsNodeTypes`）。
 - `managed-server-installer.js` 负责受信任项目中 `gopls` 的一次性托管安装；项目未受信任时不会调用安装器。
 
 ## 代码锚点
