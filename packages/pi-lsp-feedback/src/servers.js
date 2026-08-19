@@ -70,32 +70,93 @@ export const BUILTIN_SERVERS = [
   },
 ];
 
-export function mergeServerOverrides(overrides = {}) {
-  return BUILTIN_SERVERS
-    .filter((server) => overrides[server.id]?.enabled !== false)
-    .map((server) => {
-      const override = overrides[server.id];
-      if (!override) return server;
+const SERVER_OVERRIDE_FIELDS = new Set([
+  "enabled",
+  "command",
+  "args",
+  "rootMarkers",
+  "fallbackToWorkspace",
+]);
 
-      return {
-        ...server,
-        ...(Array.isArray(override.rootMarkers) ? { rootMarkers: override.rootMarkers } : {}),
-        ...(typeof override.fallbackToWorkspace === "boolean"
-          ? { fallbackToWorkspace: override.fallbackToWorkspace }
-          : {}),
-        ...(typeof override.command === "string"
-          ? {
-              commands: [
-                {
-                  command: override.command,
-                  args: Array.isArray(override.args) ? override.args : server.commands[0].args,
-                  bundled: false,
-                },
-              ],
-            }
-          : {}),
-      };
-    });
+export function resolveServerOverrides(overrides = {}) {
+  const issues = [];
+  const serverIds = new Set(BUILTIN_SERVERS.map((server) => server.id));
+  for (const id of Object.keys(overrides)) {
+    if (!serverIds.has(id)) issues.push(`${id}: unknown server id`);
+  }
+
+  const servers = [];
+  for (const server of BUILTIN_SERVERS) {
+    if (!Object.hasOwn(overrides, server.id)) {
+      servers.push(server);
+      continue;
+    }
+    const override = overrides[server.id];
+    if (!isPlainObject(override)) {
+      issues.push(`${server.id}: server override must be an object`);
+      servers.push(server);
+      continue;
+    }
+    if (override.enabled === false) continue;
+    servers.push(applyServerOverride(server, override, issues));
+  }
+
+  return { servers, issues };
+}
+
+function applyServerOverride(server, override, issues) {
+  for (const key of Object.keys(override)) {
+    if (!SERVER_OVERRIDE_FIELDS.has(key)) {
+      issues.push(`${server.id}: unknown field "${key}"`);
+    }
+  }
+  if (Object.hasOwn(override, "enabled") && typeof override.enabled !== "boolean") {
+    issues.push(`${server.id}: enabled must be a boolean`);
+  }
+
+  const next = { ...server };
+  if (Object.hasOwn(override, "rootMarkers")) {
+    if (isStringArray(override.rootMarkers)) {
+      next.rootMarkers = override.rootMarkers;
+    } else {
+      issues.push(`${server.id}: rootMarkers must be an array of strings`);
+    }
+  }
+
+  if (Object.hasOwn(override, "fallbackToWorkspace")) {
+    if (typeof override.fallbackToWorkspace === "boolean") {
+      next.fallbackToWorkspace = override.fallbackToWorkspace;
+    } else {
+      issues.push(`${server.id}: fallbackToWorkspace must be a boolean`);
+    }
+  }
+
+  const hasCommand = Object.hasOwn(override, "command");
+  const hasArgs = Object.hasOwn(override, "args");
+  if (hasArgs && !hasCommand) {
+    issues.push(`${server.id}: args only applies together with command`);
+  }
+  if (hasCommand) {
+    if (typeof override.command !== "string") {
+      issues.push(`${server.id}: command must be a string`);
+    } else {
+      const args = hasArgs && isStringArray(override.args) ? override.args : server.commands[0].args;
+      next.commands = [{ command: override.command, args, bundled: false }];
+    }
+    if (hasArgs && !isStringArray(override.args)) {
+      issues.push(`${server.id}: args must be an array of strings`);
+    }
+  }
+
+  return next;
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringArray(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 export function serverForFile(servers, filePath) {

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { loadProjectOverrides } from "../src/config.js";
+import { loadProjectConfiguration } from "../src/config.js";
 import { DiagnosticService } from "../src/diagnostic-service.js";
 
 const REPORTABLE_SEVERITY = 2;
@@ -16,16 +16,14 @@ export default function lspFeedbackExtension(pi) {
     configurationIssue = undefined;
 
     const trusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : false;
-    let overrides = {};
-    try {
-      overrides = await loadProjectOverrides(ctx.cwd, trusted);
-    } catch (error) {
-      configurationIssue = error instanceof Error ? error.message : String(error);
-      if (ctx.hasUI) ctx.ui.notify(`lsp-feedback: ${configurationIssue}`, "warning");
+    const config = await loadProjectConfiguration(ctx.cwd, trusted);
+    configurationIssue = config.issues.length > 0 ? config.issues.join("\n") : undefined;
+    if (configurationIssue && ctx.hasUI) {
+      ctx.ui.notify(`lsp-feedback: ${configurationIssue}`, "warning");
     }
     service = new DiagnosticService({
       workspaceRoot: ctx.cwd,
-      overrides,
+      servers: config.servers,
       allowManagedInstall: trusted,
     });
   }

@@ -59,3 +59,5 @@ pi install /absolute/path/to/pi-lsp-feedback
 ```
 
 默认配置不需要项目文件。
+
+配置中的未知服务器、未知字段或字段类型错误会通过启动警告和 `/lsp-feedback-status` 显示；出错项按内置配置处理，不影响其他服务器。

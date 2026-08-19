@@ -245,3 +245,50 @@ test("silently ignores writes to unsupported file types", async () => {
 
   await handlers.get("session_shutdown")({}, ctx);
 });
+
+test("warns about invalid project overrides at session start", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-invalid-config-"));
+  await mkdir(path.join(workspace, ".pi"), { recursive: true });
+  await writeFile(
+    path.join(workspace, ".pi", "lsp-feedback.json"),
+    JSON.stringify({ servers: { typescript: { enabled: "yes" } } }),
+  );
+
+  const commands = new Map();
+  const handlers = new Map();
+  const notifications = [];
+  const pi = {
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
+    registerCommand(name, command) {
+      commands.set(name, command);
+    },
+    sendMessage() {},
+  };
+  const ctx = {
+    cwd: workspace,
+    hasUI: true,
+    signal: undefined,
+    isProjectTrusted: () => true,
+    ui: {
+      notify(message, kind) {
+        notifications.push({ message, kind });
+      },
+      setStatus() {},
+    },
+  };
+
+  lspFeedbackExtension(pi);
+  await handlers.get("session_start")({}, ctx);
+
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].kind, "warning");
+  assert.match(notifications[0].message, /enabled must be a boolean/);
+
+  await commands.get("lsp-feedback-status").handler({}, ctx);
+  assert.equal(notifications.length, 2);
+  assert.match(notifications[1].message, /enabled must be a boolean/);
+
+  await handlers.get("session_shutdown")({}, ctx);
+});

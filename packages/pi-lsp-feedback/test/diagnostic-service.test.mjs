@@ -10,6 +10,7 @@ import {
   commandCandidates,
   findTypeScriptSdk,
   findWorkspaceRoot,
+  resolveServerOverrides,
 } from "../src/servers.js";
 
 const nodeTypesDir = (workspace) => path.join(workspace, "node_modules", "@types", "node");
@@ -51,13 +52,13 @@ test("reports an unavailable server instead of a false clean result", async (t) 
 
   const service = new DiagnosticService({
     workspaceRoot: workspace,
-    overrides: {
+    servers: resolveServerOverrides({
       typescript: {
         command: "pi-lsp-feedback-command-that-does-not-exist",
         args: [],
         rootMarkers: ["package.json"],
       },
-    },
+    }).servers,
   });
   t.after(() => service.close());
 
@@ -116,13 +117,13 @@ test("runs a configured TypeScript language server and returns its diagnostics",
 
   const service = new DiagnosticService({
     workspaceRoot: workspace,
-    overrides: {
+    servers: resolveServerOverrides({
       typescript: {
         command: process.execPath,
         args: [fakeServer],
         rootMarkers: ["package.json"],
       },
-    },
+    }).servers,
   });
   t.after(() => service.close());
 
@@ -153,12 +154,12 @@ test("installs gopls only for trusted projects when it is unavailable", async (t
       assert.equal(serverId, "gopls");
       return false;
     },
-    overrides: {
+    servers: resolveServerOverrides({
       go: {
         command: "pi-lsp-feedback-command-that-does-not-exist",
         args: [],
       },
-    },
+    }).servers,
   });
   t.after(() => service.close());
 
@@ -175,12 +176,12 @@ test("installs gopls only for trusted projects when it is unavailable", async (t
     managedInstaller: async () => {
       throw new Error("untrusted project must not install gopls");
     },
-    overrides: {
+    servers: resolveServerOverrides({
       go: {
         command: "pi-lsp-feedback-command-that-does-not-exist",
         args: [],
       },
-    },
+    }).servers,
   });
   t.after(() => untrustedService.close());
   const untrustedOutcome = await untrustedService.checkFile(filePath);

@@ -3,23 +3,23 @@ import path from "node:path";
 import { LspClient } from "./lsp-client.js";
 import { installManagedServer } from "./managed-server-installer.js";
 import {
+  BUILTIN_SERVERS,
   commandCandidates,
   findNodeTypesRoot,
   findWorkspaceRoot,
   initializationOptions,
-  mergeServerOverrides,
   serverForFile,
 } from "./servers.js";
 
 export class DiagnosticService {
   constructor({
     workspaceRoot,
-    overrides = {},
+    servers = BUILTIN_SERVERS,
     allowManagedInstall = false,
     managedInstaller = installManagedServer,
   }) {
     this.workspaceRoot = path.resolve(workspaceRoot);
-    this.servers = mergeServerOverrides(overrides);
+    this.servers = servers;
     this.clients = new Map();
     this.managedInstallFailures = new Map();
     this.allowManagedInstall = allowManagedInstall;

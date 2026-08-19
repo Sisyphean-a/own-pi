@@ -8,15 +8,16 @@
 
 - 包入口：`package.json` 中 `pi.extensions` 清单声明的 `extensions/index.js`。
 - 用户命令：`/lsp-feedback-status` 显示已配置的服务器 ID 与存活客户端。
-- 受信任项目配置边界：`.pi/lsp-feedback.json`；除非 `ctx.isProjectTrusted()` 为真，否则 `src/config.js` 会忽略它。
+- 受信任项目配置边界：`.pi/lsp-feedback.json`；`src/config.js` 在受信任项目下读取、校验并合并覆盖，返回服务器清单与可显示问题；非受信任项目忽略该文件。
 - 运行时依赖：`vscode-jsonrpc`、Vue、TypeScript、HTML 与 Pyright 语言服务器作为包内依赖随扩展分发；Go 服务器由扩展在受信任项目按需通过 `go install` 托管安装。
 
 ## 架构规则
 
 - `extensions/index.js` 负责 Pi 生命周期集成、按轮聚合、展示和状态报告。
-- `DiagnosticService` 负责文件分类、根目录解析、客户端复用和标准化结果；客户端缓存键为 `<server id>:<root>`。
+- `config.js` 负责受信任项目覆盖的一次读取、校验和合并；未知服务器、未知字段和字段类型错误进入 `issues`，由扩展以警告展示。
+- `DiagnosticService` 接收已解析的服务器清单，负责文件分类、根目录解析、客户端复用和标准化结果；客户端缓存键为 `<server id>:<root>`。
 - `LspClient` 负责一个 JSON-RPC 服务器进程，并通过请求队列串行化文档检查。
-- `servers.js` 是内置语言映射、根目录标记、包内与本地命令查找、以及允许的受信任覆盖项的来源。内置服务器在缺少项目标记时不再回退到工作区根（`fallbackToWorkspace: false`）；TypeScript/JavaScript 在 `findNodeTypesRoot` 解析不到 `@types/node` 时判为不可用，不启动服务器（`needsNodeTypes`）。
+- `servers.js` 是内置语言映射、根目录标记、包内与本地命令查找、以及受信任覆盖项解析的规则来源。内置服务器在缺少项目标记时不再回退到工作区根（`fallbackToWorkspace: false`）；TypeScript/JavaScript 在 `findNodeTypesRoot` 解析不到 `@types/node` 时判为不可用，不启动服务器（`needsNodeTypes`）。
 - `managed-server-installer.js` 负责受信任项目中 `gopls` 的一次性托管安装；项目未受信任时不会调用安装器。
 
 ## 代码锚点
@@ -24,7 +25,8 @@
 - 激活与反馈格式化：`packages/pi-lsp-feedback/extensions/index.js`（`lspFeedbackExtension`、`formatFeedback`）。
 - 诊断编排：`packages/pi-lsp-feedback/src/diagnostic-service.js`（`DiagnosticService.checkFile`、`getClient`）。
 - 协议生命周期与确认：`packages/pi-lsp-feedback/src/lsp-client.js`（`LspClient.initialize`、`checkDocumentNow`、`waitForPublication`）。
-- 服务器选择与根目录：`packages/pi-lsp-feedback/src/servers.js`（`BUILTIN_SERVERS`、`findWorkspaceRoot`、`commandCandidates`、`mergeServerOverrides`）。
+- 配置读取与合并：`packages/pi-lsp-feedback/src/config.js`（`loadProjectConfiguration`）、`packages/pi-lsp-feedback/src/servers.js`（`resolveServerOverrides`）。
+- 服务器选择与根目录：`packages/pi-lsp-feedback/src/servers.js`（`BUILTIN_SERVERS`、`findWorkspaceRoot`、`commandCandidates`）。
 - 托管 Go 安装：`packages/pi-lsp-feedback/src/managed-server-installer.js`（`installManagedServer`）。
 
 反馈结果的语义规则由 [lsp-feedback 领域上下文](../../requirements/contexts/lsp-feedback.md) 维护。
