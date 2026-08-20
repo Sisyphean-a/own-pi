@@ -1,10 +1,12 @@
-# pi-lsp-feedback
+# own-pi
+
+## pi-lsp-feedback
 
 `pi-lsp-feedback` 是 Pi 的只读诊断扩展。代理成功写入或编辑受支持文件后，扩展把最终内容交给匹配的语言服务器，并将错误或警告注入下一次代理上下文。
 
 安装扩展一次即可在任意项目使用。项目不需要再安装 TypeScript、Vue、HTML 或 Python 语言服务器。扩展不格式化文件、不应用修复、不扫描项目，也不修改项目源码。
 
-## 支持语言
+### 支持语言
 
 | 文件 | 服务器 | 分发与启动方式 | 根目录选择 |
 | --- | --- | --- | --- |
@@ -16,12 +18,18 @@
 
 Vue 在项目没有本地 TypeScript 时会使用扩展自带的 TypeScript SDK。Go 的自动安装不写入项目目录，但要求系统已安装并可执行 `go`；下载或安装失败会明确报告为不可用。非受信任项目不会触发 Go 安装。
 
-## 安装
+### 安装
 
 开发时直接加载本地包：
 
 ```bash
 pi -e ./packages/pi-lsp-feedback
+```
+
+从仓库根目录使用相对路径安装：
+
+```bash
+pi install ./packages/pi-lsp-feedback
 ```
 
 或安装包路径：
@@ -32,9 +40,11 @@ pi install /absolute/path/to/pi-lsp-feedback
 
 发布的包会携带 Node 语言服务器依赖。实际项目无需额外执行 `npm install`、`pipx install` 或 `go install`。
 
-## 反馈行为
+### 反馈行为
 
 - 只把最近编辑后发现的严重级别 1（错误）和 2（警告）诊断注入代理上下文，每轮最多 20 条。
+- 同一会话中，同一文件未变化的语义诊断只注入一次；仅位置变化不会重复注入，确认文件干净后再次出现会重新注入。
+- 反馈只绑定当前轮实际产生它的 `write`/`edit` 结果；迟到的 LSP 结果不会污染后续轮次，同一轮同一文件只采用最后结果。
 - 支持拉取诊断的服务器会产生 `confirmed` 结果；带当前文档版本的 `publishDiagnostics` 通知也会产生 `confirmed` 结果。
 - 不带版本的诊断发布、超时或静默服务器会产生 `unconfirmed` 结果；缺少 Go 运行时、安装失败或缺少 Go 模块标记会产生 `unavailable` 结果。这些状态本身不会注入代理上下文。
 - 已确认且干净的文件、不含可报告诊断的未确认结果，以及不可用结果都不会消耗代理上下文。
@@ -42,7 +52,7 @@ pi install /absolute/path/to/pi-lsp-feedback
 
 使用 `/lsp-feedback-status` 查看已配置服务器和已启动的客户端。
 
-## 项目覆盖
+### 项目覆盖
 
 对于受信任项目，`.pi/lsp-feedback.json` 可以替换内置命令、参数、根目录标记，或禁用某个服务器。显式命令覆盖不会使用包内命令：
 

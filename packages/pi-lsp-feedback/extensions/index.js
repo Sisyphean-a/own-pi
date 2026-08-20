@@ -1,18 +1,15 @@
-import path from "node:path";
 import { loadProjectConfiguration } from "../src/config.js";
 import { DiagnosticService } from "../src/diagnostic-service.js";
-
-const REPORTABLE_SEVERITY = 2;
-const MAX_DIAGNOSTICS = 20;
+import { FeedbackTracker } from "../src/feedback.js";
 
 export default function lspFeedbackExtension(pi) {
   let service;
+  let feedback;
   let configurationIssue;
-  const pending = new Map();
 
   async function startSession(ctx) {
     await service?.close();
-    pending.clear();
+    feedback?.clear();
     configurationIssue = undefined;
 
     const trusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : false;
@@ -26,6 +23,7 @@ export default function lspFeedbackExtension(pi) {
       servers: config.servers,
       allowManagedInstall: trusted,
     });
+    feedback = new FeedbackTracker({ workspaceRoot: service.workspaceRoot });
   }
 
   pi.on("session_start", async (_event, ctx) => {
@@ -41,13 +39,16 @@ export default function lspFeedbackExtension(pi) {
 
     const outcome = await service.checkFile(filePath, ctx.signal);
     if (outcome.status === "unsupported") return;
-    pending.set(outcome.filePath, outcome);
+    const toolCallId =
+      typeof event.toolCallId === "string" && event.toolCallId.length > 0
+        ? event.toolCallId
+        : Symbol("lsp-feedback-tool-result");
+    feedback.add(toolCallId, outcome);
     if (ctx.hasUI) ctx.ui.setStatus("lsp-feedback", statusLine(outcome));
   });
 
-  pi.on("turn_end", () => {
-    const content = formatFeedback([...pending.values()]);
-    pending.clear();
+  pi.on("turn_end", (event) => {
+    const content = feedback?.flush(event);
     if (!content) return;
     pi.sendMessage(
       {
@@ -60,7 +61,8 @@ export default function lspFeedbackExtension(pi) {
   });
 
   pi.on("session_shutdown", async () => {
-    pending.clear();
+    feedback?.clear();
+    feedback = undefined;
     await service?.close();
     service = undefined;
   });
@@ -79,34 +81,6 @@ export default function lspFeedbackExtension(pi) {
     },
   });
 
-  function formatFeedback(outcomes) {
-    const lines = [];
-    const diagnostics = outcomes
-      .flatMap((outcome) =>
-        outcome.diagnostics
-          .filter((diagnostic) => diagnostic.severity <= REPORTABLE_SEVERITY)
-          .map((diagnostic) => ({ outcome, diagnostic })),
-      )
-      .slice(0, MAX_DIAGNOSTICS);
-
-    if (diagnostics.length > 0) {
-      lines.push("LSP diagnostics after the latest edits:");
-      for (const { outcome, diagnostic } of diagnostics) {
-        const location = diagnostic.range?.start;
-        const line = location ? location.line + 1 : 1;
-        const column = location ? location.character + 1 : 1;
-        const level = diagnostic.severity === 1 ? "error" : "warning";
-        const code = diagnostic.code === undefined ? "" : ` ${String(diagnostic.code)}`;
-        lines.push(`- ${relative(outcome.filePath)}:${line}:${column} ${level}${code} [${outcome.serverId}]: ${diagnostic.message}`);
-      }
-    }
-
-    return lines.length === 0 ? undefined : lines.join("\n");
-  }
-
-  function relative(filePath) {
-    return path.relative(service?.workspaceRoot ?? process.cwd(), filePath) || path.basename(filePath);
-  }
 }
 
 function statusLine(outcome) {

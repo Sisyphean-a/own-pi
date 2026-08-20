@@ -13,7 +13,7 @@
 
 ## 架构规则
 
-- `extensions/index.js` 负责 Pi 生命周期集成、按轮聚合、展示和状态报告。
+- `extensions/index.js` 负责 Pi 生命周期集成、诊断服务装配、展示和状态报告；反馈选择与格式化由 `src/feedback.js` 集中负责。
 - `config.js` 负责受信任项目覆盖的一次读取、校验和合并；未知服务器、未知字段和字段类型错误进入 `issues`，由扩展以警告展示。
 - `DiagnosticService` 接收已解析的服务器清单，负责文件分类、根目录解析、客户端复用和标准化结果；客户端缓存键为 `<server id>:<root>`。
 - `LspClient` 负责一个 JSON-RPC 服务器进程，并通过请求队列串行化文档检查。
@@ -22,7 +22,8 @@
 
 ## 代码锚点
 
-- 激活与反馈格式化：`packages/pi-lsp-feedback/extensions/index.js`（`lspFeedbackExtension`、`formatFeedback`）。
+- 激活与 Pi 生命周期集成：`packages/pi-lsp-feedback/extensions/index.js`（`lspFeedbackExtension`、`startSession`）。
+- 按轮反馈选择、语义去重和格式化：`packages/pi-lsp-feedback/src/feedback.js`（`FeedbackTracker`）。
 - 诊断编排：`packages/pi-lsp-feedback/src/diagnostic-service.js`（`DiagnosticService.checkFile`、`getClient`）。
 - 协议生命周期与确认：`packages/pi-lsp-feedback/src/lsp-client.js`（`LspClient.initialize`、`checkDocumentNow`、`waitForPublication`）。
 - 配置读取与合并：`packages/pi-lsp-feedback/src/config.js`（`loadProjectConfiguration`）、`packages/pi-lsp-feedback/src/servers.js`（`resolveServerOverrides`）。
