@@ -71,3 +71,14 @@ pi install /absolute/path/to/pi-lsp-feedback
 默认配置不需要项目文件。
 
 配置中的未知服务器、未知字段或字段类型错误会通过启动警告和 `/lsp-feedback-status` 显示；出错项按内置配置处理，不影响其他服务器。
+
+## pi-quick-panel
+
+`pi-quick-panel` 是 Pi 的交互式快捷面板，可切换技能、模型、思考等级和模型组合。TUI 中按 `Ctrl+L` 或执行 `/quick-panel` 打开；输入中的 `/skill:<name>` 会展开为技能正文。
+
+```bash
+pi -e ./packages/pi-quick-panel
+pi install ./packages/pi-quick-panel
+```
+
+详细配置见 [`packages/pi-quick-panel/README.md`](packages/pi-quick-panel/README.md)。
