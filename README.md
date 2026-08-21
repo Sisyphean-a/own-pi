@@ -34,3 +34,16 @@ pi install ./packages/pi-lean-tool-display
 ```
 
 详见 [`packages/pi-lean-tool-display/README.md`](packages/pi-lean-tool-display/README.md)。
+
+## pi-optimization
+
+Pi 增强优化扩展，合并 `nul` 重定向修复和按模型能力自动开关视觉 MCP 工具。
+
+```bash
+pi -e ./packages/pi-optimization
+pi install ./packages/pi-optimization
+```
+
+详见 [`packages/pi-optimization/README.md`](packages/pi-optimization/README.md)。
+
+所有包对可选外部能力采用软依赖：缺少对应插件或运行时 API 时只停用受影响的逻辑，不阻断 Pi 或其他扩展启动。

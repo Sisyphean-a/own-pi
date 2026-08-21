@@ -10,7 +10,7 @@
 - 用户入口：`Ctrl+Shift+T` 快捷键和 `/thinking [toggle|show|hide]` 命令。
 - 显示行为：工具调用摘要、工具结果行数/错误/diff、连续工具分组、紧凑用户消息和思考标签。
 - Codex 状态：当前模型为 `openai-codex` 时使用 Pi 当前认证信息请求 Codex usage 接口；网络或认证失败只清空状态，不影响显示补丁。
-- 运行时依赖：`@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-tui` 由 Pi 运行时提供，作为 peer dependency，不在包内重复分发。
+- 运行时依赖：`@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-tui` 由 Pi 运行时提供，作为 peer dependency，不在包内重复分发；消息显示、工具显示和 Codex usage 分开动态加载，缺失或不兼容时只隐藏受影响功能。
 
 ## 架构规则
 

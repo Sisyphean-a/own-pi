@@ -1,0 +1,34 @@
+{
+  "name": "pi-optimization",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Additional optimization extensions for pi",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "optimization",
+    "nul-redirect",
+    "vision-mcp"
+  ],
+  "files": [
+    "extensions/",
+    "src/"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  }
+}

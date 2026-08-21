@@ -37,4 +37,4 @@ pi install ./packages/pi-quick-panel
 
 也可以使用 `modelId` 代替 `model`。项目配置优先于全局配置；模型未配置认证或不支持指定思考等级时，组合会显示为不可用并拒绝切换。
 
-Pi 的 `@earendil-works/pi-ai`、`@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-tui` 作为运行时提供的 peer dependency，不会被这个包重复打包。
+Pi 的 `@earendil-works/pi-ai`、`@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-tui` 作为运行时提供的 peer dependency，不会被这个包重复打包。缺少或版本不兼容时，快捷面板和对应 UI 会被安全跳过，Pi 及同一包中仍可用的技能展开逻辑不会因此启动失败。

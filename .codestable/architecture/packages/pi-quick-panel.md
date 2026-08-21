@@ -10,7 +10,7 @@
 - 用户入口：TUI 编辑器 `Ctrl+L` 和 `/quick-panel` 命令。
 - 技能行为：选择技能向当前编辑器插入 `/skill:<name>`；输入阶段将已知技能指令替换成带名称、路径和正文的技能块。
 - 组合配置：读取全局 `quick-panel.json`；受信任项目再读取项目配置，并按名称由项目值覆盖全局值。
-- 运行时依赖：`@earendil-works/pi-ai`、`@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-tui` 由 Pi 运行时提供，作为 peer dependency，不在包内重复分发。
+- 运行时依赖：`@earendil-works/pi-ai`、`@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-tui` 由 Pi 运行时提供，作为 peer dependency，不在包内重复分发；缺失或不兼容时入口动态跳过快捷面板并保留可用的技能展开逻辑。
 
 ## 架构规则
 

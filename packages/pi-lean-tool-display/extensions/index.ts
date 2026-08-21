@@ -1,85 +1,206 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CODEX_PROVIDER_ID, createCodexUsageController } from "../src/codex-usage.ts";
-import {
-  getThinkingLabel,
-  getThinkingState,
-  installCompactUserMessage,
-  installThinkingCollapse,
-  isAssistantMessage,
-  labelThinking,
-  sanitizeThinking,
-  setThinkingCollapsed,
-  type Theme,
-} from "../src/message-display.ts";
-import { installContainerParentTracking, installToolRenderers } from "../src/tool-rendering.ts";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-export default function leanToolDisplay(pi: ExtensionAPI): void {
-  installContainerParentTracking();
-  installToolRenderers();
-  installThinkingCollapse();
-  installCompactUserMessage();
+type ThemeLike = {
+  bold(text: string): string;
+  fg(color: string, text: string): string;
+};
 
-  const codexUsage = createCodexUsageController();
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function loadOptional<T>(name: string, load: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await load();
+  } catch (error) {
+    // Rule: optional peer packages and prototype APIs may disappear without
+    // preventing Pi or the other independent display features from loading.
+    console.error(`[pi-lean-tool-display] ${name} 不可用，已隐藏相关功能：${errorMessage(error)}`);
+    return undefined;
+  }
+}
+
+function runOptional(name: string, effect: () => void): boolean {
+  try {
+    effect();
+    return true;
+  } catch (error) {
+    console.error(`[pi-lean-tool-display] ${name} 不可用，已隐藏相关功能：${errorMessage(error)}`);
+    return false;
+  }
+}
+
+function notify(ctx: ExtensionContext, message: string, level: "info" | "warning" | "error"): void {
+  try {
+    if (ctx.hasUI && typeof ctx.ui?.notify === "function") {
+      ctx.ui.notify(message, level);
+    }
+  } catch {
+    // UI is optional and may be stale during session replacement.
+  }
+}
+
+function hasUiMethod<T extends keyof ExtensionContext["ui"]>(ctx: ExtensionContext, method: T): boolean {
+  try {
+    return Boolean(ctx.hasUI && typeof ctx.ui?.[method] === "function");
+  } catch {
+    return false;
+  }
+}
+
+async function refreshUsage(controller: { refresh(ctx: ExtensionContext): Promise<void> }, ctx: ExtensionContext): Promise<void> {
+  try {
+    await controller.refresh(ctx);
+  } catch (error) {
+    console.error(`[pi-lean-tool-display] Codex usage 刷新失败：${errorMessage(error)}`);
+  }
+}
+
+function clearUsage(controller: { clear(ctx: ExtensionContext): void }, ctx: ExtensionContext): void {
+  try {
+    controller.clear(ctx);
+  } catch (error) {
+    console.error(`[pi-lean-tool-display] Codex usage 清理失败：${errorMessage(error)}`);
+  }
+}
+
+export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
+  const [messageDisplay, toolRendering, codexUsageModule] = await Promise.all([
+    loadOptional("消息/思考显示", () => import("../src/message-display.ts")),
+    loadOptional("工具显示", () => import("../src/tool-rendering.ts")),
+    loadOptional("Codex usage", () => import("../src/codex-usage.ts")),
+  ]);
+
+  if (toolRendering) {
+    runOptional("工具容器分组", toolRendering.installContainerParentTracking);
+    runOptional("工具紧凑渲染", toolRendering.installToolRenderers);
+  }
+
+  let thinkingAvailable = false;
+  if (messageDisplay) {
+    runOptional("用户消息紧凑渲染", messageDisplay.installCompactUserMessage);
+    thinkingAvailable = runOptional("思考折叠", messageDisplay.installThinkingCollapse);
+  }
+
+  let codexUsage: { clear(ctx: ExtensionContext): void; refresh(ctx: ExtensionContext): Promise<void> } | undefined;
+
+  // The controller constructor is local and should not be allowed to affect
+  // display registration. Keep this small boundary explicit for old runtimes.
+  if (codexUsageModule) {
+    try {
+      codexUsage = codexUsageModule.createCodexUsageController();
+    } catch (error) {
+      console.error(`[pi-lean-tool-display] Codex usage controller 不可用：${errorMessage(error)}`);
+      codexUsage = undefined;
+    }
+  }
+
+  if (typeof pi.on === "function") {
+    pi.on("session_start", (_event, ctx) => {
+      try {
+        if (ctx.hasUI && ctx.ui?.theme) {
+          (globalThis as { __piLeanTheme?: ThemeLike }).__piLeanTheme = ctx.ui.theme as unknown as ThemeLike;
+          if (thinkingAvailable && hasUiMethod(ctx, "setHiddenThinkingLabel")) {
+            ctx.ui.setHiddenThinkingLabel(messageDisplay!.getThinkingLabel(messageDisplay!.getThinkingState().collapsed));
+          }
+        }
+      } catch (error) {
+        console.error(`[pi-lean-tool-display] 会话显示初始化失败：${errorMessage(error)}`);
+      }
+      if (codexUsage) void refreshUsage(codexUsage, ctx);
+    });
+
+    if (codexUsage) {
+      pi.on("model_select", (event, ctx) => {
+        try {
+          if (event.model.provider === "openai-codex") {
+            void refreshUsage(codexUsage!, ctx);
+          } else {
+            clearUsage(codexUsage!, ctx);
+          }
+        } catch (error) {
+          console.error(`[pi-lean-tool-display] 模型切换处理失败：${errorMessage(error)}`);
+        }
+      });
+
+      pi.on("session_shutdown", (_event, ctx) => clearUsage(codexUsage!, ctx));
+    }
+
+    if (messageDisplay) {
+      pi.on("message_update", (event, ctx) => {
+        try {
+          if (!ctx.hasUI || !ctx.ui?.theme) return;
+          if (messageDisplay.isAssistantMessage(event.message)) {
+            messageDisplay.labelThinking(event.message, ctx.ui.theme as unknown as ThemeLike);
+          }
+        } catch (error) {
+          console.error(`[pi-lean-tool-display] 思考内容标记失败：${errorMessage(error)}`);
+        }
+      });
+
+      pi.on("message_end", (event, ctx) => {
+        try {
+          if (!ctx.hasUI || !ctx.ui?.theme) return;
+          if (messageDisplay.isAssistantMessage(event.message)) {
+            messageDisplay.labelThinking(event.message, ctx.ui.theme as unknown as ThemeLike);
+          }
+        } catch (error) {
+          console.error(`[pi-lean-tool-display] 思考内容标记失败：${errorMessage(error)}`);
+        }
+      });
+
+      pi.on("context", (event) => {
+        try {
+          event.messages.splice(0, event.messages.length, ...messageDisplay.sanitizeThinking(event.messages));
+        } catch (error) {
+          console.error(`[pi-lean-tool-display] 思考内容清理失败：${errorMessage(error)}`);
+        }
+      });
+    }
+  }
+
+  if (!thinkingAvailable || typeof pi.registerCommand !== "function") return;
 
   pi.registerCommand("thinking", {
     description: "折叠或展开思考内容",
     handler: async (args, ctx) => {
-      const action = args.trim().toLowerCase();
-      const state = getThinkingState();
-      let collapsed: boolean;
+      try {
+        const action = args.trim().toLowerCase();
+        const state = messageDisplay!.getThinkingState();
+        let collapsed: boolean;
 
-      if (action === "" || action === "toggle") {
-        collapsed = !state.collapsed;
-      } else if (action === "show" || action === "on") {
-        collapsed = false;
-      } else if (action === "hide" || action === "off") {
-        collapsed = true;
-      } else {
-        ctx.ui.notify("用法：/thinking [toggle|show|hide]", "warning");
-        return;
+        if (action === "" || action === "toggle") {
+          collapsed = !state.collapsed;
+        } else if (action === "show" || action === "on") {
+          collapsed = false;
+        } else if (action === "hide" || action === "off") {
+          collapsed = true;
+        } else {
+          notify(ctx, "用法：/thinking [toggle|show|hide]", "warning");
+          return;
+        }
+
+        if (!hasUiMethod(ctx, "setHiddenThinkingLabel")) return;
+        messageDisplay!.setThinkingCollapsed(ctx, collapsed);
+        notify(ctx, `思考内容已${collapsed ? "折叠" : "展开"}`, "info");
+      } catch (error) {
+        console.error(`[pi-lean-tool-display] thinking 命令失败：${errorMessage(error)}`);
       }
-
-      setThinkingCollapsed(ctx, collapsed);
-      ctx.ui.notify(`思考内容已${collapsed ? "折叠" : "展开"}`, "info");
     },
   });
 
-  pi.registerShortcut("ctrl+shift+t", {
-    description: "折叠或展开思考内容",
-    handler: (ctx) => setThinkingCollapsed(ctx, !getThinkingState().collapsed),
-  });
-
-  pi.on("session_start", (_event, ctx) => {
-    (globalThis as { __piLeanTheme?: Theme }).__piLeanTheme = ctx.ui.theme as unknown as Theme;
-    ctx.ui.setHiddenThinkingLabel(getThinkingLabel(getThinkingState().collapsed));
-    void codexUsage.refresh(ctx);
-  });
-
-  pi.on("model_select", (event, ctx) => {
-    if (event.model.provider === CODEX_PROVIDER_ID) {
-      void codexUsage.refresh(ctx);
-    } else {
-      codexUsage.clear(ctx);
-    }
-  });
-
-  pi.on("session_shutdown", (_event, ctx) => {
-    codexUsage.clear(ctx);
-  });
-
-  pi.on("message_update", (event, ctx) => {
-    if (isAssistantMessage(event.message)) {
-      labelThinking(event.message, ctx.ui.theme as unknown as Theme);
-    }
-  });
-
-  pi.on("message_end", (event, ctx) => {
-    if (isAssistantMessage(event.message)) {
-      labelThinking(event.message, ctx.ui.theme as unknown as Theme);
-    }
-  });
-
-  pi.on("context", (event) => {
-    event.messages.splice(0, event.messages.length, ...sanitizeThinking(event.messages));
-  });
+  if (typeof pi.registerShortcut === "function") {
+    pi.registerShortcut("ctrl+shift+t", {
+      description: "折叠或展开思考内容",
+      handler: (ctx) => {
+        try {
+          if (hasUiMethod(ctx, "setHiddenThinkingLabel")) {
+            messageDisplay!.setThinkingCollapsed(ctx, !messageDisplay!.getThinkingState().collapsed);
+          }
+        } catch (error) {
+          console.error(`[pi-lean-tool-display] thinking 快捷键失败：${errorMessage(error)}`);
+        }
+      },
+    });
+  }
 }

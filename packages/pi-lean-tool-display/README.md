@@ -20,6 +20,6 @@ pi install ./packages/pi-lean-tool-display
 
 额度显示依赖当前 Pi 认证信息和网络请求；请求失败只清空状态，不影响其他显示功能。
 
-这个包通过 Pi 核心组件的 prototype patch 实现显示定制，依赖 `@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-tui` 的运行时版本兼容性。
+这个包通过 Pi 核心组件的 prototype patch 实现显示定制，依赖 `@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-tui` 的运行时版本兼容性。缺少或版本不兼容时，只跳过受影响的显示补丁、命令或 UI；Codex usage 和其他仍可加载的功能不阻断 Pi 启动。
 
 迁移完成并确认新包可用后，请停用或移走原 `~/.pi/agent/extensions/lean-tool-display`，避免旧目录与新包同时加载、重复注册命令和渲染补丁。
