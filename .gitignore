@@ -13,3 +13,5 @@ pnpm-debug.log*
 
 # Local code intelligence cache
 .codegraph/
+
+.tmp
