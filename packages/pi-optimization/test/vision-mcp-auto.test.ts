@@ -102,10 +102,18 @@ test("auto mode waits for a real model and announces the final state once", asyn
     hasUI: true,
     ui: { notify(message: string) { notificationState.values.push(message); } },
   };
-  await pi.emit("before_agent_start", {}, modelContext);
-  await pi.emit("before_agent_start", {}, modelContext);
+  const originalLog = console.log;
+  const logs: unknown[][] = [];
+  console.log = (...args: unknown[]) => logs.push(args);
+  try {
+    await pi.emit("before_agent_start", {}, modelContext);
+    await pi.emit("before_agent_start", {}, modelContext);
+  } finally {
+    console.log = originalLog;
+  }
   assert.deepEqual(pi.active, ["mcp_analyze_image"]);
   assert.equal(notificationState.values.length, 1);
+  assert.deepEqual(logs, []);
 });
 
 test("missing MCP tools and missing UI are safe no-ops", async () => {

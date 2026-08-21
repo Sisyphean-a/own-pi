@@ -148,8 +148,9 @@ function syncVisionTools(
     const message = wanted
       ? `识图工具已激活：${visionTools.join(", ")} | ${modelName}`
       : `识图工具已关闭：${visionTools.join(", ")} | ${modelName}`;
+    // UI notification is the user-facing announcement; do not also write the
+    // same text to stdout, because Pi renders both startup streams.
     notify(ctx, message, "info");
-    console.log(`[pi-optimization/vision-mcp-auto] ${message}`);
   } catch (error) {
     // Capability/version mismatches must not affect the session; a later
     // lifecycle event can retry after the MCP adapter recovers.

@@ -18,6 +18,6 @@
 - AI Bash 工具调用和手动 `!`/`!!` 命令都遵循 `PI_FIX_NUL_REDIRECT`；手动命令还受 `PI_FIX_NUL_USER_BASH` 控制。
 - 发现未加引号的 Here-doc/Here-string 时整条命令保持不变；文件描述符复制如 `2>&1` 不改写。
 - 视觉 MCP 工具没有注册、尚未注册或无法读取时不调用 active-tools API；后续 `before_agent_start` 仍可重试。
-- `auto` 模式在模型尚未确定时不把未知状态当作“不支持图片”，不调用 active-tools API，也不发送临时通知；模型确定后只在工具集合实际变化时提示一次。
+- `auto` 模式在模型尚未确定时不把未知状态当作“不支持图片”，不调用 active-tools API，也不发送临时通知；模型确定后只在工具集合实际变化时提示一次。状态变化只发送一条 UI 通知，不向 stdout 重复写相同内容。
 - 视觉模式变更写入 `~/.pi/agent/settings.json` 的 `vision-mcp-auto` 段；配置损坏时回到 `auto` 和默认工具后缀。
 - 可选能力失败只能禁用所依赖的逻辑或 UI，不能让 Pi 启动失败，也不能影响同包其他功能。
