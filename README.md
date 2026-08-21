@@ -82,3 +82,14 @@ pi install ./packages/pi-quick-panel
 ```
 
 详细配置见 [`packages/pi-quick-panel/README.md`](packages/pi-quick-panel/README.md)。
+
+## pi-lean-tool-display
+
+`pi-lean-tool-display` 用紧凑方式显示工具调用、用户消息和思考内容，并提供 Codex 5 小时额度状态。
+
+```bash
+pi -e ./packages/pi-lean-tool-display
+pi install ./packages/pi-lean-tool-display
+```
+
+详细说明见 [`packages/pi-lean-tool-display/README.md`](packages/pi-lean-tool-display/README.md)。

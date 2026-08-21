@@ -1,0 +1,37 @@
+{
+  "name": "pi-lean-tool-display",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Compact tool, user-message, and thinking display extension for pi",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "tool-rendering",
+    "tui"
+  ],
+  "files": [
+    "extensions/",
+    "src/"
+  ],
+  "scripts": {
+    "test": "node --test test/codex-usage.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  }
+}
