@@ -30,16 +30,6 @@ function runOptional(name: string, effect: () => void): boolean {
   }
 }
 
-function notify(ctx: ExtensionContext, message: string, level: "info" | "warning" | "error"): void {
-  try {
-    if (ctx.hasUI && typeof ctx.ui?.notify === "function") {
-      ctx.ui.notify(message, level);
-    }
-  } catch {
-    // UI is optional and may be stale during session replacement.
-  }
-}
-
 function hasUiMethod<T extends keyof ExtensionContext["ui"]>(ctx: ExtensionContext, method: T): boolean {
   try {
     return Boolean(ctx.hasUI && typeof ctx.ui?.[method] === "function");
@@ -159,48 +149,18 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
     }
   }
 
-  if (!thinkingAvailable || typeof pi.registerCommand !== "function") return;
+  if (!thinkingAvailable || typeof pi.registerShortcut !== "function") return;
 
-  pi.registerCommand("thinking", {
+  pi.registerShortcut("ctrl+shift+t", {
     description: "折叠或展开思考内容",
-    handler: async (args, ctx) => {
+    handler: (ctx) => {
       try {
-        const action = args.trim().toLowerCase();
-        const state = messageDisplay!.getThinkingState();
-        let collapsed: boolean;
-
-        if (action === "" || action === "toggle") {
-          collapsed = !state.collapsed;
-        } else if (action === "show" || action === "on") {
-          collapsed = false;
-        } else if (action === "hide" || action === "off") {
-          collapsed = true;
-        } else {
-          notify(ctx, "用法：/thinking [toggle|show|hide]", "warning");
-          return;
+        if (hasUiMethod(ctx, "setHiddenThinkingLabel")) {
+          messageDisplay!.setThinkingCollapsed(ctx, !messageDisplay!.getThinkingState().collapsed);
         }
-
-        if (!hasUiMethod(ctx, "setHiddenThinkingLabel")) return;
-        messageDisplay!.setThinkingCollapsed(ctx, collapsed);
-        notify(ctx, `思考内容已${collapsed ? "折叠" : "展开"}`, "info");
       } catch (error) {
-        console.error(`[pi-lean-tool-display] thinking 命令失败：${errorMessage(error)}`);
+        console.error(`[pi-lean-tool-display] thinking 快捷键失败：${errorMessage(error)}`);
       }
     },
   });
-
-  if (typeof pi.registerShortcut === "function") {
-    pi.registerShortcut("ctrl+shift+t", {
-      description: "折叠或展开思考内容",
-      handler: (ctx) => {
-        try {
-          if (hasUiMethod(ctx, "setHiddenThinkingLabel")) {
-            messageDisplay!.setThinkingCollapsed(ctx, !messageDisplay!.getThinkingState().collapsed);
-          }
-        } catch (error) {
-          console.error(`[pi-lean-tool-display] thinking 快捷键失败：${errorMessage(error)}`);
-        }
-      },
-    });
-  }
 }

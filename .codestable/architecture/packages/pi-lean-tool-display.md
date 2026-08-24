@@ -7,14 +7,14 @@
 ## 公开边界
 
 - 包入口：`package.json` 中 `pi.extensions` 声明的 `extensions/index.ts`。
-- 用户入口：`Ctrl+Shift+T` 快捷键和 `/thinking [toggle|show|hide]` 命令。
+- 用户入口：`Ctrl+Shift+T` 快捷键切换思考显示状态。
 - 显示行为：工具调用摘要、工具结果行数/错误/diff、连续工具分组、紧凑用户消息和思考标签。
 - Codex 状态：当前模型为 `openai-codex` 时使用 Pi 当前认证信息请求 Codex usage 接口；网络或认证失败只清空状态，不影响显示补丁。
 - 运行时依赖：`@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-tui` 由 Pi 运行时提供，作为 peer dependency，不在包内重复分发；消息显示、工具显示和 Codex usage 分开动态加载，缺失或不兼容时只隐藏受影响功能。
 
 ## 架构规则
 
-- `extensions/index.ts` 是组合根，只负责安装补丁、注册命令/快捷键和绑定 Pi 生命周期。
+- `extensions/index.ts` 是组合根，只负责安装补丁、注册快捷键和绑定 Pi 生命周期。
 - `src/message-display.ts` 拥有思考折叠、用户消息边框、思考标签和上下文清理规则。
 - `src/tool-rendering.ts` 拥有工具标题、参数摘要、结果压缩、diff 展示和连续工具分组规则。
 - `src/codex-usage.ts` 拥有认证头解析、usage 请求、轮询生命周期、请求竞态和 stale session context 防护。
