@@ -54,6 +54,52 @@ function clearUsage(controller: { clear(ctx: ExtensionContext): void }, ctx: Ext
   }
 }
 
+type IntervalClock = {
+  setInterval(callback: () => void, delayMs: number): ReturnType<typeof setInterval>;
+  clearInterval(timer: ReturnType<typeof setInterval>): void;
+};
+
+export function createThinkingIndicator(clock: IntervalClock = {
+  setInterval: (callback, delayMs) => setInterval(callback, delayMs),
+  clearInterval: (timer) => clearInterval(timer),
+}) {
+  let active = false;
+  let dotCount = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const listeners = new Set<() => void>();
+
+  const notify = () => {
+    for (const listener of listeners) listener();
+  };
+  const stopTimer = () => {
+    if (timer === undefined) return;
+    clock.clearInterval(timer);
+    timer = undefined;
+  };
+
+  return {
+    isActive: () => active,
+    getDotCount: () => dotCount,
+    onChange(callback: () => void) {
+      listeners.add(callback);
+      return () => listeners.delete(callback);
+    },
+    setActive(next: boolean) {
+      if (active === next) return;
+      active = next;
+      dotCount = 0;
+      stopTimer();
+      if (active) {
+        timer = clock.setInterval(() => {
+          dotCount = (dotCount + 1) % 4;
+          notify();
+        }, 1000);
+      }
+      notify();
+    },
+  };
+}
+
 export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
   const [messageDisplay, toolRendering, codexUsageModule, compactFooter] = await Promise.all([
     loadOptional("消息/思考显示", () => import("../src/message-display.ts")),
@@ -86,6 +132,7 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
   }
 
   let codexUsage: { clear(ctx: ExtensionContext): void; refresh(ctx: ExtensionContext): Promise<void> } | undefined;
+  const thinkingIndicator = createThinkingIndicator();
 
   // The controller constructor is local and should not be allowed to affect
   // display registration. Keep this small boundary explicit for old runtimes.
@@ -107,10 +154,20 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
             ctx.ui.setHiddenThinkingLabel(messageDisplay!.getThinkingLabel(messageDisplay!.getThinkingState().collapsed));
           }
           if (compactFooter && hasUiMethod(ctx, "setFooter")) {
-            runOptional("紧凑页脚", () => {
+            const footerInstalled = runOptional("紧凑页脚", () => {
               ctx.ui.setFooter((tui, theme, footerData) =>
-                compactFooter.create(ctx, tui, theme, footerData, compactFooter.widthUtils));
+                compactFooter.create(
+                  ctx,
+                  tui,
+                  theme,
+                  footerData,
+                  compactFooter.widthUtils,
+                  thinkingIndicator,
+                ));
             });
+            if (footerInstalled && hasUiMethod(ctx, "setWorkingVisible")) {
+              runOptional("内置工作指示器", () => ctx.ui.setWorkingVisible(false));
+            }
           }
         }
       } catch (error) {
@@ -131,9 +188,16 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
           console.error(`[pi-lean-tool-display] 模型切换处理失败：${errorMessage(error)}`);
         }
       });
-
-      pi.on("session_shutdown", (_event, ctx) => clearUsage(codexUsage!, ctx));
     }
+
+    pi.on("turn_start", () => thinkingIndicator.setActive(true));
+    pi.on("tool_execution_start", () => thinkingIndicator.setActive(false));
+    pi.on("turn_end", () => thinkingIndicator.setActive(false));
+    pi.on("agent_settled", () => thinkingIndicator.setActive(false));
+    pi.on("session_shutdown", (_event, ctx) => {
+      thinkingIndicator.setActive(false);
+      if (codexUsage) clearUsage(codexUsage, ctx);
+    });
 
     if (messageDisplay) {
       pi.on("message_update", (event, ctx) => {

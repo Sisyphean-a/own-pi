@@ -12,6 +12,9 @@ export type Theme = {
 type Patched<T> = T & Record<PropertyKey, unknown>;
 type AssistantComponent = {
   hideThinkingBlock: boolean;
+  hiddenThinkingLabel: string;
+  lastMessage?: unknown;
+  isStreaming: boolean;
   updateContent(message: unknown, isStreaming?: boolean): void;
 };
 type AssistantMessagePrototype = {
@@ -32,8 +35,9 @@ type ThinkingPatch = {
 
 const LEGACY_USER_PATCH = Symbol.for("pi.lean-tool-display.user-message.v1");
 const USER_PATCH = Symbol.for("pi.lean-tool-display.user-message.v2");
-const LEGACY_THINKING_PATCH = Symbol.for("pi.lean-tool-display.thinking.v1");
-const THINKING_PATCH = Symbol.for("pi.lean-tool-display.thinking.v2");
+const LEGACY_THINKING_PATCH_V1 = Symbol.for("pi.lean-tool-display.thinking.v1");
+const LEGACY_THINKING_PATCH_V2 = Symbol.for("pi.lean-tool-display.thinking.v2");
+const THINKING_PATCH = Symbol.for("pi.lean-tool-display.thinking.v3");
 const THINKING_STATE = Symbol.for("pi.lean-tool-display.thinking-state.v1");
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC133_PATTERN = /\x1b\]133;[ABC](?:\x07|\x1b\\)/g;
@@ -46,6 +50,13 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stripControlSequences(line: string): string {
   return line.replace(OSC133_PATTERN, "").replace(ANSI_PATTERN, "");
+}
+
+function withoutThinkingForDisplay(message: unknown): unknown {
+  const record = asRecord(message);
+  if (!Array.isArray(record.content)) return message;
+  const content = record.content.filter((block) => asRecord(block).type !== "thinking");
+  return content.length === record.content.length ? message : { ...record, content };
 }
 
 function makeUserBorder(theme: Theme, width: number): string {
@@ -104,42 +115,51 @@ export function getThinkingState(): ThinkingDisplayState {
 }
 
 export function getThinkingLabel(collapsed: boolean): string {
-  return collapsed ? "Thinking... (Ctrl+Shift+T expand)" : "Thinking...";
+  return collapsed ? "" : "Thinking...";
 }
 
 /**
- * Effect: makes the display-only thinking preference apply to historical and streaming assistant rows.
+ * Effect: collapsed thinking blocks are removed from historical and streaming assistant rows,
+ * including the spacer that Pi normally keeps for a hidden label.
  * Guarantee: the original message remains intact for context and can be shown again without data loss.
  *
- * Effect: pi 的 setHiddenThinkingLabel 会被 interactive mode 广播到所有已渲染消息组件,
- * 在此同步 hideThinkingBlock,使 toggle 即时展开/折叠历史消息,而不只改变标签文本。
+ * Effect: pi 的 setHiddenThinkingLabel 会被 interactive mode 广播到所有已渲染消息组件，
+ * 在此同步显示状态并用原始消息重建内容，使 toggle 即时展开或彻底隐藏历史思考。
  */
 export function installThinkingCollapse(): void {
   const prototype = AssistantMessageComponent.prototype as unknown as Patched<AssistantMessagePrototype>;
   const previousPatch = prototype[THINKING_PATCH] as ThinkingPatch | undefined;
   if (previousPatch) return;
 
-  const legacyPatch = prototype[LEGACY_THINKING_PATCH] as
+  const legacyPatchV2 = prototype[LEGACY_THINKING_PATCH_V2] as ThinkingPatch | undefined;
+  const legacyPatchV1 = prototype[LEGACY_THINKING_PATCH_V1] as
     | { originalUpdateContent?: AssistantMessagePrototype["updateContent"] }
     | undefined;
-  const originalUpdateContent = legacyPatch?.originalUpdateContent ?? prototype.updateContent;
-  const originalSetHiddenThinkingLabel = prototype.setHiddenThinkingLabel;
+  const originalUpdateContent = legacyPatchV2?.originalUpdateContent
+    ?? legacyPatchV1?.originalUpdateContent
+    ?? prototype.updateContent;
+  const originalSetHiddenThinkingLabel = legacyPatchV2?.originalSetHiddenThinkingLabel
+    ?? prototype.setHiddenThinkingLabel;
 
   prototype.updateContent = function updateLeanThinking(
     this: AssistantComponent,
     message: unknown,
     isStreaming?: boolean,
   ): void {
-    this.hideThinkingBlock = getThinkingState().collapsed;
-    originalUpdateContent.call(this, message, isStreaming);
+    const collapsed = getThinkingState().collapsed;
+    this.hideThinkingBlock = collapsed;
+    originalUpdateContent.call(this, collapsed ? withoutThinkingForDisplay(message) : message, isStreaming);
+    // Guarantee: keep the unmodified source for theme invalidation and later expansion.
+    this.lastMessage = message;
   };
 
   prototype.setHiddenThinkingLabel = function setLeanHiddenThinkingLabel(
     this: AssistantComponent,
     label: string,
   ): void {
+    this.hiddenThinkingLabel = label;
     this.hideThinkingBlock = getThinkingState().collapsed;
-    originalSetHiddenThinkingLabel.call(this, label);
+    if (this.lastMessage) this.updateContent(this.lastMessage, this.isStreaming);
   };
 
   prototype[THINKING_PATCH] = {

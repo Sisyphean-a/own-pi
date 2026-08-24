@@ -20,6 +20,12 @@ type WidthUtils = {
   truncateToWidth(text: string, width: number, ellipsis?: string): string;
 };
 
+type ThinkingIndicatorLike = {
+  isActive(): boolean;
+  getDotCount(): number;
+  onChange(callback: () => void): () => void;
+};
+
 type UsageTotals = {
   input: number;
   output: number;
@@ -183,17 +189,47 @@ function alignRight(
   return widthUtils.truncateToWidth(renderedLeft + padding + renderedRight, width);
 }
 
+function thinkingLeftCandidates(base: string, active: boolean, dotCount: number, theme: ThemeLike): string[] {
+  if (!active) return [base];
+  const normalizedDotCount = Math.max(0, Math.min(3, dotCount));
+  const dots = ".".repeat(normalizedDotCount);
+  // Guarantee: reserve all three dot cells so the footer does not reflow between frames.
+  const reservedDots = " ".repeat(3 - normalizedDotCount);
+  return [
+    base + theme.fg("accent", ` ● Thinking${dots}${reservedDots}`),
+    base + theme.fg("accent", " ●"),
+  ];
+}
+
+function fittingSummary(
+  leftCandidates: string[],
+  rightCandidates: string[],
+  width: number,
+  visibleWidth: WidthUtils["visibleWidth"],
+): { left: string; right: string } | undefined {
+  for (const left of leftCandidates) {
+    const right = fittingRight(rightCandidates, visibleWidth(left), width, visibleWidth);
+    if (right !== undefined) return { left, right };
+  }
+  return undefined;
+}
+
 export function createCompactFooter(
   ctx: ExtensionContext,
   tui: TuiLike,
   theme: ThemeLike,
   footerData: FooterDataLike,
   widthUtils: WidthUtils,
+  thinkingIndicator?: ThinkingIndicatorLike,
 ) {
-  const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
+  const unsubscribeBranch = footerData.onBranchChange(() => tui.requestRender());
+  const unsubscribeThinking = thinkingIndicator?.onChange(() => tui.requestRender()) ?? (() => {});
 
   return {
-    dispose: unsubscribe,
+    dispose() {
+      unsubscribeBranch();
+      unsubscribeThinking();
+    },
     invalidate() {},
     render(width: number): string[] {
       if (width <= 0) return [];
@@ -203,20 +239,32 @@ export function createCompactFooter(
       const identityStyled = theme.fg("dim", identity);
       const separator = theme.fg("dim", " | ");
       const trailingSeparator = theme.fg("dim", " |");
+      const thinkingActive = thinkingIndicator?.isActive() ?? false;
+      const thinkingDots = thinkingIndicator?.getDotCount() ?? 0;
       const combinedLeft = identityStyled + separator + stats + trailingSeparator;
       const candidates = rightCandidates(ctx, footerData);
-      const oneLineRight = fittingRight(candidates, widthUtils.visibleWidth(combinedLeft), width, widthUtils.visibleWidth);
+      const oneLine = fittingSummary(
+        thinkingLeftCandidates(combinedLeft, thinkingActive, thinkingDots, theme),
+        candidates,
+        width,
+        widthUtils.visibleWidth,
+      );
       const lines: string[] = [];
 
-      if (oneLineRight !== undefined) {
-        lines.push(alignRight(combinedLeft, oneLineRight, width, theme, widthUtils));
+      if (oneLine) {
+        lines.push(alignRight(oneLine.left, oneLine.right, width, theme, widthUtils));
       } else {
         lines.push(widthUtils.truncateToWidth(identityStyled, width, theme.fg("dim", "...")));
-        const statsGroup = stats + trailingSeparator;
-        const secondLineRight = fittingRight(candidates, widthUtils.visibleWidth(statsGroup), width, widthUtils.visibleWidth)
-          ?? candidates.at(-1)
-          ?? "no-model";
-        lines.push(alignRight(statsGroup, secondLineRight, width, theme, widthUtils));
+        const statsGroupCandidates = thinkingLeftCandidates(
+          stats + trailingSeparator,
+          thinkingActive,
+          thinkingDots,
+          theme,
+        );
+        const secondLine = fittingSummary(statsGroupCandidates, candidates, width, widthUtils.visibleWidth);
+        const secondLineLeft = secondLine?.left ?? statsGroupCandidates.at(-1) ?? stats;
+        const secondLineRight = secondLine?.right ?? candidates.at(-1) ?? "no-model";
+        lines.push(alignRight(secondLineLeft, secondLineRight, width, theme, widthUtils));
       }
 
       const statuses = Array.from(footerData.getExtensionStatuses().entries())

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createThinkingIndicator } from "../extensions/index.ts";
 import { createCompactFooter } from "../src/compact-footer.ts";
 
 const widthUtils = {
@@ -25,6 +26,8 @@ function fixture(
   usageOverrides: Record<string, unknown> = {},
   extraEntries: unknown[] = [],
   renderTheme = theme,
+  thinkingActive = false,
+  thinkingDots = 0,
 ) {
   const ctx = {
     cwd: "E:\\github\\own-pi",
@@ -62,7 +65,11 @@ function fixture(
   };
   const tui = { requestRender() {} };
 
-  return createCompactFooter(ctx as never, tui, renderTheme, footerData, widthUtils);
+  return createCompactFooter(ctx as never, tui, renderTheme, footerData, widthUtils, {
+    isActive: () => thinkingActive,
+    getDotCount: () => thinkingDots,
+    onChange: () => () => {},
+  });
 }
 
 test("combines workspace and usage on one line while preserving the status line", () => {
@@ -141,4 +148,75 @@ test("includes usage reported by tool results", () => {
   const lines = footer.render(180);
 
   assert.match(lines[0], /↑8\.0k ↓1\.0k/);
+});
+
+test("shows active thinking between statistics and the model", () => {
+  const footer = fixture(
+    new Map([["mcp", "MCP: 3 servers enabled"]]),
+    {},
+    [],
+    theme,
+    true,
+  );
+
+  const lines = footer.render(180);
+
+  assert.match(lines[0], /69\.5%\/272k \| ● Thinking\s+\(openai-codex\) gpt-5\.6-sol • high$/);
+  assert.equal(lines[1], "MCP: 3 servers enabled");
+});
+
+test("advances the thinking dots once per second and loops after three", () => {
+  let tick: (() => void) | undefined;
+  let cleared = false;
+  const indicator = createThinkingIndicator({
+    setInterval(callback, delayMs) {
+      assert.equal(delayMs, 1000);
+      tick = callback;
+      return 1 as never;
+    },
+    clearInterval() {
+      cleared = true;
+      tick = undefined;
+    },
+  });
+  const frames: number[] = [];
+  indicator.onChange(() => frames.push(indicator.getDotCount()));
+
+  indicator.setActive(true);
+  for (let index = 0; index < 4; index++) tick?.();
+
+  assert.deepEqual(frames, [0, 1, 2, 3, 0]);
+  indicator.setActive(false);
+  assert.equal(cleared, true);
+  assert.equal(indicator.isActive(), false);
+  assert.equal(indicator.getDotCount(), 0);
+});
+
+test("cycles zero to three dots after the thinking label", () => {
+  for (let dots = 0; dots <= 3; dots++) {
+    const footer = fixture(new Map(), {}, [], theme, true, dots);
+    const line = footer.render(180)[0] ?? "";
+    const marker = line.match(/\| (● Thinking\.*)\s+\(openai-codex\)/)?.[1];
+
+    assert.equal(marker, `● Thinking${".".repeat(dots)}`);
+  }
+});
+
+test("keeps a compact thinking mark between statistics and the model when narrow", () => {
+  const footer = fixture(new Map(), {}, [], theme, true);
+
+  const lines = footer.render(60);
+  const summaryLine = lines.at(-1) ?? "";
+
+  assert.match(summaryLine, /\| ●\s+gpt-5\.6-sol • high$/);
+  assert.doesNotMatch(summaryLine, /Thinking/);
+});
+
+test("does not reserve space when thinking is idle", () => {
+  const footer = fixture(new Map(), {}, [], theme, false);
+
+  const lines = footer.render(180);
+
+  assert.equal(lines.length, 1);
+  assert.doesNotMatch(lines.join("\n"), /Thinking/);
 });
