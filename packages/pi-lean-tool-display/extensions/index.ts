@@ -55,10 +55,23 @@ function clearUsage(controller: { clear(ctx: ExtensionContext): void }, ctx: Ext
 }
 
 export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
-  const [messageDisplay, toolRendering, codexUsageModule] = await Promise.all([
+  const [messageDisplay, toolRendering, codexUsageModule, compactFooter] = await Promise.all([
     loadOptional("消息/思考显示", () => import("../src/message-display.ts")),
     loadOptional("工具显示", () => import("../src/tool-rendering.ts")),
     loadOptional("Codex usage", () => import("../src/codex-usage.ts")),
+    loadOptional("紧凑页脚", async () => {
+      const [footer, tui] = await Promise.all([
+        import("../src/compact-footer.ts"),
+        import("@earendil-works/pi-tui"),
+      ]);
+      return {
+        create: footer.createCompactFooter,
+        widthUtils: {
+          visibleWidth: tui.visibleWidth,
+          truncateToWidth: tui.truncateToWidth,
+        },
+      };
+    }),
   ]);
 
   if (toolRendering) {
@@ -92,6 +105,12 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
           (globalThis as { __piLeanTheme?: ThemeLike }).__piLeanTheme = ctx.ui.theme as unknown as ThemeLike;
           if (thinkingAvailable && hasUiMethod(ctx, "setHiddenThinkingLabel")) {
             ctx.ui.setHiddenThinkingLabel(messageDisplay!.getThinkingLabel(messageDisplay!.getThinkingState().collapsed));
+          }
+          if (compactFooter && hasUiMethod(ctx, "setFooter")) {
+            runOptional("紧凑页脚", () => {
+              ctx.ui.setFooter((tui, theme, footerData) =>
+                compactFooter.create(ctx, tui, theme, footerData, compactFooter.widthUtils));
+            });
           }
         }
       } catch (error) {
