@@ -165,12 +165,12 @@ test("shows active thinking between statistics and the model", () => {
   assert.equal(lines[1], "MCP: 3 servers enabled");
 });
 
-test("advances the thinking glyph every 250ms and loops after four frames", () => {
+test("advances the thinking glyph every 125ms and loops after eight frames", () => {
   let tick: (() => void) | undefined;
   let cleared = false;
   const indicator = createThinkingIndicator({
     setInterval(callback, delayMs) {
-      assert.equal(delayMs, 250);
+      assert.equal(delayMs, 125);
       tick = callback;
       return 1 as never;
     },
@@ -183,21 +183,25 @@ test("advances the thinking glyph every 250ms and loops after four frames", () =
   indicator.onChange(() => frames.push(indicator.getFrameIndex()));
 
   indicator.setActive(true);
-  for (let index = 0; index < 4; index++) tick?.();
+  for (let index = 0; index < 8; index++) tick?.();
 
-  assert.deepEqual(frames, [0, 1, 2, 3, 0]);
+  assert.deepEqual(frames, [0, 1, 2, 3, 4, 5, 6, 7, 0]);
   indicator.setActive(false);
   assert.equal(cleared, true);
   assert.equal(indicator.isActive(), false);
   assert.equal(indicator.getFrameIndex(), 0);
 });
 
-test("cycles Claude-style thinking glyphs and theme colors", () => {
+test("cycles thinking glyphs and theme colors through a breathing loop", () => {
   const frames = [
     ["✻", "thinkingLow"],
     ["✢", "thinkingMedium"],
     ["✶", "thinkingHigh"],
-    ["·", "thinkingXhigh"],
+    ["✷", "thinkingXhigh"],
+    ["✸", "thinkingXhigh"],
+    ["✷", "thinkingHigh"],
+    ["✶", "thinkingMedium"],
+    ["✢", "thinkingLow"],
   ] as const;
 
   for (const [frameIndex, [glyph, tone]] of frames.entries()) {

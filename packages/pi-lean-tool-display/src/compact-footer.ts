@@ -193,7 +193,11 @@ const THINKING_FRAMES = [
   { glyph: "✻", tone: "thinkingLow" },
   { glyph: "✢", tone: "thinkingMedium" },
   { glyph: "✶", tone: "thinkingHigh" },
-  { glyph: "·", tone: "thinkingXhigh" },
+  { glyph: "✷", tone: "thinkingXhigh" },
+  { glyph: "✸", tone: "thinkingXhigh" },
+  { glyph: "✷", tone: "thinkingHigh" },
+  { glyph: "✶", tone: "thinkingMedium" },
+  { glyph: "✢", tone: "thinkingLow" },
 ] as const;
 
 function thinkingFrame(frameIndex: number) {

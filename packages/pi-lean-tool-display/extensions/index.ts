@@ -59,8 +59,8 @@ type IntervalClock = {
   clearInterval(timer: ReturnType<typeof setInterval>): void;
 };
 
-const THINKING_FRAME_INTERVAL_MS = 250;
-const THINKING_FRAME_COUNT = 4;
+const THINKING_FRAME_INTERVAL_MS = 125;
+const THINKING_FRAME_COUNT = 8;
 
 export function createThinkingIndicator(clock: IntervalClock = {
   setInterval: (callback, delayMs) => setInterval(callback, delayMs),
