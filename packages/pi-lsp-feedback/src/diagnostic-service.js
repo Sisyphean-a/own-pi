@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { LspClient } from "./lsp-client.js";
@@ -64,10 +65,33 @@ export class DiagnosticService {
     try {
       const client = await this.getClient(server, root, signal);
       const outcome = await client.checkDocument(absolutePath, text, server.languageId, signal);
+
+      // Rule: diagnostics for a snapshot already replaced on disk are never
+      // allowed to reach the feedback tracker.
+      let currentText;
+      try {
+        currentText = await readFile(absolutePath, "utf8");
+      } catch (error) {
+        return result(absolutePath, "unconfirmed", {
+          serverId: server.id,
+          root,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (currentText !== text) {
+        return result(absolutePath, "unconfirmed", {
+          serverId: server.id,
+          root,
+          reason: "file changed while diagnostics were collected",
+          contentHash: hashText(currentText),
+        });
+      }
+
       return result(absolutePath, outcome.status, {
         serverId: server.id,
         root,
         diagnostics: outcome.diagnostics,
+        contentHash: hashText(text),
       });
     } catch (error) {
       if (error?.name === "AbortError") {
@@ -162,4 +186,8 @@ export class DiagnosticService {
 
 function result(filePath, status, fields = {}) {
   return { filePath, status, diagnostics: [], ...fields };
+}
+
+function hashText(text) {
+  return createHash("sha256").update(text, "utf8").digest("hex");
 }

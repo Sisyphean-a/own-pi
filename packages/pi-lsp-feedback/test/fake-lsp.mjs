@@ -63,27 +63,51 @@ function handle(message) {
   }
   if (message.method === "textDocument/diagnostic") {
     const text = documents.get(message.params.textDocument.uri) ?? "";
-    send({
+    const items = text.includes("parse-cascade")
+      ? [
+          {
+            severity: 1,
+            code: 1005,
+            source: "fake-lsp",
+            message: "Type expected.",
+            range: {
+              start: { line: 0, character: 0 },
+              end: { line: 0, character: 1 },
+            },
+          },
+          {
+            severity: 1,
+            code: 1005,
+            source: "fake-lsp",
+            message: "'>' expected.",
+            range: {
+              start: { line: 0, character: 1 },
+              end: { line: 0, character: 2 },
+            },
+          },
+        ]
+      : text.includes("broken")
+        ? [
+            {
+              severity: 1,
+              code: "FAKE100",
+              source: "fake-lsp",
+              message: "broken source",
+              range: {
+                start: { line: 0, character: 0 },
+                end: { line: 0, character: 6 },
+              },
+            },
+          ]
+        : [];
+    const response = {
       jsonrpc: "2.0",
       id: message.id,
-      result: {
-        kind: "full",
-        items: text.includes("broken")
-          ? [
-              {
-                severity: 1,
-                code: "FAKE100",
-                source: "fake-lsp",
-                message: "broken source",
-                range: {
-                  start: { line: 0, character: 0 },
-                  end: { line: 0, character: 6 },
-                },
-              },
-            ]
-          : [],
-      },
-    });
+      result: { kind: "full", items },
+    };
+    const delay = Number.parseInt(process.env.FAKE_DIAGNOSTIC_DELAY_MS ?? "0", 10);
+    if (delay > 0) setTimeout(() => send(response), delay);
+    else send(response);
     return;
   }
   if (message.method === "shutdown") {

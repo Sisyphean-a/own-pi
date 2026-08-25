@@ -78,6 +78,79 @@ test("injects diagnostics from a successful write at turn end", async () => {
   await handlers.get("session_shutdown")({}, ctx);
 });
 
+test("suppresses a transient parser cascade until it repeats", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-parser-cascade-"));
+  const filePath = path.join(workspace, "src", "sample.ts");
+  await mkdir(path.join(workspace, ".pi"), { recursive: true });
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await Promise.all([
+    writeFile(path.join(workspace, "package.json"), "{}\n"),
+    writeFile(filePath, "parse-cascade\n"),
+    mkdir(path.join(workspace, "node_modules", "@types", "node"), { recursive: true }),
+    writeFile(
+      path.join(workspace, ".pi", "lsp-feedback.json"),
+      JSON.stringify({
+        servers: {
+          typescript: {
+            command: process.execPath,
+            args: [fakeServer],
+            rootMarkers: ["package.json"],
+          },
+        },
+      }),
+    ),
+  ]);
+
+  const handlers = new Map();
+  const messages = [];
+  const pi = {
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
+    registerCommand() {},
+    sendMessage(message, options) {
+      messages.push({ message, options });
+    },
+  };
+  const ctx = {
+    cwd: workspace,
+    hasUI: false,
+    signal: undefined,
+    isProjectTrusted: () => true,
+    ui: { setStatus() {}, notify() {} },
+  };
+
+  lspFeedbackExtension(pi);
+  await handlers.get("session_start")({}, ctx);
+  const edit = (toolCallId) =>
+    handlers.get("tool_result")(
+      {
+        toolName: "write",
+        toolCallId,
+        input: { path: filePath },
+        details: {},
+        isError: false,
+      },
+      ctx,
+    );
+
+  await edit("edit-1");
+  handlers.get("turn_end")(turnEnd("edit-1"), ctx);
+  assert.deepEqual(messages, []);
+
+  await edit("edit-2");
+  handlers.get("turn_end")(turnEnd("edit-2"), ctx);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0].message.content, /Type expected/);
+
+  await writeFile(filePath, "clean\n");
+  await edit("edit-3");
+  handlers.get("turn_end")(turnEnd("edit-3"), ctx);
+  assert.equal(messages.length, 1);
+
+  await handlers.get("session_shutdown")({}, ctx);
+});
+
 test("suppresses unchanged diagnostics across turns and re-reports after a clean result", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-diagnostic-dedupe-"));
   const filePath = path.join(workspace, "src", "sample.ts");

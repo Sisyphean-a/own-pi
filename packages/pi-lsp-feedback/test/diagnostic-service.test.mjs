@@ -137,6 +137,45 @@ test("runs a configured TypeScript language server and returns its diagnostics",
   );
 });
 
+test("discards diagnostics when the file changes during the check", async (t) => {
+  const previousDelay = process.env.FAKE_DIAGNOSTIC_DELAY_MS;
+  process.env.FAKE_DIAGNOSTIC_DELAY_MS = "100";
+  t.after(() => {
+    if (previousDelay === undefined) delete process.env.FAKE_DIAGNOSTIC_DELAY_MS;
+    else process.env.FAKE_DIAGNOSTIC_DELAY_MS = previousDelay;
+  });
+
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-stale-check-"));
+  const filePath = path.join(workspace, "src", "sample.ts");
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await Promise.all([
+    writeFile(path.join(workspace, "package.json"), "{}\n"),
+    writeFile(filePath, "broken\n"),
+    mkdir(nodeTypesDir(workspace), WITH_NODE_TYPES),
+  ]);
+
+  const service = new DiagnosticService({
+    workspaceRoot: workspace,
+    servers: resolveServerOverrides({
+      typescript: {
+        command: process.execPath,
+        args: [fakeServer],
+        rootMarkers: ["package.json"],
+      },
+    }).servers,
+  });
+  t.after(() => service.close());
+
+  const check = service.checkFile(filePath);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await writeFile(filePath, "clean\n");
+
+  const outcome = await check;
+  assert.equal(outcome.status, "unconfirmed");
+  assert.deepEqual(outcome.diagnostics, []);
+  assert.match(outcome.reason, /file changed while diagnostics were collected/);
+});
+
 test("installs gopls only for trusted projects when it is unavailable", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-managed-go-"));
   const filePath = path.join(workspace, "main.go");

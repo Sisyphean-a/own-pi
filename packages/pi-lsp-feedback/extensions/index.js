@@ -6,11 +6,13 @@ export default function lspFeedbackExtension(pi) {
   let service;
   let feedback;
   let configurationIssue;
+  let editSequence = 0;
 
   async function startSession(ctx) {
     await service?.close();
     feedback?.clear();
     configurationIssue = undefined;
+    editSequence = 0;
 
     const trusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : false;
     const config = await loadProjectConfiguration(ctx.cwd, trusted);
@@ -37,13 +39,14 @@ export default function lspFeedbackExtension(pi) {
     if (typeof filePath !== "string" || filePath.length === 0) return;
     if (!service) await startSession(ctx);
 
+    const currentEditSequence = ++editSequence;
     const outcome = await service.checkFile(filePath, ctx.signal);
     if (outcome.status === "unsupported") return;
     const toolCallId =
       typeof event.toolCallId === "string" && event.toolCallId.length > 0
         ? event.toolCallId
         : Symbol("lsp-feedback-tool-result");
-    feedback.add(toolCallId, outcome);
+    feedback.add(toolCallId, { ...outcome, editSequence: currentEditSequence });
     if (ctx.hasUI) ctx.ui.setStatus("lsp-feedback", statusLine(outcome));
   });
 
@@ -63,6 +66,7 @@ export default function lspFeedbackExtension(pi) {
   pi.on("session_shutdown", async () => {
     feedback?.clear();
     feedback = undefined;
+    editSequence = 0;
     await service?.close();
     service = undefined;
   });

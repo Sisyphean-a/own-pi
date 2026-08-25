@@ -2,6 +2,15 @@ import path from "node:path";
 
 const DEFAULT_MAX_DIAGNOSTICS = 20;
 const REPORTABLE_SEVERITY = 2;
+const PARSER_CASCADE_MIN_DIAGNOSTICS = 2;
+const PARSE_DIAGNOSTIC_PATTERNS = [
+  /^(?:type|identifier|expression|property assignment|declaration or statement|operator|class member)\s+expected\.?$/i,
+  /^[^a-z0-9]*expected\.?$/i,
+  /^unterminated\b/i,
+  /^unexpected token\b/i,
+  /\bno corresponding closing tag\b/i,
+  /^invalid syntax\b/i,
+];
 
 export class FeedbackTracker {
   constructor({ workspaceRoot, maxDiagnostics = DEFAULT_MAX_DIAGNOSTICS }) {
@@ -9,6 +18,8 @@ export class FeedbackTracker {
     this.maxDiagnostics = maxDiagnostics;
     this.pending = new Map();
     this.lastReported = new Map();
+    this.stabilityCandidates = new Map();
+    this.stabilizedDiagnostics = new Map();
   }
 
   add(toolCallId, outcome) {
@@ -16,10 +27,11 @@ export class FeedbackTracker {
   }
 
   flush(event) {
-    const outcomes = this.selectTurnOutcomes(event);
+    const entries = this.selectTurnEntries(event);
     this.pending.clear();
+    for (const [, outcome] of entries) this.observeOutcome(outcome);
 
-    const { content, reported } = this.format(outcomes);
+    const { content, reported } = this.format(this.latestOutcomes(entries));
     for (const [filePath, fingerprint] of reported) {
       this.lastReported.set(filePath, fingerprint);
     }
@@ -29,29 +41,71 @@ export class FeedbackTracker {
   clear() {
     this.pending.clear();
     this.lastReported.clear();
+    this.stabilityCandidates.clear();
+    this.stabilizedDiagnostics.clear();
   }
 
   selectTurnOutcomes(event) {
+    return this.latestOutcomes(this.selectTurnEntries(event));
+  }
+
+  selectTurnEntries(event) {
     const entries = [...this.pending.entries()];
     const toolResults = event?.toolResults;
     const currentToolCallIds = Array.isArray(toolResults)
       ? new Set(toolResults.map((result) => result?.toolCallId).filter(Boolean))
       : undefined;
-    const latestByFile = new Map();
+    return entries
+      .filter(([toolCallId]) => !currentToolCallIds || currentToolCallIds.has(toolCallId))
+      .sort(([, left], [, right]) => compareEditSequence(left, right));
+  }
 
-    for (const [toolCallId, outcome] of entries) {
-      if (currentToolCallIds && !currentToolCallIds.has(toolCallId)) continue;
-      latestByFile.set(outcome.filePath, outcome);
+  latestOutcomes(entries) {
+    const latestByFile = new Map();
+    for (const [, outcome] of entries) {
+      const previous = latestByFile.get(outcome.filePath);
+      if (!previous || isLaterOutcome(previous, outcome)) {
+        latestByFile.set(outcome.filePath, outcome);
+      }
     }
     return [...latestByFile.values()];
+  }
+
+  observeOutcome(outcome) {
+    // Rule: uncertain freshness and parser cascades stay local until the same
+    // content snapshot produces the same diagnostic set again.
+    const diagnostics = reportableDiagnostics(outcome);
+    const unstable = unstableDiagnostics(outcome, diagnostics);
+    if (unstable.length === 0) {
+      this.stabilityCandidates.delete(outcome.filePath);
+      this.stabilizedDiagnostics.delete(outcome.filePath);
+      return;
+    }
+
+    const fingerprint = stabilityFingerprint(outcome, unstable);
+    if (this.stabilityCandidates.get(outcome.filePath) === fingerprint) {
+      this.stabilizedDiagnostics.set(outcome.filePath, fingerprint);
+    } else {
+      this.stabilityCandidates.set(outcome.filePath, fingerprint);
+      this.stabilizedDiagnostics.delete(outcome.filePath);
+    }
   }
 
   format(outcomes) {
     const candidates = [];
     for (const outcome of outcomes) {
-      const diagnostics = reportableDiagnostics(outcome);
+      const allDiagnostics = reportableDiagnostics(outcome);
+      const diagnostics = visibleDiagnostics(
+        outcome,
+        allDiagnostics,
+        this.stabilizedDiagnostics,
+      );
       if (diagnostics.length === 0) {
-        if (outcome.status === "confirmed") this.lastReported.delete(outcome.filePath);
+        // Held diagnostics are not evidence that the file is clean. Only a
+        // confirmed empty result may clear the session-level dedupe state.
+        if (allDiagnostics.length === 0 && outcome.status === "confirmed") {
+          this.lastReported.delete(outcome.filePath);
+        }
         continue;
       }
 
@@ -96,6 +150,20 @@ export class FeedbackTracker {
   }
 }
 
+function compareEditSequence(left, right) {
+  if (Number.isInteger(left.editSequence) && Number.isInteger(right.editSequence)) {
+    return left.editSequence - right.editSequence;
+  }
+  return 0;
+}
+
+function isLaterOutcome(previous, next) {
+  if (Number.isInteger(previous.editSequence) && Number.isInteger(next.editSequence)) {
+    return next.editSequence >= previous.editSequence;
+  }
+  return true;
+}
+
 function reportableDiagnostics(outcome) {
   const seen = new Set();
   return outcome.diagnostics
@@ -106,6 +174,37 @@ function reportableDiagnostics(outcome) {
       seen.add(key);
       return true;
     });
+}
+
+function visibleDiagnostics(outcome, diagnostics, stabilizedDiagnostics) {
+  const unstable = unstableDiagnostics(outcome, diagnostics);
+  if (unstable.length === 0) return diagnostics;
+
+  const fingerprint = stabilityFingerprint(outcome, unstable);
+  if (stabilizedDiagnostics.get(outcome.filePath) === fingerprint) return diagnostics;
+
+  const held = new Set(unstable);
+  return diagnostics.filter((diagnostic) => !held.has(diagnostic));
+}
+
+function unstableDiagnostics(outcome, diagnostics) {
+  if (outcome.status !== "confirmed") return diagnostics;
+  const parseDiagnostics = diagnostics.filter(isLikelyParseDiagnostic);
+  return parseDiagnostics.length >= PARSER_CASCADE_MIN_DIAGNOSTICS
+    ? parseDiagnostics
+    : [];
+}
+
+function isLikelyParseDiagnostic(diagnostic) {
+  const message = normalizeDiagnosticMessage(diagnostic.message);
+  return PARSE_DIAGNOSTIC_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function stabilityFingerprint(outcome, diagnostics) {
+  return JSON.stringify([
+    outcome.contentHash ?? "",
+    diagnosticFingerprint(outcome, diagnostics),
+  ]);
 }
 
 function diagnosticFingerprint(outcome, diagnostics) {
