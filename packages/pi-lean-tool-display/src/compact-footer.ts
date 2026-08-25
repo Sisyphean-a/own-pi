@@ -22,7 +22,7 @@ type WidthUtils = {
 
 type ThinkingIndicatorLike = {
   isActive(): boolean;
-  getDotCount(): number;
+  getFrameIndex(): number;
   onChange(callback: () => void): () => void;
 };
 
@@ -189,15 +189,27 @@ function alignRight(
   return widthUtils.truncateToWidth(renderedLeft + padding + renderedRight, width);
 }
 
-function thinkingLeftCandidates(base: string, active: boolean, dotCount: number, theme: ThemeLike): string[] {
+const THINKING_FRAMES = [
+  { glyph: "✻", tone: "thinkingLow" },
+  { glyph: "✢", tone: "thinkingMedium" },
+  { glyph: "✶", tone: "thinkingHigh" },
+  { glyph: "·", tone: "thinkingXhigh" },
+] as const;
+
+function thinkingFrame(frameIndex: number) {
+  if (!Number.isFinite(frameIndex)) return THINKING_FRAMES[0];
+  const normalized = Math.trunc(frameIndex) % THINKING_FRAMES.length;
+  return THINKING_FRAMES[normalized < 0 ? normalized + THINKING_FRAMES.length : normalized];
+}
+
+function thinkingLeftCandidates(base: string, active: boolean, frameIndex: number, theme: ThemeLike): string[] {
   if (!active) return [base];
-  const normalizedDotCount = Math.max(0, Math.min(3, dotCount));
-  const dots = ".".repeat(normalizedDotCount);
-  // Guarantee: reserve all three dot cells so the footer does not reflow between frames.
-  const reservedDots = " ".repeat(3 - normalizedDotCount);
+  const frame = thinkingFrame(frameIndex);
+  const glyph = theme.fg(frame.tone, frame.glyph);
+  // Guarantee: each frame occupies one glyph cell and keeps the footer from reflowing.
   return [
-    base + theme.fg("accent", ` ● Thinking${dots}${reservedDots}`),
-    base + theme.fg("accent", " ●"),
+    base + ` ${glyph}${theme.fg("accent", " Thinking…")}`,
+    base + ` ${glyph}`,
   ];
 }
 
@@ -240,11 +252,11 @@ export function createCompactFooter(
       const separator = theme.fg("dim", " | ");
       const trailingSeparator = theme.fg("dim", " |");
       const thinkingActive = thinkingIndicator?.isActive() ?? false;
-      const thinkingDots = thinkingIndicator?.getDotCount() ?? 0;
+      const thinkingFrameIndex = thinkingIndicator?.getFrameIndex() ?? 0;
       const combinedLeft = identityStyled + separator + stats + trailingSeparator;
       const candidates = rightCandidates(ctx, footerData);
       const oneLine = fittingSummary(
-        thinkingLeftCandidates(combinedLeft, thinkingActive, thinkingDots, theme),
+        thinkingLeftCandidates(combinedLeft, thinkingActive, thinkingFrameIndex, theme),
         candidates,
         width,
         widthUtils.visibleWidth,
@@ -258,7 +270,7 @@ export function createCompactFooter(
         const statsGroupCandidates = thinkingLeftCandidates(
           stats + trailingSeparator,
           thinkingActive,
-          thinkingDots,
+          thinkingFrameIndex,
           theme,
         );
         const secondLine = fittingSummary(statsGroupCandidates, candidates, width, widthUtils.visibleWidth);

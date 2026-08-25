@@ -27,7 +27,7 @@ function fixture(
   extraEntries: unknown[] = [],
   renderTheme = theme,
   thinkingActive = false,
-  thinkingDots = 0,
+  thinkingFrame = 0,
 ) {
   const ctx = {
     cwd: "E:\\github\\own-pi",
@@ -67,7 +67,7 @@ function fixture(
 
   return createCompactFooter(ctx as never, tui, renderTheme, footerData, widthUtils, {
     isActive: () => thinkingActive,
-    getDotCount: () => thinkingDots,
+    getFrameIndex: () => thinkingFrame,
     onChange: () => () => {},
   });
 }
@@ -161,16 +161,16 @@ test("shows active thinking between statistics and the model", () => {
 
   const lines = footer.render(180);
 
-  assert.match(lines[0], /69\.5%\/272k \| ● Thinking\s+\(openai-codex\) gpt-5\.6-sol • high$/);
+  assert.match(lines[0], /69\.5%\/272k \| ✻ Thinking…\s+\(openai-codex\) gpt-5\.6-sol • high$/);
   assert.equal(lines[1], "MCP: 3 servers enabled");
 });
 
-test("advances the thinking dots once per second and loops after three", () => {
+test("advances the thinking glyph every 250ms and loops after four frames", () => {
   let tick: (() => void) | undefined;
   let cleared = false;
   const indicator = createThinkingIndicator({
     setInterval(callback, delayMs) {
-      assert.equal(delayMs, 1000);
+      assert.equal(delayMs, 250);
       tick = callback;
       return 1 as never;
     },
@@ -180,7 +180,7 @@ test("advances the thinking dots once per second and loops after three", () => {
     },
   });
   const frames: number[] = [];
-  indicator.onChange(() => frames.push(indicator.getDotCount()));
+  indicator.onChange(() => frames.push(indicator.getFrameIndex()));
 
   indicator.setActive(true);
   for (let index = 0; index < 4; index++) tick?.();
@@ -189,16 +189,30 @@ test("advances the thinking dots once per second and loops after three", () => {
   indicator.setActive(false);
   assert.equal(cleared, true);
   assert.equal(indicator.isActive(), false);
-  assert.equal(indicator.getDotCount(), 0);
+  assert.equal(indicator.getFrameIndex(), 0);
 });
 
-test("cycles zero to three dots after the thinking label", () => {
-  for (let dots = 0; dots <= 3; dots++) {
-    const footer = fixture(new Map(), {}, [], theme, true, dots);
-    const line = footer.render(180)[0] ?? "";
-    const marker = line.match(/\| (● Thinking\.*)\s+\(openai-codex\)/)?.[1];
+test("cycles Claude-style thinking glyphs and theme colors", () => {
+  const frames = [
+    ["✻", "thinkingLow"],
+    ["✢", "thinkingMedium"],
+    ["✶", "thinkingHigh"],
+    ["·", "thinkingXhigh"],
+  ] as const;
 
-    assert.equal(marker, `● Thinking${".".repeat(dots)}`);
+  for (const [frameIndex, [glyph, tone]] of frames.entries()) {
+    const tones = new Map<string, string>();
+    const recordingTheme = {
+      fg(color: string, text: string) {
+        tones.set(text, color);
+        return text;
+      },
+    };
+    const footer = fixture(new Map(), {}, [], recordingTheme, true, frameIndex);
+    const line = footer.render(180)[0] ?? "";
+
+    assert.match(line, new RegExp(`\\| ${glyph} Thinking…\\s+\\(openai-codex\\)`));
+    assert.equal(tones.get(glyph), tone);
   }
 });
 
@@ -208,7 +222,7 @@ test("keeps a compact thinking mark between statistics and the model when narrow
   const lines = footer.render(60);
   const summaryLine = lines.at(-1) ?? "";
 
-  assert.match(summaryLine, /\| ●\s+gpt-5\.6-sol • high$/);
+  assert.match(summaryLine, /\| ✻\s+gpt-5\.6-sol • high$/);
   assert.doesNotMatch(summaryLine, /Thinking/);
 });
 

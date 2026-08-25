@@ -59,12 +59,15 @@ type IntervalClock = {
   clearInterval(timer: ReturnType<typeof setInterval>): void;
 };
 
+const THINKING_FRAME_INTERVAL_MS = 250;
+const THINKING_FRAME_COUNT = 4;
+
 export function createThinkingIndicator(clock: IntervalClock = {
   setInterval: (callback, delayMs) => setInterval(callback, delayMs),
   clearInterval: (timer) => clearInterval(timer),
 }) {
   let active = false;
-  let dotCount = 0;
+  let frameIndex = 0;
   let timer: ReturnType<typeof setInterval> | undefined;
   const listeners = new Set<() => void>();
 
@@ -79,7 +82,7 @@ export function createThinkingIndicator(clock: IntervalClock = {
 
   return {
     isActive: () => active,
-    getDotCount: () => dotCount,
+    getFrameIndex: () => frameIndex,
     onChange(callback: () => void) {
       listeners.add(callback);
       return () => listeners.delete(callback);
@@ -87,13 +90,13 @@ export function createThinkingIndicator(clock: IntervalClock = {
     setActive(next: boolean) {
       if (active === next) return;
       active = next;
-      dotCount = 0;
+      frameIndex = 0;
       stopTimer();
       if (active) {
         timer = clock.setInterval(() => {
-          dotCount = (dotCount + 1) % 4;
+          frameIndex = (frameIndex + 1) % THINKING_FRAME_COUNT;
           notify();
-        }, 1000);
+        }, THINKING_FRAME_INTERVAL_MS);
       }
       notify();
     },
