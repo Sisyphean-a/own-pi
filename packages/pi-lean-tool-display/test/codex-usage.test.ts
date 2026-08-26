@@ -87,7 +87,7 @@ test("publishes both five-hour and weekly Codex usage percentages", async (t) =>
 
   assert.deepEqual(fake.statusCalls(), [{
     id: "lean-codex-usage",
-    value: "codex [70% | 55%]",
+    value: "codex [70%|55%]",
   }]);
   controller.clear(fake.ctx);
 });

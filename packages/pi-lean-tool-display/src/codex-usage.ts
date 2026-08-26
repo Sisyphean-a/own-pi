@@ -57,7 +57,7 @@ function formatCodexUsage(usage: CodexUsage): string {
   const windows: string[] = [];
   if (usage.fiveHour !== undefined) windows.push(`${usage.fiveHour}%`);
   if (usage.weekly !== undefined) windows.push(`${usage.weekly}%`);
-  return `codex [${windows.join(" | ")}]`;
+  return `codex [${windows.join("|")}]`;
 }
 
 async function fetchCodexUsage(ctx: ExtensionContext): Promise<CodexUsage | undefined> {
