@@ -2,7 +2,7 @@
 
 ## 职责
 
-`pi-lean-tool-display` 是一个 Pi TUI 显示扩展，通过集中管理的 prototype patch 提供紧凑工具调用、用户消息和思考内容渲染，通过自定义 footer 提供自适应紧凑状态布局，并显示 Codex 5 小时窗口的剩余额度。
+`pi-lean-tool-display` 是一个 Pi TUI 显示扩展，通过集中管理的 prototype patch 提供紧凑工具调用、用户消息和思考内容渲染，通过自定义 footer 提供自适应紧凑状态布局，并显示 Codex 5 小时和周窗口的剩余百分比。
 
 ## 公开边界
 
@@ -18,7 +18,7 @@
 - `src/message-display.ts` 拥有思考折叠、折叠占位移除、用户消息边框和上下文清理规则。
 - `src/tool-rendering.ts` 拥有工具标题、参数摘要、结果压缩、diff 展示和连续工具分组规则。
 - `src/compact-footer.ts` 拥有仓库/分支、累计用量、上下文、模型、扩展状态和实时思考标记的格式化与响应式重排；入口只负责绑定回合状态并在 TUI 会话中装配 footer。
-- `src/codex-usage.ts` 拥有认证头解析、usage 请求、轮询生命周期、请求竞态和 stale session context 防护。
+- `src/codex-usage.ts` 拥有认证头解析、usage 请求、5 小时与周窗口解析、轮询生命周期、请求竞态和 stale session context 防护。
 - 所有 prototype patch 都通过 `Symbol.for` 标记，重复加载时复用或替换已知旧补丁，避免同一进程重复包裹方法。
 - usage 轮询是 best-effort 外部 IO；会话替换、reload、网络错误和非 Codex 模型都不能让 Pi 进程抛出未处理异常。
 

@@ -11,6 +11,11 @@ type CodexUsageController = {
   refresh(ctx: ExtensionContext): Promise<void>;
 };
 
+type CodexUsage = {
+  fiveHour?: number;
+  weekly?: number;
+};
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -33,15 +38,29 @@ function isCtxActive(ctx: ExtensionContext): boolean {
   }
 }
 
-function getCodexRemainingPercent(payload: unknown): number | undefined {
-  const rateLimit = asRecord(asRecord(payload).rate_limit);
-  const primaryWindow = asRecord(rateLimit.primary_window);
-  const usedPercent = primaryWindow.used_percent;
+function getWindowRemainingPercent(value: unknown): number | undefined {
+  const usedPercent = asRecord(value).used_percent;
   if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) return undefined;
   return Math.round(100 - Math.min(100, Math.max(0, usedPercent)));
 }
 
-async function fetchCodexRemainingPercent(ctx: ExtensionContext): Promise<number | undefined> {
+function getCodexUsage(payload: unknown): CodexUsage | undefined {
+  const rateLimit = asRecord(asRecord(payload).rate_limit);
+  const usage: CodexUsage = {
+    fiveHour: getWindowRemainingPercent(rateLimit.primary_window),
+    weekly: getWindowRemainingPercent(rateLimit.secondary_window),
+  };
+  return usage.fiveHour === undefined && usage.weekly === undefined ? undefined : usage;
+}
+
+function formatCodexUsage(usage: CodexUsage): string {
+  const windows: string[] = [];
+  if (usage.fiveHour !== undefined) windows.push(`${usage.fiveHour}%`);
+  if (usage.weekly !== undefined) windows.push(`${usage.weekly}%`);
+  return `codex [${windows.join(" | ")}]`;
+}
+
+async function fetchCodexUsage(ctx: ExtensionContext): Promise<CodexUsage | undefined> {
   if (ctx.model?.provider !== CODEX_PROVIDER_ID) return undefined;
 
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
@@ -58,7 +77,7 @@ async function fetchCodexRemainingPercent(ctx: ExtensionContext): Promise<number
   try {
     const response = await fetch(CODEX_USAGE_URL, { headers, signal: controller.signal });
     if (!response.ok) return undefined;
-    return getCodexRemainingPercent(await response.json());
+    return getCodexUsage(await response.json());
   } finally {
     clearTimeout(timeout);
   }
@@ -111,11 +130,11 @@ export function createCodexUsageController(): CodexUsageController {
         return;
       }
 
-      const remaining = await fetchCodexRemainingPercent(ctx);
+      const usage = await fetchCodexUsage(ctx);
       if (request !== requestId || ctx.model?.provider !== CODEX_PROVIDER_ID) return;
-      const value = remaining === undefined
+      const value = usage === undefined
         ? undefined
-        : ctx.ui.theme.fg("dim", `codex ${remaining}% 5h`);
+        : ctx.ui.theme.fg("dim", formatCodexUsage(usage));
       ctx.ui.setStatus(CODEX_USAGE_STATUS_ID, value);
     } catch {
       // Failure: ctx 失效（stale）时永久停止；网络等瞬时错误清空状态后由 finally 重排重试。

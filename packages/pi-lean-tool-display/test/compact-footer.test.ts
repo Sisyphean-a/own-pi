@@ -75,7 +75,7 @@ function fixture(
 test("combines workspace and usage on one line while preserving the status line", () => {
   const footer = fixture(new Map([
     ["mcp", "MCP: 3 servers enabled"],
-    ["lean-codex-usage", "codex 81% 5h"],
+    ["lean-codex-usage", "codex [81%]"],
   ]));
 
   const lines = footer.render(180);
@@ -85,7 +85,7 @@ test("combines workspace and usage on one line while preserving the status line"
   assert.match(lines[0], /↑1\.2M ↓15k \[67\.6%\] 69\.5%\/272k \|/);
   assert.match(lines[0], /\(openai-codex\) gpt-5\.6-sol • high$/);
   assert.doesNotMatch(lines[0], /E:\\github|R2\.5M|CH|\$|\(sub\)|\(auto\)/);
-  assert.equal(lines[1], "codex 81% 5h MCP: 3 servers enabled");
+  assert.equal(lines[1], "codex [81%] MCP: 3 servers enabled");
 });
 
 test("uses subtle neighboring theme colors to distinguish the statistics", () => {

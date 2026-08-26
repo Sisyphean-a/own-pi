@@ -46,10 +46,14 @@ function makeFakeContext(options: { provider?: string } = {}): FakeContext {
   };
 }
 
-function usageResponse(usedPercent = 30): Response {
-  return new Response(JSON.stringify({
-    rate_limit: { primary_window: { used_percent: usedPercent } },
-  }), { status: 200 });
+function usageResponse(usedPercent = 30, weeklyUsedPercent?: number): Response {
+  const rateLimit: Record<string, unknown> = {
+    primary_window: { used_percent: usedPercent },
+  };
+  if (weeklyUsedPercent !== undefined) {
+    rateLimit.secondary_window = { used_percent: weeklyUsedPercent };
+  }
+  return new Response(JSON.stringify({ rate_limit: rateLimit }), { status: 200 });
 }
 
 function installFetch(
@@ -70,7 +74,21 @@ test("publishes the remaining Codex usage percentage", async (t) => {
 
   await controller.refresh(fake.ctx);
 
-  assert.deepEqual(fake.statusCalls(), [{ id: "lean-codex-usage", value: "codex 70% 5h" }]);
+  assert.deepEqual(fake.statusCalls(), [{ id: "lean-codex-usage", value: "codex [70%]" }]);
+  controller.clear(fake.ctx);
+});
+
+test("publishes both five-hour and weekly Codex usage percentages", async (t) => {
+  installFetch(t, async () => usageResponse(30, 45));
+  const fake = makeFakeContext();
+  const controller = createCodexUsageController();
+
+  await controller.refresh(fake.ctx);
+
+  assert.deepEqual(fake.statusCalls(), [{
+    id: "lean-codex-usage",
+    value: "codex [70% | 55%]",
+  }]);
   controller.clear(fake.ctx);
 });
 
@@ -119,7 +137,7 @@ test("swallows transient network errors and permits a later refresh", async (t) 
   await controller.refresh(fake.ctx);
 
   assert.equal(fetchCount, 2);
-  assert.equal(fake.statusCalls().at(-1)?.value, "codex 55% 5h");
+  assert.equal(fake.statusCalls().at(-1)?.value, "codex [55%]");
   controller.clear(fake.ctx);
 });
 

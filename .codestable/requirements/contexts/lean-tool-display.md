@@ -13,7 +13,7 @@
 - **实时思考标记**：模型回合进行时显示在 footer 摘要行的统计数值与模型之间、进入工具执行或回合结束后隐藏的 Claude 风格动态活动状态。
 - **紧凑 footer**：把仓库身份、累计用量、上下文、实时思考标记和模型压缩到优先单行显示的底部状态区；扩展状态保持独立行。
 - **stale session context**：会话替换或 reload 后仍被旧定时器/请求持有的失效 `ExtensionContext`。
-- **Codex usage 状态**：当前 `openai-codex` 模型 5 小时窗口的剩余百分比状态栏信息。
+- **Codex usage 状态**：当前 `openai-codex` 模型 5 小时窗口和周窗口的剩余百分比状态栏信息。
 
 ## 稳定规则
 
@@ -23,7 +23,7 @@
 - 工具标题优先使用注册元数据和可识别的主参数；read 显示文件名/相对路径与行范围，edit/write 保留 diff 或新增行数，普通工具结果默认压缩为摘要。
 - 连续可见工具调用合并间距；`write` 作为独立边界。不可见子项不会打断可见工具组。
 - 紧凑 footer 只显示工作目录末级名称和 Git 分支；空间足够时用 `|` 把仓库身份、统计、实时思考标记和右对齐模型分组，统计保留输入/输出、cache write、方括号 cache hit 与上下文，并使用跟随主题的低饱和近似色区分类别；输入/输出共用 `thinkingLow`（内置 dark 主题为 `#5f87af`），上下文超过 70%/90% 时仍改用 warning/error。只有完整摘要确实放不下时才拆成两行。cache read token 数、金额和 `(auto)` 不显示，扩展状态始终保持独立行。
-- Codex usage 请求只在当前 provider 为 `openai-codex` 且能取得认证头时执行；失败、超时、非 Codex 模型或 stale context 不得抛出未处理异常，也不得继续注册旧轮询。
+- Codex usage 将接口 `rate_limit.primary_window` 映射为 5 小时额度、`rate_limit.secondary_window` 映射为周额度，并只显示实际返回且可解析的窗口；请求只在当前 provider 为 `openai-codex` 且能取得认证头时执行；失败、超时、非 Codex 模型或 stale context 不得抛出未处理异常，也不得继续注册旧轮询。
 - 包不重复分发 Pi 核心运行时依赖；核心包由 Pi 提供并通过 peer dependency 声明。
 
 ## 非目标
