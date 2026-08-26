@@ -15,7 +15,7 @@
     "src/"
   ],
   "scripts": {
-    "test": "node --test test/skills.test.ts"
+    "test": "node --test test/*.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

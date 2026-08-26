@@ -65,11 +65,13 @@ export class QuickPanel {
   private readonly tui: { requestRender(): void };
   private readonly onSelect: (result: PickerResult) => void;
   private readonly onCancel: () => void;
+  private readonly onDispose: () => void;
   private readonly border: (text: string) => string;
   private readonly filters = emptyFilters();
   private selectList: SelectList;
   private tab: PickerTab = "skills";
   private isFocused = false;
+  private codexUsage: string | undefined;
 
   constructor(
     skills: Skill[],
@@ -83,12 +85,14 @@ export class QuickPanel {
     tui: { requestRender(): void },
     onSelect: (result: PickerResult) => void,
     onCancel: () => void,
+    onDispose: () => void = () => {},
   ) {
     this.theme = theme;
     this.keybindings = keybindings;
     this.tui = tui;
     this.onSelect = onSelect;
     this.onCancel = onCancel;
+    this.onDispose = onDispose;
     this.skillsByName = new Map(skills.map((skill) => [skill.name, skill]));
     this.modelsByKey = new Map(models.map((model) => [modelKey(model), model]));
     this.combosByName = new Map(combos.map((combo) => [combo.name, combo]));
@@ -158,10 +162,24 @@ export class QuickPanel {
     this.filterInput.focused = value;
   }
 
+  dispose(): void {
+    this.onDispose();
+  }
+
+  setCodexUsage(value: string | undefined): void {
+    if (this.codexUsage === value) return;
+    this.codexUsage = value;
+    this.container.invalidate();
+    this.tui.requestRender();
+  }
+
   render(width: number): string[] {
+    const innerWidth = width - 2;
+    // Text reserves one cell on each side; align the two footer groups within
+    // its actual content width so the usage block cannot wrap at minWidth.
+    this.help.setText(this.renderHelp(Math.max(1, innerWidth - 2)));
     if (width < 4) return this.container.render(width);
 
-    const innerWidth = width - 2;
     const horizontal = "─".repeat(innerWidth);
     const content = this.container.render(innerWidth).map((line) => {
       const clipped = truncateToWidth(line, innerWidth, "");
@@ -241,11 +259,26 @@ export class QuickPanel {
         : this.theme.fg("muted", label);
     });
     this.tabs.setText(tabs.join(this.theme.fg("muted", "  │  ")));
+  }
 
-    const help = this.tab === "combos" && this.items.combos.length === 0
+  private helpText(): string {
+    return this.tab === "combos" && this.items.combos.length === 0
       ? "暂无组合 · 配置 quick-panel.json 后重新打开"
       : "←→ 切换 Tab · 输入筛选 · ↑↓ 选择 · Enter 确认 · Esc 取消";
-    this.help.setText(this.theme.fg("dim", help));
+  }
+
+  private renderHelp(width: number): string {
+    const left = this.theme.fg("dim", this.helpText());
+    if (!this.codexUsage) return truncateToWidth(left, width, "");
+
+    const right = this.theme.fg("dim", this.codexUsage);
+    const rightWidth = visibleWidth(right);
+    if (rightWidth >= width) return truncateToWidth(right, width, "");
+
+    const leftLimit = Math.max(0, width - rightWidth - 2);
+    const renderedLeft = truncateToWidth(left, leftLimit, "");
+    const padding = " ".repeat(Math.max(2, width - visibleWidth(renderedLeft) - rightWidth));
+    return truncateToWidth(renderedLeft + padding + right, width, "");
   }
 
   private filterItems(): void {

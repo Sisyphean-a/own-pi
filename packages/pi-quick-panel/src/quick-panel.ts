@@ -1,11 +1,16 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { fetchCodexUsage, formatCodexUsage } from "./codex-usage.ts";
 import { loadCombos } from "./combos.ts";
 import { QuickPanel } from "./quick-panel-ui.ts";
 import { createSkillDirective, getSkills } from "./skills.ts";
 import type { Combo } from "./combos.ts";
 import type { PickerResult, Skill } from "./types.ts";
+
+function sameModel(left: Model<Api> | undefined, right: Model<Api> | undefined): boolean {
+  return left?.provider === right?.provider && left?.id === right?.id;
+}
 
 function getModels(ctx: ExtensionContext): Model<Api>[] {
   const current = ctx.model;
@@ -85,25 +90,57 @@ export async function showQuickPanel(pi: ExtensionAPI, ctx: ExtensionContext): P
     return;
   }
 
-  const result = await ctx.ui.custom<PickerResult | undefined>(
-    (tui, theme, keybindings, done) => new QuickPanel(
-      skills,
-      models,
-      ctx.model,
-      ctx.thinkingLevel,
-      thinkingLevels,
-      combos,
-      theme,
-      keybindings,
-      tui,
-      done,
-      () => done(undefined),
-    ),
-    {
-      overlay: true,
-      overlayOptions: { width: "80%", minWidth: 56, maxHeight: "70%", margin: 1 },
-    },
-  );
+  // Codex usage is optional: let the panel open immediately and fill the footer
+  // when the official-account request completes.
+  const usageModel = ctx.model;
+  const usageAbort = new AbortController();
+  const usagePromise = fetchCodexUsage(ctx, usageAbort.signal).catch(() => undefined);
+  let closed = false;
+  let completed = false;
+  let result: PickerResult | undefined;
+  try {
+    result = await ctx.ui.custom<PickerResult | undefined>(
+      (tui, theme, keybindings, done) => {
+        let panel: QuickPanel;
+        const finish = (selection: PickerResult | undefined = undefined): void => {
+          if (completed) return;
+          completed = true;
+          closed = true;
+          usageAbort.abort();
+          done(selection);
+        };
+
+        panel = new QuickPanel(
+          skills,
+          models,
+          ctx.model,
+          ctx.thinkingLevel,
+          thinkingLevels,
+          combos,
+          theme,
+          keybindings,
+          tui,
+          finish,
+          finish,
+          finish,
+        );
+        void usagePromise.then((usage) => {
+          if (closed || usage === undefined || !sameModel(ctx.model, usageModel)) return;
+          panel.setCodexUsage(formatCodexUsage(usage));
+        }).catch(() => {
+          // The usage indicator is optional and must not reject the panel.
+        });
+        return panel;
+      },
+      {
+        overlay: true,
+        overlayOptions: { width: "80%", minWidth: 56, maxHeight: "70%", margin: 1 },
+      },
+    );
+  } finally {
+    closed = true;
+    usageAbort.abort();
+  }
 
   if (!result) return;
 
