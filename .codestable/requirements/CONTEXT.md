@@ -7,7 +7,7 @@
 | `context:lsp-feedback` | 代理编辑文件后的 LSP 诊断反馈 | `pi-lsp-feedback` | [lsp-feedback](contexts/lsp-feedback.md) |
 | `context:quick-panel` | Pi TUI 中的技能、模型、思考等级和组合选择 | `pi-quick-panel` | [quick-panel](contexts/quick-panel.md) |
 | `context:lean-tool-display` | Pi TUI 中的紧凑工具、消息和思考显示 | `pi-lean-tool-display` | [lean-tool-display](contexts/lean-tool-display.md) |
-| `context:pi-optimization` | Pi Bash 重定向修复和视觉 MCP 自动开关 | `pi-optimization` | [pi-optimization](contexts/pi-optimization.md) |
+| `context:pi-optimization` | Pi Bash 重定向修复、视觉 MCP 自动开关和扩展包无感更新 | `pi-optimization` | [pi-optimization](contexts/pi-optimization.md) |
 
 目前没有单独的工作区业务领域；可选扩展依赖是跨包架构契约，权威记录见 [可选扩展依赖](../architecture/shared/optional-extension-dependencies.md)。`package:pi-lsp-feedback`、`package:pi-quick-panel`、`package:pi-lean-tool-display` 和 `package:pi-optimization` 分别是各自领域的实现边界。
 

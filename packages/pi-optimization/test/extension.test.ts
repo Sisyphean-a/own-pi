@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import piOptimization from "../extensions/index.ts";
 
-test("loads both optimizations as independent, non-fatal features", async () => {
+test("loads all optimizations as independent, non-fatal features", async () => {
   const events = new Set<string>();
   const commands = new Set<string>();
   const pi = {

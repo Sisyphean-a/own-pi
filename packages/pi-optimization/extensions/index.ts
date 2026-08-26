@@ -6,7 +6,7 @@ function errorMessage(error: unknown): string {
 
 async function activateFeature(
   name: string,
-  load: () => Promise<{ default?: (pi: ExtensionAPI) => void }>,
+  load: () => Promise<{ default?: (pi: ExtensionAPI) => void | Promise<void> }>,
   pi: ExtensionAPI,
 ): Promise<void> {
   try {
@@ -16,7 +16,7 @@ async function activateFeature(
       console.error(`[pi-optimization] ${name} 未导出有效入口，已跳过`);
       return;
     }
-    activate(pi);
+    await activate(pi);
   } catch (error) {
     // Rule: optional feature failure must not reject the package factory or block
     // the other optimization feature from being registered.
@@ -34,6 +34,11 @@ export default async function piOptimization(pi: ExtensionAPI): Promise<void> {
     activateFeature(
       "vision-mcp-auto",
       () => import("../src/vision-mcp-auto.ts"),
+      pi,
+    ),
+    activateFeature(
+      "auto-extension-update",
+      () => import("../src/auto-extension-update.ts"),
       pi,
     ),
   ]);

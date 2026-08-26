@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Additional optimization extensions for pi",
+  "description": "Pi optimizations for shell redirection, vision tools, and silent extension updates",
   "keywords": [
     "pi-package",
     "pi-extension",
     "optimization",
     "nul-redirect",
-    "vision-mcp"
+    "vision-mcp",
+    "auto-update"
   ],
   "files": [
     "extensions/",

@@ -37,7 +37,7 @@ pi install ./packages/pi-lean-tool-display
 
 ## pi-optimization
 
-Pi 增强优化扩展，合并 `nul` 重定向修复和按模型能力自动开关视觉 MCP 工具。
+Pi 增强优化扩展，合并 `nul` 重定向修复、按模型能力自动开关视觉 MCP 工具，以及无感更新扩展包。
 
 ```bash
 pi -e ./packages/pi-optimization
