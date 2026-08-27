@@ -64,7 +64,7 @@ test("formats Codex percentages with five-hour time and weekly date resets", () 
     },
   };
 
-  assert.equal(formatCodexUsage(usage), "codex [ 50%  19:23 ] [ 78%  08/26 ]");
+  assert.equal(formatCodexUsage(usage), "codex [ 50%  19:23 ] [ 78%  08-26 ]");
 });
 
 test("fetches official OAuth usage with only the required Codex identity headers", async (t) => {
@@ -109,7 +109,7 @@ test("fetches official OAuth usage with only the required Codex identity headers
   assert.equal(requestHeaders?.get("chatgpt-account-id"), ACCOUNT_ID);
   assert.equal(requestHeaders?.get("originator"), "pi");
   assert.equal(requestHeaders?.has("x-private-provider-header"), false);
-  assert.equal(formatCodexUsage(usage!), "codex [ 50%  19:23 ] [ 78%  08/26 ]");
+  assert.equal(formatCodexUsage(usage!), "codex [ 50%  19:23 ] [ 78%  08-26 ]");
 
   const nonOAuthUsage = await fetchCodexUsage(makeContext({ oauth: false }));
   assert.equal(nonOAuthUsage, undefined);

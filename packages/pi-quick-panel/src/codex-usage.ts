@@ -87,7 +87,7 @@ function formatResetAt(resetAt: number, kind: "time" | "date"): string | undefin
   const date = new Date(resetAt * 1000);
   return kind === "time"
     ? `${pad(date.getHours())}:${pad(date.getMinutes())}`
-    : `${pad(date.getMonth() + 1)}/${pad(date.getDate())}`;
+    : `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 function formatWindow(window: CodexUsageWindow, resetKind: "time" | "date"): string | undefined {
