@@ -402,7 +402,7 @@ function isMcpTool(component: ToolComponent): boolean {
 }
 
 function canJoinToolGroup(component: ToolComponent): boolean {
-  return component.toolName !== "write";
+  return component.toolName !== "write" && component.toolName !== "edit";
 }
 
 function isAdjacentToToolGroup(component: ToolComponent): boolean {
@@ -417,7 +417,7 @@ function removeTrailingBlankLines(lines: string[]): void {
 }
 
 /**
- * Effect: groups consecutive visible tool rows regardless of tool type; write remains standalone.
+ * Effect: groups consecutive visible tool rows; edit and write remain standalone.
  * Guarantee: invisible rows do not split a group, while visible non-tool rows do.
  */
 export function installContainerParentTracking(): void {

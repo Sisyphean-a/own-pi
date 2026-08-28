@@ -21,7 +21,7 @@
 - 实时思考标记只在模型回合进行时显示：宽屏在 footer 摘要行的统计数值与右对齐模型之间显示 `✻ Thinking…`，图标按 `✻`、`✢`、`✶`、`✷`、`✸`、`✷`、`✶`、`✢` 的呼吸式顺序每 125ms 切换一帧并循环一秒，颜色沿 `thinkingLow`、`thinkingMedium`、`thinkingHigh`、`thinkingXhigh` 渐强后反向渐弱；窄屏只保留同一动态图标，固定一个字形单元避免布局抖动。工具开始执行、回合结束、代理稳定或会话关闭时停止计时并隐藏。安装自定义 footer 成功后，内置 working 行隐藏，避免重复状态。
 - 思考显示处理只影响 TUI；上下文清理只移除展示控制序列和重复的 `Thinking:` 前缀，不改其他消息内容。
 - 工具标题优先使用注册元数据和可识别的主参数；read 显示文件名/相对路径与行范围，edit/write 保留 diff 或新增行数，普通工具结果默认压缩为摘要。
-- 连续可见工具调用合并间距；`write` 作为独立边界。不可见子项不会打断可见工具组。
+- 连续可见工具调用合并间距；`edit` 和 `write` 作为独立边界。不可见子项不会打断可见工具组。
 - 紧凑 footer 只显示工作目录末级名称和 Git 分支；空间足够时用 `|` 把仓库身份、统计、实时思考标记和右对齐模型分组，统计保留输入/输出、cache write、方括号 cache hit 与上下文，并使用跟随主题的低饱和近似色区分类别；输入/输出共用 `thinkingLow`（内置 dark 主题为 `#5f87af`），上下文超过 70%/90% 时仍改用 warning/error。只有完整摘要确实放不下时才拆成两行。cache read token 数、金额和 `(auto)` 不显示，扩展状态始终保持独立行。
 - Codex usage 将接口 `rate_limit.primary_window` 映射为 5 小时额度、`rate_limit.secondary_window` 映射为周额度，并只显示实际返回且可解析的窗口；请求只在当前 provider 为 `openai-codex` 且能取得认证头时执行；失败、超时、非 Codex 模型或 stale context 不得抛出未处理异常，也不得继续注册旧轮询。
 - 包不重复分发 Pi 核心运行时依赖；核心包由 Pi 提供并通过 peer dependency 声明。
