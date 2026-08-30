@@ -1,0 +1,33 @@
+{
+  "name": "pi-wait",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Schedule a Pi prompt without calling the AI before its due time",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "scheduler",
+    "delayed-prompt"
+  ],
+  "files": [
+    "extensions/",
+    "src/"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  }
+}

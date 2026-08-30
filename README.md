@@ -1,6 +1,6 @@
 # own-pi
 
-本仓库维护四个可独立安装的 Pi 扩展包。下面的命令都在仓库根目录运行。
+本仓库维护五个可独立安装的 Pi 扩展包。下面的命令都在仓库根目录运行。
 
 ## pi-lsp-feedback
 
@@ -45,5 +45,16 @@ pi install ./packages/pi-optimization
 ```
 
 详见 [`packages/pi-optimization/README.md`](packages/pi-optimization/README.md)。
+
+## pi-wait
+
+定时消息扩展。`/wait <时间>` 会在本地保存下一条任务，到点后才把它交给 AI；等待期间不发起模型请求。
+
+```bash
+pi -e ./packages/pi-wait
+pi install ./packages/pi-wait
+```
+
+详见 [`packages/pi-wait/README.md`](packages/pi-wait/README.md)。
 
 所有包对可选外部能力采用软依赖：缺少对应插件或运行时 API 时只停用受影响的逻辑，不阻断 Pi 或其他扩展启动。
