@@ -16,7 +16,7 @@
 - `extensions/index.js` 负责 Pi 生命周期集成、诊断服务装配、展示和状态报告；反馈选择与格式化由 `src/feedback.js` 集中负责。
 - `config.js` 负责受信任项目覆盖的一次读取、校验和合并；未知服务器、未知字段和字段类型错误进入 `issues`，由扩展以警告展示。
 - `DiagnosticService` 接收已解析的服务器清单，负责文件分类、根目录解析、客户端复用和标准化结果；客户端缓存键为 `<server id>:<root>`。
-- `LspClient` 负责一个 JSON-RPC 服务器进程，并通过请求队列串行化文档检查；`DiagnosticService` 在检查前后核对文件内容，丢弃检查期间已变化的快照。
+- `LspClient` 负责一个 JSON-RPC 服务器进程，并通过请求队列串行化文档检查；它不缓存文档正文，按最近使用顺序最多跟踪 128 个文件 URI，淘汰无等待者的 URI 时发送 `textDocument/didClose` 并清除对应协议状态；`DiagnosticService` 在检查前后核对文件内容，丢弃检查期间已变化的快照。
 - `FeedbackTracker` 对未确认诊断和解析级联实施稳定性门禁：只在同一内容快照的诊断重复出现后反馈，并继续按轮次、文件和语义去重。
 - `servers.js` 是内置语言映射、根目录标记、包内与本地命令查找、以及受信任覆盖项解析的规则来源。内置服务器在缺少项目标记时不再回退到工作区根（`fallbackToWorkspace: false`）；TypeScript/JavaScript 在 `findNodeTypesRoot` 解析不到 `@types/node` 时判为不可用，不启动服务器（`needsNodeTypes`）。
 - `managed-server-installer.js` 负责受信任项目中 `gopls` 的一次性托管安装；项目未受信任时不会调用安装器。

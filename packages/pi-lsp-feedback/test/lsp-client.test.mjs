@@ -8,7 +8,7 @@ import { LspClient } from "../src/lsp-client.js";
 
 const fakeServer = path.join(import.meta.dirname, "fake-lsp.mjs");
 
-async function startClient(env = {}, serverId = "fake") {
+async function startClient(env = {}, serverId = "fake", options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-feedback-"));
   return LspClient.start({
     command: process.execPath,
@@ -17,6 +17,7 @@ async function startClient(env = {}, serverId = "fake") {
     serverId,
     initializationOptions: undefined,
     env,
+    ...options,
   });
 }
 
@@ -36,6 +37,41 @@ test("does not send a queued check after it is cancelled", async (t) => {
     (error) => error?.name === "AbortError",
   );
   assert.equal(client.documents.size, 0);
+});
+
+test("bounds per-file state and evicts the least recently checked document", async (t) => {
+  const client = await startClient({}, "fake", { maxTrackedDocuments: 1 });
+  t.after(() => client.close());
+  const firstPath = path.join(client.root, "first.ts");
+  const secondPath = path.join(client.root, "second.ts");
+  const firstRawUri = pathToFileURL(firstPath).href;
+  const secondRawUri = pathToFileURL(secondPath).href;
+  const firstUri = process.platform === "win32" ? firstRawUri.toLowerCase() : firstRawUri;
+  const secondUri = process.platform === "win32" ? secondRawUri.toLowerCase() : secondRawUri;
+
+  await client.checkDocument(firstPath, "clean", "typescript");
+  const firstVersion = client.documents.get(firstUri).version;
+  assert.equal("text" in client.documents.get(firstUri), false);
+
+  await client.checkDocument(secondPath, "clean", "typescript");
+
+  assert.equal(client.documents.size, 1);
+  assert.equal(client.documents.has(firstUri), false);
+  assert.equal(client.documents.has(secondUri), true);
+  assert.equal(client.publications.has(firstUri), false);
+  assert.equal(client.latestPublicationVersions.has(firstUri), false);
+  assert.equal(client.typeScriptDiagnosticsAttempted.has(firstUri), false);
+  assert.equal(client.documents.get(secondUri).version > firstVersion, true);
+
+  const reopened = await client.checkDocument(firstPath, "broken", "typescript");
+  assert.equal(reopened.status, "confirmed");
+  assert.deepEqual(
+    reopened.diagnostics.map((diagnostic) => diagnostic.code),
+    ["FAKE100"],
+  );
+  assert.equal(client.documents.size, 1);
+  assert.equal(client.documents.has(firstUri), true);
+  assert.equal(client.documents.has(secondUri), false);
 });
 
 test("cancels an in-flight diagnostic request", async (t) => {

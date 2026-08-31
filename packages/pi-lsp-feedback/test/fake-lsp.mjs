@@ -90,6 +90,10 @@ function handle(message) {
     }
     return;
   }
+  if (message.method === "textDocument/didClose") {
+    documents.delete(message.params.textDocument.uri);
+    return;
+  }
   if (message.method === "workspace/executeCommand") {
     const uri = [...documents.keys()][0];
     const text = uri ? documents.get(uri) ?? "" : "";

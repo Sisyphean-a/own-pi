@@ -12,6 +12,8 @@ const DIAGNOSTIC_TIMEOUT_MS = 2_500;
 // A cold TypeScript project can take longer to initialize than the regular
 // push-publication window. Its custom diagnostics request has its own bound.
 const TYPESCRIPT_DIAGNOSTIC_TIMEOUT_MS = 30_000;
+// LSP clients are reused for a workspace, so bound per-file protocol state.
+const MAX_TRACKED_DOCUMENTS = 128;
 
 export class LspClient {
   static async start(options) {
@@ -25,18 +27,35 @@ export class LspClient {
     }
   }
 
-  constructor({ command, args, root, serverId, initializationOptions, signal }) {
+  constructor({
+    command,
+    args,
+    root,
+    serverId,
+    initializationOptions,
+    signal,
+    maxTrackedDocuments = MAX_TRACKED_DOCUMENTS,
+  }) {
     this.command = command;
     this.args = args;
     this.root = root;
     this.serverId = serverId;
     this.initializationOptions = initializationOptions;
     this.initializationSignal = signal;
+    this.maxTrackedDocuments =
+      Number.isInteger(maxTrackedDocuments) && maxTrackedDocuments > 0
+        ? maxTrackedDocuments
+        : MAX_TRACKED_DOCUMENTS;
     this.documents = new Map();
     this.publications = new Map();
     this.latestPublicationVersions = new Map();
     this.waiters = new Map();
     this.typeScriptDiagnosticsAttempted = new Set();
+    this.documentAccess = new Map();
+    this.evictedUris = new Map();
+    // Keep versions monotonic across evictions so late versioned publications
+    // from a closed document cannot be accepted after it is reopened.
+    this.nextDocumentVersion = 0;
     this.queue = Promise.resolve();
     this.alive = false;
   }
@@ -55,6 +74,7 @@ export class LspClient {
       this.process.once("exit", () => {
         this.alive = false;
         this.rejectWaiters(new Error(`${this.serverId} exited`));
+        this.clearTrackingState();
         resolve();
       });
     });
@@ -139,8 +159,10 @@ export class LspClient {
     const uri = normalizeDocumentUri(pathToFileURL(filePath).href);
     const baseline = this.publications.get(uri)?.sequence ?? 0;
     const document = this.documents.get(uri);
-    const version = (document?.version ?? 0) + 1;
-    this.documents.set(uri, { version, text });
+    const version = ++this.nextDocumentVersion;
+    this.evictedUris.delete(uri);
+    this.documents.set(uri, { version });
+    this.touchDocument(uri);
 
     if (document) {
       this.connection.sendNotification("textDocument/didChange", {
@@ -232,12 +254,16 @@ export class LspClient {
 
   async close() {
     const child = this.process;
-    if (!child) return;
+    if (!child) {
+      this.clearTrackingState();
+      return;
+    }
     this.alive = false;
     this.rejectWaiters(new Error(`${this.serverId} closed`));
     if (!this.connection) {
       if (!child.killed) child.kill();
       this.process = undefined;
+      this.clearTrackingState();
       return;
     }
     try {
@@ -265,13 +291,23 @@ export class LspClient {
     }
     this.connection.dispose();
     this.process = undefined;
+    this.clearTrackingState();
   }
 
   recordPublication(raw) {
     if (!raw || typeof raw !== "object" || typeof raw.uri !== "string") return;
     const uri = normalizeDocumentUri(raw.uri);
+    if (this.evictedUris.has(uri) && !this.documents.has(uri)) return;
     const previous = this.publications.get(uri);
     const version = typeof raw.version === "number" ? raw.version : undefined;
+    const currentDocument = this.documents.get(uri);
+    if (
+      currentDocument &&
+      version !== undefined &&
+      version < currentDocument.version
+    ) {
+      return;
+    }
     const latestVersion = this.latestPublicationVersions.get(uri);
     if (version !== undefined && latestVersion !== undefined && version < latestVersion) {
       return;
@@ -285,6 +321,7 @@ export class LspClient {
       diagnostics: normalizeDiagnostics(Array.isArray(raw.diagnostics) ? raw.diagnostics : []),
     };
     this.publications.set(uri, publication);
+    this.touchDocument(uri);
     const waiters = this.waiters.get(uri) ?? [];
     const pending = [];
     for (const waiter of waiters) {
@@ -342,6 +379,62 @@ export class LspClient {
       waiters.push(waiter);
       this.waiters.set(uri, waiters);
     });
+  }
+
+  touchDocument(uri) {
+    this.documentAccess.delete(uri);
+    this.documentAccess.set(uri, true);
+    this.evictDocuments(uri);
+  }
+
+  evictDocuments(protectedUri) {
+    while (this.documentAccess.size > this.maxTrackedDocuments) {
+      let candidate;
+      for (const uri of this.documentAccess.keys()) {
+        if (uri !== protectedUri && !this.waiters.has(uri)) {
+          candidate = uri;
+          break;
+        }
+      }
+      if (!candidate) return;
+      this.evictDocument(candidate);
+    }
+  }
+
+  evictDocument(uri) {
+    this.documentAccess.delete(uri);
+    this.markEvicted(uri);
+    if (this.documents.has(uri) && this.alive && this.connection) {
+      try {
+        this.connection.sendNotification("textDocument/didClose", {
+          textDocument: { uri },
+        });
+      } catch {
+        // The server may already be closing; local state is still discarded.
+      }
+    }
+    this.documents.delete(uri);
+    this.publications.delete(uri);
+    this.latestPublicationVersions.delete(uri);
+    this.typeScriptDiagnosticsAttempted.delete(uri);
+  }
+
+  markEvicted(uri) {
+    this.evictedUris.delete(uri);
+    this.evictedUris.set(uri, true);
+    while (this.evictedUris.size > this.maxTrackedDocuments) {
+      this.evictedUris.delete(this.evictedUris.keys().next().value);
+    }
+  }
+
+  clearTrackingState() {
+    this.documents.clear();
+    this.publications.clear();
+    this.latestPublicationVersions.clear();
+    this.waiters.clear();
+    this.typeScriptDiagnosticsAttempted.clear();
+    this.documentAccess.clear();
+    this.evictedUris.clear();
   }
 
   removeWaiter(uri, target) {
