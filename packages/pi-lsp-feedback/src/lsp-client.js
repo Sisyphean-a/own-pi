@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  CancellationTokenSource,
   createMessageConnection,
   StreamMessageReader,
   StreamMessageWriter,
@@ -8,6 +9,9 @@ import {
 
 const INITIALIZE_TIMEOUT_MS = 8_000;
 const DIAGNOSTIC_TIMEOUT_MS = 2_500;
+// A cold TypeScript project can take longer to initialize than the regular
+// push-publication window. Its custom diagnostics request has its own bound.
+const TYPESCRIPT_DIAGNOSTIC_TIMEOUT_MS = 30_000;
 
 export class LspClient {
   static async start(options) {
@@ -21,20 +25,24 @@ export class LspClient {
     }
   }
 
-  constructor({ command, args, root, serverId, initializationOptions }) {
+  constructor({ command, args, root, serverId, initializationOptions, signal }) {
     this.command = command;
     this.args = args;
     this.root = root;
     this.serverId = serverId;
     this.initializationOptions = initializationOptions;
+    this.initializationSignal = signal;
     this.documents = new Map();
     this.publications = new Map();
+    this.latestPublicationVersions = new Map();
     this.waiters = new Map();
+    this.typeScriptDiagnosticsAttempted = new Set();
     this.queue = Promise.resolve();
     this.alive = false;
   }
 
   async initialize() {
+    if (this.initializationSignal?.aborted) throw abortError();
     const shell = process.platform === "win32" && /\.(cmd|bat)$/i.test(this.command);
     this.process = spawn(this.command, this.args, {
       cwd: this.root,
@@ -59,28 +67,63 @@ export class LspClient {
     this.connection.onNotification("textDocument/publishDiagnostics", (params) => {
       this.recordPublication(params);
     });
+    // Servers may wait for these optional client requests before starting
+    // project diagnostics. Return safe defaults because this extension has no
+    // editor configuration or dynamic capability registry to expose.
+    this.connection.onRequest("workspace/configuration", (params) =>
+      Array.isArray(params?.items) ? params.items.map(() => null) : [],
+    );
+    this.connection.onRequest("workspace/workspaceFolders", () => [
+      {
+        uri: pathToFileURL(this.root).href,
+        name: this.root.split(/[\\/]/).at(-1) ?? this.root,
+      },
+    ]);
+    this.connection.onRequest("window/workDoneProgress/create", () => null);
+    this.connection.onRequest("client/registerCapability", () => null);
+    this.connection.onRequest("client/unregisterCapability", () => null);
     this.connection.listen();
 
-    const initialize = this.connection.sendRequest("initialize", {
-      processId: process.pid,
-      rootUri: pathToFileURL(this.root).href,
-      workspaceFolders: [{ uri: pathToFileURL(this.root).href, name: this.root.split(/[\\/]/).at(-1) ?? this.root }],
-      capabilities: {
-        workspace: { workspaceFolders: true },
-        textDocument: { publishDiagnostics: { versionSupport: true } },
+    const result = await this.sendRequestWithDeadline(
+      "initialize",
+      {
+        processId: process.pid,
+        rootUri: pathToFileURL(this.root).href,
+        workspaceFolders: [{ uri: pathToFileURL(this.root).href, name: this.root.split(/[\\/]/).at(-1) ?? this.root }],
+        capabilities: {
+          workspace: { workspaceFolders: true, configuration: true },
+          window: { workDoneProgress: true },
+          textDocument: { publishDiagnostics: { versionSupport: true } },
+        },
+        initializationOptions: this.initializationOptions,
       },
-      initializationOptions: this.initializationOptions,
-    });
-    const result = await withDeadline(
-      initialize,
       INITIALIZE_TIMEOUT_MS,
-      undefined,
+      this.initializationSignal,
       `${this.serverId} initialization timed out`,
     );
 
     this.capabilities = result?.capabilities ?? {};
     this.connection.sendNotification("initialized", {});
     this.alive = true;
+  }
+
+  async sendRequestWithDeadline(method, params, timeoutMs, signal, timeoutMessage) {
+    const cancellation = new CancellationTokenSource();
+    const cancel = () => cancellation.cancel();
+    if (signal?.aborted) cancel();
+    else signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      return await withDeadline(
+        this.connection.sendRequest(method, params, cancellation.token),
+        timeoutMs,
+        signal,
+        timeoutMessage,
+        cancel,
+      );
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+      cancellation.dispose();
+    }
   }
 
   checkDocument(filePath, text, languageId, signal) {
@@ -91,6 +134,7 @@ export class LspClient {
 
   async checkDocumentNow(filePath, text, languageId, signal) {
     if (!this.alive) throw new Error(`${this.serverId} is not running`);
+    if (signal?.aborted) throw abortError();
 
     const uri = normalizeDocumentUri(pathToFileURL(filePath).href);
     const baseline = this.publications.get(uri)?.sequence ?? 0;
@@ -109,12 +153,56 @@ export class LspClient {
       });
     }
 
+    let typeScriptDiagnostics;
+    if (
+      !this.typeScriptDiagnosticsAttempted.has(uri) &&
+      supportsTypeScriptDiagnostics(this.serverId, this.capabilities)
+    ) {
+      this.typeScriptDiagnosticsAttempted.add(uri);
+      try {
+        // typescript-language-server starts its project diagnostics lazily.
+        // semanticDiagnosticsSync forces the initial geterr work; its response
+        // or resulting publishDiagnostics notification is consumed below.
+        const result = await this.sendRequestWithDeadline(
+          "workspace/executeCommand",
+          {
+            command: "typescript.tsserverRequest",
+            arguments: ["semanticDiagnosticsSync", { file: uri }],
+          },
+          TYPESCRIPT_DIAGNOSTIC_TIMEOUT_MS,
+          signal,
+          "typescript diagnostic request timed out",
+        );
+        if (
+          result?.type === "response" &&
+          result.success !== false &&
+          Array.isArray(result.body)
+        ) {
+          typeScriptDiagnostics = normalizeTypeScriptDiagnostics(result.body);
+        }
+      } catch (error) {
+        if (error?.name === "AbortError") this.typeScriptDiagnosticsAttempted.delete(uri);
+        // Fall back to the normal pull or push publication path for older or
+        // custom TypeScript servers that do not implement this command.
+      }
+    }
+
+    if (typeScriptDiagnostics) {
+      const publication = await this.waitForPublication(
+        uri,
+        version,
+        baseline,
+        signal,
+      );
+      if (publication) return confirmedPublication(publication, version);
+      return { status: "confirmed", diagnostics: typeScriptDiagnostics };
+    }
+
     if (this.capabilities.diagnosticProvider) {
       try {
-        const result = await withDeadline(
-          this.connection.sendRequest("textDocument/diagnostic", {
-            textDocument: { uri },
-          }),
+        const result = await this.sendRequestWithDeadline(
+          "textDocument/diagnostic",
+          { textDocument: { uri } },
           DIAGNOSTIC_TIMEOUT_MS,
           signal,
           `${this.serverId} diagnostic pull timed out`,
@@ -126,8 +214,9 @@ export class LspClient {
           };
         }
       } catch {
-        // A server may advertise pull diagnostics but reject the request. Its
-        // push publication remains usable only when it carries this document version.
+        // A server may advertise pull diagnostics but reject the request. A
+        // fresh push publication remains usable, with a version match checked
+        // when the server provides one.
       }
     }
 
@@ -135,16 +224,17 @@ export class LspClient {
     if (!publication) {
       return { status: "unconfirmed", diagnostics: [] };
     }
-    return {
-      status: publication.version === version ? "confirmed" : "unconfirmed",
-      diagnostics: publication.diagnostics,
-    };
+    // PublishDiagnostics.version is optional in LSP. A new publication observed
+    // after this document update is the freshest result available; the service
+    // separately verifies that the file snapshot did not change while checking.
+    return confirmedPublication(publication, version);
   }
 
   async close() {
     const child = this.process;
     if (!child) return;
     this.alive = false;
+    this.rejectWaiters(new Error(`${this.serverId} closed`));
     if (!this.connection) {
       if (!child.killed) child.kill();
       this.process = undefined;
@@ -181,20 +271,42 @@ export class LspClient {
     if (!raw || typeof raw !== "object" || typeof raw.uri !== "string") return;
     const uri = normalizeDocumentUri(raw.uri);
     const previous = this.publications.get(uri);
+    const version = typeof raw.version === "number" ? raw.version : undefined;
+    const latestVersion = this.latestPublicationVersions.get(uri);
+    if (version !== undefined && latestVersion !== undefined && version < latestVersion) {
+      return;
+    }
+    if (version !== undefined) {
+      this.latestPublicationVersions.set(uri, Math.max(latestVersion ?? version, version));
+    }
     const publication = {
       sequence: (previous?.sequence ?? 0) + 1,
-      version: typeof raw.version === "number" ? raw.version : undefined,
+      version,
       diagnostics: normalizeDiagnostics(Array.isArray(raw.diagnostics) ? raw.diagnostics : []),
     };
     this.publications.set(uri, publication);
     const waiters = this.waiters.get(uri) ?? [];
-    this.waiters.delete(uri);
-    for (const waiter of waiters) waiter.resolve(publication);
+    const pending = [];
+    for (const waiter of waiters) {
+      if (publication.version === undefined || publication.version === waiter.version) {
+        waiter.resolve(publication);
+      } else {
+        pending.push(waiter);
+      }
+    }
+    if (pending.length > 0) this.waiters.set(uri, pending);
+    else this.waiters.delete(uri);
   }
 
   waitForPublication(uri, version, baseline, signal, timeoutMs = DIAGNOSTIC_TIMEOUT_MS) {
     const current = this.publications.get(uri);
-    if (current && current.sequence > baseline) return Promise.resolve(current);
+    if (
+      current &&
+      current.sequence > baseline &&
+      (current.version === undefined || current.version === version)
+    ) {
+      return Promise.resolve(current);
+    }
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -208,13 +320,18 @@ export class LspClient {
         reject(abortError());
       };
       const waiter = {
+        version,
         resolve: (publication) => {
           clearTimeout(timeout);
           signal?.removeEventListener("abort", abort);
           if (publication.sequence > baseline) resolve(publication);
           else resolve(undefined);
         },
-        reject,
+        reject: (error) => {
+          clearTimeout(timeout);
+          signal?.removeEventListener("abort", abort);
+          reject(error);
+        },
       };
       if (signal?.aborted) {
         abort();
@@ -259,6 +376,50 @@ function normalizeDocumentUri(uri) {
   }
 }
 
+function supportsTypeScriptDiagnostics(serverId, capabilities) {
+  const commands = capabilities?.executeCommandProvider?.commands;
+  return (
+    serverId === "typescript" &&
+    Array.isArray(commands) &&
+    commands.includes("typescript.tsserverRequest")
+  );
+}
+
+function confirmedPublication(publication, version) {
+  return {
+    status:
+      publication.version === undefined || publication.version === version
+        ? "confirmed"
+        : "unconfirmed",
+    diagnostics: publication.diagnostics,
+  };
+}
+
+function normalizeTypeScriptDiagnostics(diagnostics) {
+  return normalizeDiagnostics(
+    diagnostics.map((diagnostic) => ({
+      severity: Number.isInteger(diagnostic?.category) ? diagnostic.category : 1,
+      message: diagnostic?.text,
+      code: diagnostic?.code,
+      source: "typescript",
+      range: {
+        start: typeScriptPosition(diagnostic?.start),
+        end: typeScriptPosition(diagnostic?.end ?? diagnostic?.start),
+      },
+    })),
+  );
+}
+
+function typeScriptPosition(position) {
+  if (!position || !Number.isInteger(position.line) || !Number.isInteger(position.offset)) {
+    return { line: 0, character: 0 };
+  }
+  return {
+    line: Math.max(0, position.line - 1),
+    character: Math.max(0, position.offset - 1),
+  };
+}
+
 function normalizeDiagnostics(diagnostics) {
   return diagnostics
     .filter((diagnostic) => diagnostic && typeof diagnostic.message === "string")
@@ -274,7 +435,7 @@ function normalizeDiagnostics(diagnostics) {
     }));
 }
 
-function withDeadline(promise, timeoutMs, signal, timeoutMessage) {
+function withDeadline(promise, timeoutMs, signal, timeoutMessage, onTimeout) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (callback, value) => {
@@ -285,7 +446,10 @@ function withDeadline(promise, timeoutMs, signal, timeoutMessage) {
       callback(value);
     };
     const onAbort = () => finish(reject, abortError());
-    const timer = setTimeout(() => finish(reject, new Error(timeoutMessage)), timeoutMs);
+    const timer = setTimeout(() => {
+      onTimeout?.();
+      finish(reject, new Error(timeoutMessage));
+    }, timeoutMs);
     if (signal?.aborted) {
       onAbort();
       return;

@@ -359,6 +359,78 @@ test("does not inject an unconfirmed result without diagnostics", async (t) => {
   await handlers.get("session_shutdown")({}, ctx);
 });
 
+test("injects diagnostics from a versionless push publication", async (t) => {
+  const previous = process.env.FAKE_PUSH_ONLY;
+  process.env.FAKE_PUSH_ONLY = "1";
+  t.after(() => {
+    if (previous === undefined) delete process.env.FAKE_PUSH_ONLY;
+    else process.env.FAKE_PUSH_ONLY = previous;
+  });
+
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-versionless-push-"));
+  const filePath = path.join(workspace, "src", "sample.ts");
+  await mkdir(path.join(workspace, ".pi"), { recursive: true });
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await Promise.all([
+    writeFile(path.join(workspace, "package.json"), "{}\n"),
+    writeFile(filePath, "broken\n"),
+    mkdir(path.join(workspace, "node_modules", "@types", "node"), { recursive: true }),
+    writeFile(
+      path.join(workspace, ".pi", "lsp-feedback.json"),
+      JSON.stringify({
+        servers: {
+          typescript: {
+            command: process.execPath,
+            args: [fakeServer],
+            rootMarkers: ["package.json"],
+          },
+        },
+      }),
+    ),
+  ]);
+
+  const handlers = new Map();
+  const messages = [];
+  const pi = {
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
+    registerCommand() {},
+    sendMessage(message, options) {
+      messages.push({ message, options });
+    },
+  };
+  const ctx = {
+    cwd: workspace,
+    hasUI: false,
+    isProjectTrusted: () => true,
+    ui: { setStatus() {}, notify() {} },
+  };
+
+  lspFeedbackExtension(pi);
+  await handlers.get("session_start")({}, ctx);
+  await handlers.get("tool_result")(
+    {
+      toolName: "write",
+      toolCallId: "edit-1",
+      input: { path: filePath },
+      details: {},
+      isError: false,
+    },
+    ctx,
+  );
+  handlers.get("turn_end")(turnEnd("edit-1"), ctx);
+
+  assert.equal(messages.length, 1);
+  assert.match(messages[0].message.content, /FAKE100/);
+  assert.deepEqual(messages[0].options, {
+    deliverAs: "steer",
+    triggerTurn: true,
+  });
+
+  await handlers.get("session_shutdown")({}, ctx);
+});
+
 test("does not inject an unavailable LSP state", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-unavailable-"));
   const filePath = path.join(workspace, "src", "sample.ts");

@@ -10,6 +10,7 @@ import {
   commandCandidates,
   findTypeScriptSdk,
   findWorkspaceRoot,
+  languageIdForFile,
   resolveServerOverrides,
 } from "../src/servers.js";
 
@@ -37,6 +38,14 @@ test("uses the nearest frontend package as the Vue root in a Wails workspace", a
     findWorkspaceRoot(path.join(workspace, "main.go"), workspace, go),
     workspace,
   );
+});
+
+test("uses React language IDs for TypeScript React files", () => {
+  const typescript = BUILTIN_SERVERS.find((server) => server.id === "typescript");
+
+  assert.equal(languageIdForFile(typescript, "src/App.tsx"), "typescriptreact");
+  assert.equal(languageIdForFile(typescript, "src/App.jsx"), "javascriptreact");
+  assert.equal(languageIdForFile(typescript, "src/main.ts"), "typescript");
 });
 
 test("reports an unavailable server instead of a false clean result", async (t) => {
@@ -97,12 +106,40 @@ test("reports diagnostics through the bundled TypeScript server", async (t) => {
   t.after(() => service.close());
 
   const outcome = await service.checkFile(filePath);
-  assert.equal(outcome.status, "unconfirmed");
+  assert.equal(outcome.status, "confirmed");
   assert.equal(outcome.serverId, "typescript");
   assert.deepEqual(
     outcome.diagnostics.map((diagnostic) => diagnostic.code),
     [2322],
   );
+});
+
+test("parses bundled TypeScript React files as TSX", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-bundled-tsx-"));
+  const filePath = path.join(workspace, "src", "App.tsx");
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await Promise.all([
+    writeFile(path.join(workspace, "package.json"), "{}\n"),
+    writeFile(
+      path.join(workspace, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { jsx: "preserve", strict: true },
+        include: ["src"],
+      }),
+    ),
+    writeFile(
+      filePath,
+      "declare namespace JSX { interface IntrinsicElements { div: {}; } }\nconst element = <div />;\n",
+    ),
+    mkdir(nodeTypesDir(workspace), WITH_NODE_TYPES),
+  ]);
+
+  const service = new DiagnosticService({ workspaceRoot: workspace });
+  t.after(() => service.close());
+
+  const outcome = await service.checkFile(filePath);
+  assert.equal(outcome.status, "confirmed");
+  assert.deepEqual(outcome.diagnostics, []);
 });
 
 test("runs a configured TypeScript language server and returns its diagnostics", async (t) => {

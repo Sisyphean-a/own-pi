@@ -9,6 +9,7 @@ import {
   findNodeTypesRoot,
   findWorkspaceRoot,
   initializationOptions,
+  languageIdForFile,
   serverForFile,
 } from "./servers.js";
 
@@ -64,7 +65,12 @@ export class DiagnosticService {
 
     try {
       const client = await this.getClient(server, root, signal);
-      const outcome = await client.checkDocument(absolutePath, text, server.languageId, signal);
+      const outcome = await client.checkDocument(
+        absolutePath,
+        text,
+        languageIdForFile(server, absolutePath),
+        signal,
+      );
 
       // Rule: diagnostics for a snapshot already replaced on disk are never
       // allowed to reach the feedback tracker.

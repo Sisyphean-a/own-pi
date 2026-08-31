@@ -164,6 +164,18 @@ export function serverForFile(servers, filePath) {
   return servers.find((server) => server.extensions.includes(extension));
 }
 
+export function languageIdForFile(server, filePath) {
+  if (server.id !== "typescript") return server.languageId;
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".tsx":
+      return "typescriptreact";
+    case ".jsx":
+      return "javascriptreact";
+    default:
+      return server.languageId;
+  }
+}
+
 export function findWorkspaceRoot(filePath, workspaceRoot, server) {
   const absoluteWorkspace = path.resolve(workspaceRoot);
   let current = path.dirname(path.resolve(filePath));

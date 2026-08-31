@@ -5,6 +5,9 @@ function encode(message) {
 
 let buffer = Buffer.alloc(0);
 const documents = new Map();
+const pendingClientRequests = new Map();
+let nextClientRequestId = 1;
+let clientRequestsReady = process.env.FAKE_REQUIRE_CLIENT_REQUESTS !== "1";
 
 process.stdin.on("data", (chunk) => {
   buffer = Buffer.concat([buffer, chunk]);
@@ -29,8 +32,16 @@ function send(message) {
 }
 
 function handle(message) {
+  if (message.id !== undefined && !message.method) {
+    const onResponse = pendingClientRequests.get(message.id);
+    if (onResponse) {
+      pendingClientRequests.delete(message.id);
+      onResponse(message);
+    }
+    return;
+  }
   if (message.method === "initialize") {
-    send({
+    const response = {
       jsonrpc: "2.0",
       id: message.id,
       result: {
@@ -39,9 +50,19 @@ function handle(message) {
           ...(process.env.FAKE_PUSH_ONLY === "1"
             ? {}
             : { diagnosticProvider: {} }),
+          ...(process.env.FAKE_TS_SERVER_REQUEST === "1"
+            ? { executeCommandProvider: { commands: ["typescript.tsserverRequest"] } }
+            : {}),
         },
       },
-    });
+    };
+    const delay = Number.parseInt(process.env.FAKE_INITIALIZE_DELAY_MS ?? "0", 10);
+    if (delay > 0) setTimeout(() => send(response), delay);
+    else send(response);
+    if (process.env.FAKE_REQUIRE_CLIENT_REQUESTS === "1") {
+      requestClient("workspace/configuration", { items: [{}] });
+      requestClient("window/workDoneProgress/create", { token: "fake" });
+    }
     return;
   }
   if (message.method === "textDocument/didOpen") {
@@ -49,22 +70,56 @@ function handle(message) {
       message.params.textDocument.uri,
       message.params.textDocument.text,
     );
-    publishIfPushOnly(
-      message.params.textDocument.uri,
-      message.params.textDocument.text,
-    );
+    if (process.env.FAKE_VERSIONED_REORDER === "1") {
+      const { uri, text, version } = message.params.textDocument;
+      publish(uri, text, version - 1);
+      setTimeout(() => publish(uri, text, version), 50);
+    } else if (process.env.FAKE_COMMAND_ONLY !== "1") {
+      publishIfPushOnly(
+        message.params.textDocument.uri,
+        message.params.textDocument.text,
+      );
+    }
     return;
   }
   if (message.method === "textDocument/didChange") {
     const text = message.params.contentChanges.at(-1).text;
     documents.set(message.params.textDocument.uri, text);
-    publishIfPushOnly(message.params.textDocument.uri, text);
+    if (process.env.FAKE_COMMAND_ONLY !== "1") {
+      publishIfPushOnly(message.params.textDocument.uri, text);
+    }
+    return;
+  }
+  if (message.method === "workspace/executeCommand") {
+    const uri = [...documents.keys()][0];
+    const text = uri ? documents.get(uri) ?? "" : "";
+    const body = text.includes("broken")
+      ? [
+          {
+            start: { line: 1, offset: 1 },
+            end: { line: 1, offset: 7 },
+            text: "broken source",
+            code: "FAKE100",
+            category: 1,
+          },
+        ]
+      : [];
+    send({ jsonrpc: "2.0", id: message.id, result: { type: "response", body } });
+    if (
+      process.env.FAKE_TS_SERVER_REQUEST === "1" &&
+      process.env.FAKE_COMMAND_RESPONSE_ONLY !== "1" &&
+      uri
+    ) {
+      publishIfPushOnly(uri, text);
+    }
     return;
   }
   if (message.method === "textDocument/diagnostic") {
     const text = documents.get(message.params.textDocument.uri) ?? "";
-    const items = text.includes("parse-cascade")
-      ? [
+    const items = process.env.FAKE_PULL_EMPTY === "1"
+      ? []
+      : text.includes("parse-cascade")
+        ? [
           {
             severity: 1,
             code: 1005,
@@ -118,16 +173,28 @@ function handle(message) {
 }
 
 function publishIfPushOnly(uri, text) {
-  if (process.env.FAKE_PUSH_ONLY !== "1") return;
+  if (process.env.FAKE_PUSH_ONLY !== "1" || !clientRequestsReady) return;
   publish(uri, text);
 }
 
-function publish(uri, text) {
+function requestClient(method, params) {
+  const id = `client-request-${nextClientRequestId++}`;
+  pendingClientRequests.set(id, () => {
+    if (pendingClientRequests.size === 0) {
+      clientRequestsReady = true;
+      for (const [uri, text] of documents) publishIfPushOnly(uri, text);
+    }
+  });
+  send({ jsonrpc: "2.0", id, method, params });
+}
+
+function publish(uri, text, version) {
   send({
     jsonrpc: "2.0",
     method: "textDocument/publishDiagnostics",
     params: {
       uri,
+      ...(version === undefined ? {} : { version }),
       diagnostics: text.includes("broken")
         ? [
             {
