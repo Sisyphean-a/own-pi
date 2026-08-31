@@ -9,7 +9,7 @@
 ## 术语
 
 - **诊断反馈**：代理成功执行 `write` 或 `edit` 后，由匹配的语言服务器生成的错误和警告。
-- **已确认结果**：LSP 拉取诊断响应、TypeScript 同步诊断响应，或在当前文档更新后观察到的 `publishDiagnostics` 通知；通知带版本时必须匹配当前文档版本，未带版本时按 LSP 可选版本字段接受为最新观察结果。它是诊断新鲜度的内部状态，不会单独向代理反馈。
+- **已确认结果**：LSP 拉取诊断响应、TypeScript 同步诊断响应、Vue TypeScript sidecar 的 `semanticDiagnosticsSync` 响应，或在当前文档更新后观察到的 `publishDiagnostics` 通知；通知带版本时必须匹配当前文档版本，未带版本时按 LSP 可选版本字段接受为最新观察结果。它是诊断新鲜度的内部状态，不会单独向代理反馈。
 - **未确认结果**：带版本但版本不匹配的诊断发布、超时，或没有新的诊断发布。它表示无法确认诊断对应最新文档版本；该状态本身不会向代理反馈。
 - **不可用结果**：没有匹配的工作区标记、缺少 `@types/node`（Node 类型环境）、文件不可读，或语言服务器不能启动、安装或保持可用。该状态本身不会向代理反馈。
 - **受信任项目覆盖项**：Pi 将项目标为受信任时才读取的可选 `.pi/lsp-feedback.json` `servers` 条目；它可以替换内置命令、参数、根目录标记、回退行为，或禁用该服务器。配置会在读取时校验，未知服务器、未知字段或字段类型错误成为可显示问题，不影响未覆盖服务器。
@@ -20,13 +20,13 @@
 - 反馈在一轮内聚合，并在轮次结束时作为引导上下文发送；只有严重级别 1（错误）和 2（警告）的诊断会发送，干净、无诊断的未确认结果和不可用状态都不增加代理上下文。
 - 诊断遵循保守稳定门禁：未确认结果中的诊断，以及同一结果中至少两条解析级联诊断，首次只保留候选；同一文件内容 hash 和诊断语义再次一致才允许发送，期间变更或变干净则丢弃。确认的单个语义诊断可直接发送。
 - 诊断采集前后文件内容不一致时，结果无效且不发送。
-- TypeScript/JavaScript 的 `.tsx`/`.jsx` 文件分别以 `typescriptreact`/`javascriptreact` 语言 ID 打开；当 TypeScript 语言服务器提供 `typescript.tsserverRequest` 时，客户端先触发 `semanticDiagnosticsSync` 处理冷项目初始化，并优先消费其同步结果或随后到达的推送诊断；同一客户端对同一文件只主动触发一次该请求（调用方取消时允许重试），普通推送仍受短等待上限约束。
+- TypeScript/JavaScript 的 `.tsx`/`.jsx` 文件分别以 `typescriptreact`/`javascriptreact` 语言 ID 打开；当 TypeScript 语言服务器提供 `typescript.tsserverRequest` 时，客户端先触发 `semanticDiagnosticsSync` 处理冷项目初始化，并优先消费其同步结果或随后到达的推送诊断；同一客户端对同一文件只主动触发一次该请求（调用方取消时允许重试），普通推送仍受短等待上限约束。Vue 文件同时通过包内 TypeScript language server sidecar 和 `@vue/typescript-plugin` 获取同一快照的 TypeScript 语义诊断，并与 Volar 的 SFC 诊断合并；sidecar 是可选能力，启动、预热或请求失败时只保留 parser-only 诊断，不能把主 Vue 服务器判为不可用。
 - 每个 LSP 客户端不保留文档正文，只保留最近使用的协议元数据，默认最多跟踪 128 个文件 URI；淘汰最久未检查且没有等待者的 URI 时发送 `textDocument/didClose`，并清除其诊断、版本和 TypeScript 尝试状态。客户端关闭或语言服务器退出时清空全部状态。
 - 反馈按 `turn_end.toolResults` 绑定到产生它的当前轮；同一文件同一轮只取最后结果，迟到的诊断结果不得流入后续轮。
 - 同一会话中，同一文件的同一语义诊断只报告一次；文件内容发生修改但仍产生同一诊断时，文件修改本身不解除去重，也不重新报告。只有诊断集合发生变化时才重新报告，确认文件干净后清除该文件的去重状态。诊断位置变化本身不算语义变化，诊断数量、服务器、严重级别、代码或消息变化才会重新报告。
 - 同一反馈中的完全重复诊断只保留一条。
 - 只报告严重级别 1（错误）和 2（警告）的诊断，每轮最多 20 条。
-- 扩展只观察和报告诊断。它不修改用户源码、不格式化代码、不应用修复，也不扫描项目；Vue、TypeScript、HTML 与 Pyright 服务器由包携带，只有可信项目中的 Go 文件可触发扩展托管安装 `gopls`。
+- 扩展只观察和报告诊断。它不修改用户源码、不格式化代码、不应用修复，也不扫描项目；Vue、`@vue/typescript-plugin`、TypeScript、TypeScript language server、HTML 与 Pyright 服务器由包携带，只有可信项目中的 Go 文件可触发扩展托管安装 `gopls`。
 - 反馈遵循“有则报、无则静默”：有对应环境（项目标记、`@types/node`）时反馈真实诊断；没有对应环境时不反馈“缺环境”型噪音（如 TS 2307/7006/2580）。
 - 内置支持 Vue、TypeScript/JavaScript、Go、Python 和 HTML。所有内置服务器都要求找到项目标记；Go 需要 `go.work`/`go.mod`，TypeScript/JavaScript 还要求解析到 `@types/node`，Vue/Python/HTML 需要对应项目标记。没有对应项目或类型环境时静默为不可用，不再回退到 Pi 工作区。
 

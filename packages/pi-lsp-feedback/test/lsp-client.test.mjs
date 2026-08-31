@@ -143,6 +143,61 @@ test("returns confirmed pull diagnostics for the current document", async (t) =>
   assert.deepEqual(clean.diagnostics, []);
 });
 
+test("bridges Vue TypeScript requests before collecting diagnostics", async (t) => {
+  const client = await startClient({}, "vue", {
+    args: [fakeServer, "--vue"],
+    typescriptBridge: {
+      command: process.execPath,
+      args: [fakeServer, "--ts-bridge"],
+      initializationOptions: undefined,
+    },
+  });
+  t.after(() => client.close());
+
+  const outcome = await client.checkDocument(
+    path.join(client.root, "sample.vue"),
+    "broken semantic-broken",
+    "vue",
+  );
+
+  assert.equal(outcome.status, "confirmed");
+  assert.deepEqual(
+    outcome.diagnostics.map((diagnostic) => diagnostic.code),
+    ["FAKE100", "FAKE200"],
+  );
+
+  const warning = await client.checkDocument(
+    path.join(client.root, "sample.vue"),
+    "semantic-warning",
+    "vue",
+  );
+  assert.equal(warning.status, "confirmed");
+  assert.equal(warning.diagnostics[0].severity, 2);
+});
+
+test("falls back to Vue parser diagnostics when the TypeScript bridge is unavailable", async (t) => {
+  const client = await startClient({}, "vue", {
+    args: [fakeServer, "--vue"],
+    typescriptBridge: {
+      command: path.join(os.tmpdir(), "pi-lsp-feedback-missing-bridge"),
+      args: [],
+    },
+  });
+  t.after(() => client.close());
+
+  const outcome = await client.checkDocument(
+    path.join(client.root, "sample.vue"),
+    "broken",
+    "vue",
+  );
+
+  assert.equal(outcome.status, "confirmed");
+  assert.deepEqual(
+    outcome.diagnostics.map((diagnostic) => diagnostic.code),
+    ["FAKE100"],
+  );
+});
+
 test("accepts a fresh versionless push publication as confirmed", async (t) => {
   const previous = process.env.FAKE_PUSH_ONLY;
   process.env.FAKE_PUSH_ONLY = "1";

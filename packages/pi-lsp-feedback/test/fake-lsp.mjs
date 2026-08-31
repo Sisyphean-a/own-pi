@@ -6,7 +6,14 @@ function encode(message) {
 let buffer = Buffer.alloc(0);
 const documents = new Map();
 const pendingClientRequests = new Map();
+const pendingVueRequests = new Map();
+const mode = process.argv.includes("--vue")
+  ? "vue"
+  : process.argv.includes("--ts-bridge")
+    ? "ts-bridge"
+    : "standard";
 let nextClientRequestId = 1;
+let nextVueRequestId = 1;
 let clientRequestsReady = process.env.FAKE_REQUIRE_CLIENT_REQUESTS !== "1";
 
 process.stdin.on("data", (chunk) => {
@@ -47,10 +54,10 @@ function handle(message) {
       result: {
         capabilities: {
           textDocumentSync: 1,
-          ...(process.env.FAKE_PUSH_ONLY === "1"
+          ...(mode === "vue" || process.env.FAKE_PUSH_ONLY === "1"
             ? {}
             : { diagnosticProvider: {} }),
-          ...(process.env.FAKE_TS_SERVER_REQUEST === "1"
+          ...(mode === "ts-bridge" || process.env.FAKE_TS_SERVER_REQUEST === "1"
             ? { executeCommandProvider: { commands: ["typescript.tsserverRequest"] } }
             : {}),
         },
@@ -70,7 +77,12 @@ function handle(message) {
       message.params.textDocument.uri,
       message.params.textDocument.text,
     );
-    if (process.env.FAKE_VERSIONED_REORDER === "1") {
+    if (mode === "vue") {
+      requestVueProject(
+        message.params.textDocument.uri,
+        message.params.textDocument.version,
+      );
+    } else if (process.env.FAKE_VERSIONED_REORDER === "1") {
       const { uri, text, version } = message.params.textDocument;
       publish(uri, text, version - 1);
       setTimeout(() => publish(uri, text, version), 50);
@@ -85,7 +97,12 @@ function handle(message) {
   if (message.method === "textDocument/didChange") {
     const text = message.params.contentChanges.at(-1).text;
     documents.set(message.params.textDocument.uri, text);
-    if (process.env.FAKE_COMMAND_ONLY !== "1") {
+    if (mode === "vue") {
+      requestVueProject(
+        message.params.textDocument.uri,
+        message.params.textDocument.version,
+      );
+    } else if (process.env.FAKE_COMMAND_ONLY !== "1") {
       publishIfPushOnly(message.params.textDocument.uri, text);
     }
     return;
@@ -94,7 +111,61 @@ function handle(message) {
     documents.delete(message.params.textDocument.uri);
     return;
   }
+  if (message.method === "tsserver/response" && mode === "vue") {
+    const responseParams = Array.isArray(message.params?.[0]) && message.params.length === 1
+      ? message.params[0]
+      : message.params ?? [];
+    const [requestId] = responseParams;
+    const request = pendingVueRequests.get(requestId);
+    if (request) {
+      pendingVueRequests.delete(requestId);
+      const text = documents.get(request.uri) ?? "";
+      publish(request.uri, text, request.version);
+    }
+    return;
+  }
   if (message.method === "workspace/executeCommand") {
+    if (mode === "ts-bridge") {
+      const [command, requestArgs] = message.params.arguments ?? [];
+      const requestedFile = requestArgs?.file;
+      const documentText = [...documents.entries()]
+        .find(([uri]) => uri === requestedFile || uri.toLowerCase() === String(requestedFile).toLowerCase())?.[1] ?? "";
+      const body = command === "_vue:projectInfo"
+        ? { configFileName: "fake-tsconfig.json", languageServiceDisabled: false }
+        : command === "semanticDiagnosticsSync" && documentText.includes("semantic-broken")
+          ? [
+              {
+                start: { line: 1, offset: 1 },
+                end: { line: 1, offset: 15 },
+                text: "semantic bridge error",
+                code: "FAKE200",
+                category: "error",
+              },
+            ]
+          : command === "semanticDiagnosticsSync" && documentText.includes("semantic-warning")
+            ? [
+                {
+                  start: { line: 1, offset: 1 },
+                  end: { line: 1, offset: 17 },
+                  text: "semantic bridge warning",
+                  code: "FAKE201",
+                  category: "warning",
+                },
+              ]
+            : [];
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          type: "response",
+          command,
+          request_seq: message.id,
+          success: true,
+          body,
+        },
+      });
+      return;
+    }
     const uri = [...documents.keys()][0];
     const text = uri ? documents.get(uri) ?? "" : "";
     const body = text.includes("broken")
@@ -179,6 +250,20 @@ function handle(message) {
 function publishIfPushOnly(uri, text) {
   if (process.env.FAKE_PUSH_ONLY !== "1" || !clientRequestsReady) return;
   publish(uri, text);
+}
+
+function requestVueProject(uri, version) {
+  const requestId = nextVueRequestId++;
+  pendingVueRequests.set(requestId, { uri, version });
+  send({
+    jsonrpc: "2.0",
+    method: "tsserver/request",
+    params: [
+      requestId,
+      "_vue:projectInfo",
+      { file: uri, needFileNameList: false },
+    ],
+  });
 }
 
 function requestClient(method, params) {

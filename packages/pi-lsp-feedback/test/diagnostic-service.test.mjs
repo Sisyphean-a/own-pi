@@ -114,6 +114,52 @@ test("reports diagnostics through the bundled TypeScript server", async (t) => {
   );
 });
 
+test("reports diagnostics through the bundled Vue language server", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-bundled-vue-"));
+  const filePath = path.join(workspace, "src", "App.vue");
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await Promise.all([
+    writeFile(path.join(workspace, "package.json"), "{}\n"),
+    writeFile(
+      path.join(workspace, "tsconfig.json"),
+      JSON.stringify({ include: ["src"] }),
+    ),
+    writeFile(filePath, "<template><main></template>\n"),
+  ]);
+
+  const service = new DiagnosticService({ workspaceRoot: workspace });
+  t.after(() => service.close());
+
+  const outcome = await service.checkFile(filePath);
+  assert.equal(outcome.status, "confirmed");
+  assert.equal(outcome.serverId, "vue");
+  assert.ok(outcome.diagnostics.some((diagnostic) => diagnostic.code === 24));
+});
+
+test("reports TypeScript diagnostics through the Vue bridge", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-bundled-vue-ts-"));
+  const filePath = path.join(workspace, "src", "App.vue");
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await Promise.all([
+    writeFile(path.join(workspace, "package.json"), "{}\n"),
+    writeFile(
+      path.join(workspace, "tsconfig.json"),
+      JSON.stringify({ include: ["src"] }),
+    ),
+    writeFile(
+      filePath,
+      "<script setup lang=\"ts\">\nconst value: string = 1;\n</script>\n<template><main /></template>\n",
+    ),
+  ]);
+
+  const service = new DiagnosticService({ workspaceRoot: workspace });
+  t.after(() => service.close());
+
+  const outcome = await service.checkFile(filePath);
+  assert.equal(outcome.status, "confirmed");
+  assert.ok(outcome.diagnostics.some((diagnostic) => diagnostic.code === 2322));
+});
+
 test("parses bundled TypeScript React files as TSX", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-bundled-tsx-"));
   const filePath = path.join(workspace, "src", "App.tsx");

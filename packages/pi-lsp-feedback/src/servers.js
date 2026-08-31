@@ -30,6 +30,7 @@ export const BUILTIN_SERVERS = [
     rootMarkers: ["package.json", "pnpm-lock.yaml", "yarn.lock", "package-lock.json"],
     fallbackToWorkspace: false,
     needsTypeScriptSdk: true,
+    typescriptBridge: true,
   },
   {
     id: "typescript",
@@ -221,6 +222,30 @@ export function initializationOptions(server, root, workspaceRoot) {
   if (!server.needsTypeScriptSdk) return undefined;
   const tsdk = findTypeScriptSdk(root, workspaceRoot);
   return tsdk ? { typescript: { tsdk } } : undefined;
+}
+
+export function typescriptBridgeOptions(server, root, workspaceRoot) {
+  if (!server.typescriptBridge) return undefined;
+  const tsdk = findTypeScriptSdk(root, workspaceRoot);
+  if (!tsdk) return undefined;
+
+  return {
+    command: process.execPath,
+    args: [
+      path.join(PACKAGE_ROOT, "node_modules", "typescript-language-server", "lib", "cli.mjs"),
+      "--stdio",
+    ],
+    initializationOptions: {
+      tsserver: { path: path.join(tsdk, "tsserver.js") },
+      plugins: [
+        {
+          name: "@vue/typescript-plugin",
+          location: path.join(PACKAGE_ROOT, "node_modules", "@vue", "typescript-plugin"),
+          languages: ["vue"],
+        },
+      ],
+    },
+  };
 }
 
 export function commandCandidates(root, workspaceRoot, command) {

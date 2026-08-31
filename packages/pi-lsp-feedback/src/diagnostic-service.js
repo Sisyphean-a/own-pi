@@ -11,6 +11,7 @@ import {
   initializationOptions,
   languageIdForFile,
   serverForFile,
+  typescriptBridgeOptions,
 } from "./servers.js";
 
 export class DiagnosticService {
@@ -135,6 +136,7 @@ export class DiagnosticService {
     }
 
     const initialization = initializationOptions(server, root, this.workspaceRoot);
+    const typescriptBridge = typescriptBridgeOptions(server, root, this.workspaceRoot);
     const attempts = [];
     const launch = async () => {
       for (const commandSpec of server.commands) {
@@ -146,6 +148,7 @@ export class DiagnosticService {
               root,
               serverId: server.id,
               initializationOptions: initialization,
+              typescriptBridge,
               signal,
             });
             this.clients.set(key, client);

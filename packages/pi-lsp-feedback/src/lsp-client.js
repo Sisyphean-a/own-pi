@@ -12,6 +12,9 @@ const DIAGNOSTIC_TIMEOUT_MS = 2_500;
 // A cold TypeScript project can take longer to initialize than the regular
 // push-publication window. Its custom diagnostics request has its own bound.
 const TYPESCRIPT_DIAGNOSTIC_TIMEOUT_MS = 30_000;
+// The TypeScript sidecar is optional; its requests must not hold up the normal
+// Vue parser publication for the longer TypeScript cold-start budget.
+const TYPESCRIPT_BRIDGE_TIMEOUT_MS = INITIALIZE_TIMEOUT_MS;
 // LSP clients are reused for a workspace, so bound per-file protocol state.
 const MAX_TRACKED_DOCUMENTS = 128;
 
@@ -33,6 +36,7 @@ export class LspClient {
     root,
     serverId,
     initializationOptions,
+    typescriptBridge,
     signal,
     maxTrackedDocuments = MAX_TRACKED_DOCUMENTS,
   }) {
@@ -41,7 +45,10 @@ export class LspClient {
     this.root = root;
     this.serverId = serverId;
     this.initializationOptions = initializationOptions;
+    this.typescriptBridgeOptions = typescriptBridge;
     this.initializationSignal = signal;
+    this.bridgeClient = undefined;
+    this.warmedBridgeDocuments = new Set();
     this.maxTrackedDocuments =
       Number.isInteger(maxTrackedDocuments) && maxTrackedDocuments > 0
         ? maxTrackedDocuments
@@ -62,6 +69,22 @@ export class LspClient {
 
   async initialize() {
     if (this.initializationSignal?.aborted) throw abortError();
+    if (this.typescriptBridgeOptions) {
+      try {
+        this.bridgeClient = await LspClient.start({
+          ...this.typescriptBridgeOptions,
+          root: this.root,
+          serverId: `${this.serverId}-typescript-bridge`,
+          signal: this.initializationSignal,
+        });
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        // Volar remains useful for SFC/parser diagnostics without the optional
+        // TypeScript sidecar. Continue with the main language server.
+        this.bridgeClient = undefined;
+      }
+    }
+
     const shell = process.platform === "win32" && /\.(cmd|bat)$/i.test(this.command);
     this.process = spawn(this.command, this.args, {
       cwd: this.root,
@@ -75,6 +98,7 @@ export class LspClient {
         this.alive = false;
         this.rejectWaiters(new Error(`${this.serverId} exited`));
         this.clearTrackingState();
+        void this.closeTypeScriptBridge().catch(() => {});
         resolve();
       });
     });
@@ -87,6 +111,11 @@ export class LspClient {
     this.connection.onNotification("textDocument/publishDiagnostics", (params) => {
       this.recordPublication(params);
     });
+    if (this.typescriptBridgeOptions) {
+      this.connection.onNotification("tsserver/request", (...params) => {
+        void this.handleTypeScriptRequest(...params);
+      });
+    }
     // Servers may wait for these optional client requests before starting
     // project diagnostics. Return safe defaults because this extension has no
     // editor configuration or dynamic capability registry to expose.
@@ -152,12 +181,10 @@ export class LspClient {
     return task;
   }
 
-  async checkDocumentNow(filePath, text, languageId, signal) {
+  syncDocument(filePath, text, languageId) {
     if (!this.alive) throw new Error(`${this.serverId} is not running`);
-    if (signal?.aborted) throw abortError();
 
     const uri = normalizeDocumentUri(pathToFileURL(filePath).href);
-    const baseline = this.publications.get(uri)?.sequence ?? 0;
     const document = this.documents.get(uri);
     const version = ++this.nextDocumentVersion;
     this.evictedUris.delete(uri);
@@ -174,6 +201,115 @@ export class LspClient {
         textDocument: { uri, languageId, version, text },
       });
     }
+    return { uri, version };
+  }
+
+  requestTypeScript(command, args, signal, timeoutMs = TYPESCRIPT_BRIDGE_TIMEOUT_MS) {
+    if (!this.alive) throw new Error(`${this.serverId} is not running`);
+    return this.sendRequestWithDeadline(
+      "workspace/executeCommand",
+      {
+        command: "typescript.tsserverRequest",
+        arguments: [command, args],
+      },
+      timeoutMs,
+      signal,
+      `${this.serverId} TypeScript request timed out`,
+    );
+  }
+
+  async updateTypeScriptBridge(filePath, text, languageId, signal) {
+    const bridge = this.bridgeClient;
+    if (!bridge?.alive) {
+      await this.closeTypeScriptBridge();
+      return;
+    }
+
+    try {
+      bridge.syncDocument(filePath, text, languageId);
+      const uri = normalizeDocumentUri(pathToFileURL(filePath).href);
+      if (this.warmedBridgeDocuments.has(uri)) return;
+
+      const response = await bridge.requestTypeScript(
+        "_vue:projectInfo",
+        {
+          file: normalizedFilePath(filePath),
+          needFileNameList: false,
+        },
+        signal,
+        TYPESCRIPT_BRIDGE_TIMEOUT_MS,
+      );
+      const projectInfo = unwrapTypeScriptResponse(response);
+      if (!projectInfo || typeof projectInfo.configFileName !== "string") {
+        throw new Error(`${this.serverId} TypeScript bridge returned no project information`);
+      }
+      this.warmedBridgeDocuments.add(uri);
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+      await this.closeTypeScriptBridge();
+    }
+  }
+
+  async requestVueTypeScriptDiagnostics(uri, signal) {
+    try {
+      const response = await this.bridgeClient.requestTypeScript(
+        "semanticDiagnosticsSync",
+        { file: uri },
+        signal,
+        TYPESCRIPT_BRIDGE_TIMEOUT_MS,
+      );
+      const diagnostics = unwrapTypeScriptResponse(response);
+      return Array.isArray(diagnostics)
+        ? normalizeTypeScriptDiagnostics(diagnostics)
+        : undefined;
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+      await this.closeTypeScriptBridge();
+      throw error;
+    }
+  }
+
+  async handleTypeScriptRequest(requestId, command, args) {
+    if (Array.isArray(requestId) && command == null && args == null) {
+      [requestId, command, args] = requestId;
+    }
+    if (requestId === undefined || typeof command !== "string") return;
+
+    try {
+      const response = await this.bridgeClient.requestTypeScript(
+        command,
+        args,
+        undefined,
+        TYPESCRIPT_BRIDGE_TIMEOUT_MS,
+      );
+      const result = unwrapTypeScriptResponse(response);
+      this.connection.sendNotification("tsserver/response", [requestId, result]);
+    } catch {
+      // Volar treats an undefined response as an unavailable TS integration and
+      // can fall back to parser-only diagnostics without crashing the server.
+      try {
+        this.connection.sendNotification("tsserver/response", [requestId, undefined]);
+      } catch {
+        // The Vue server may already be shutting down.
+      }
+    }
+  }
+
+  async checkDocumentNow(filePath, text, languageId, signal) {
+    if (!this.alive) throw new Error(`${this.serverId} is not running`);
+    if (signal?.aborted) throw abortError();
+
+    const uri = normalizeDocumentUri(pathToFileURL(filePath).href);
+    const baseline = this.publications.get(uri)?.sequence ?? 0;
+    if (this.bridgeClient) {
+      await this.updateTypeScriptBridge(filePath, text, languageId, signal);
+    }
+    const { version } = this.syncDocument(filePath, text, languageId);
+    const typeScriptBridgeDiagnostics = this.bridgeClient
+      ? this.requestVueTypeScriptDiagnostics(uri, signal)
+        .then((diagnostics) => ({ diagnostics }))
+        .catch((error) => ({ error }))
+      : undefined;
 
     let typeScriptDiagnostics;
     if (
@@ -230,9 +366,12 @@ export class LspClient {
           `${this.serverId} diagnostic pull timed out`,
         );
         if (result?.kind === "full" || result?.kind === "unchanged") {
+          const bridgeDiagnostics = await resolveBridgeDiagnostics(
+            typeScriptBridgeDiagnostics,
+          );
           return {
             status: "confirmed",
-            diagnostics: normalizeDiagnostics(result.items ?? []),
+            diagnostics: mergeDiagnostics(result.items ?? [], bridgeDiagnostics),
           };
         }
       } catch {
@@ -243,16 +382,33 @@ export class LspClient {
     }
 
     const publication = await this.waitForPublication(uri, version, baseline, signal);
+    const bridgeDiagnostics = await resolveBridgeDiagnostics(
+      typeScriptBridgeDiagnostics,
+    );
     if (!publication) {
+      // A successful sidecar response is also a current, versioned check of the
+      // Vue source. It remains useful when Volar did not publish in time, but an
+      // empty sidecar response cannot prove that SFC parser diagnostics are clean.
+      if (bridgeDiagnostics?.length) {
+        return { status: "confirmed", diagnostics: bridgeDiagnostics };
+      }
       return { status: "unconfirmed", diagnostics: [] };
     }
     // PublishDiagnostics.version is optional in LSP. A new publication observed
     // after this document update is the freshest result available; the service
     // separately verifies that the file snapshot did not change while checking.
-    return confirmedPublication(publication, version);
+    return confirmedPublication(publication, version, bridgeDiagnostics);
+  }
+
+  async closeTypeScriptBridge() {
+    const bridge = this.bridgeClient;
+    this.bridgeClient = undefined;
+    this.warmedBridgeDocuments.clear();
+    await bridge?.close();
   }
 
   async close() {
+    await this.closeTypeScriptBridge();
     const child = this.process;
     if (!child) {
       this.clearTrackingState();
@@ -404,6 +560,8 @@ export class LspClient {
   evictDocument(uri) {
     this.documentAccess.delete(uri);
     this.markEvicted(uri);
+    this.warmedBridgeDocuments.delete(uri);
+    this.bridgeClient?.evictDocument(uri);
     if (this.documents.has(uri) && this.alive && this.connection) {
       try {
         this.connection.sendNotification("textDocument/didClose", {
@@ -435,6 +593,7 @@ export class LspClient {
     this.typeScriptDiagnosticsAttempted.clear();
     this.documentAccess.clear();
     this.evictedUris.clear();
+    this.warmedBridgeDocuments.clear();
   }
 
   removeWaiter(uri, target) {
@@ -469,6 +628,14 @@ function normalizeDocumentUri(uri) {
   }
 }
 
+function normalizedFilePath(filePath) {
+  try {
+    return fileURLToPath(normalizeDocumentUri(pathToFileURL(filePath).href));
+  } catch {
+    return filePath;
+  }
+}
+
 function supportsTypeScriptDiagnostics(serverId, capabilities) {
   const commands = capabilities?.executeCommandProvider?.commands;
   return (
@@ -478,20 +645,44 @@ function supportsTypeScriptDiagnostics(serverId, capabilities) {
   );
 }
 
-function confirmedPublication(publication, version) {
+function confirmedPublication(publication, version, additionalDiagnostics = []) {
   return {
     status:
       publication.version === undefined || publication.version === version
         ? "confirmed"
         : "unconfirmed",
-    diagnostics: publication.diagnostics,
+    diagnostics: mergeDiagnostics(publication.diagnostics, additionalDiagnostics),
   };
+}
+
+function mergeDiagnostics(primary, additional) {
+  return normalizeDiagnostics([
+    ...(primary ?? []),
+    ...(additional ?? []),
+  ]);
+}
+
+async function resolveBridgeDiagnostics(promise) {
+  if (!promise) return undefined;
+  const result = await promise;
+  if (result.error?.name === "AbortError") throw result.error;
+  return result.diagnostics;
+}
+
+function unwrapTypeScriptResponse(response) {
+  if (response?.type === "response") {
+    if (response.success === false) {
+      throw new Error(response.message || "TypeScript server request failed");
+    }
+    return response.body;
+  }
+  return response;
 }
 
 function normalizeTypeScriptDiagnostics(diagnostics) {
   return normalizeDiagnostics(
     diagnostics.map((diagnostic) => ({
-      severity: Number.isInteger(diagnostic?.category) ? diagnostic.category : 1,
+      severity: typeScriptSeverity(diagnostic?.category),
       message: diagnostic?.text,
       code: diagnostic?.code,
       source: "typescript",
@@ -501,6 +692,25 @@ function normalizeTypeScriptDiagnostics(diagnostics) {
       },
     })),
   );
+}
+
+function typeScriptSeverity(category) {
+  if (typeof category === "string") {
+    switch (category.toLowerCase()) {
+      case "error":
+        return 1;
+      case "warning":
+        return 2;
+      case "suggestion":
+        return 3;
+      case "message":
+        return 4;
+      default:
+        return 1;
+    }
+  }
+  // Keep accepting the numeric severity shape used by older/custom bridges.
+  return Number.isInteger(category) ? category : 1;
 }
 
 function typeScriptPosition(position) {
