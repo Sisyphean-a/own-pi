@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Pi optimizations for shell redirection, vision tools, and silent extension updates",
+  "description": "Pi optimizations for shell redirection, vision tools, fullscreen scrolling, and silent extension updates",
   "keywords": [
     "pi-package",
     "pi-extension",
     "optimization",
     "nul-redirect",
     "vision-mcp",
+    "fullscreen-scroll",
     "auto-update"
   ],
   "files": [

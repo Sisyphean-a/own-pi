@@ -27,7 +27,7 @@ test("loads all optimizations as independent, non-fatal features", async () => {
   assert.ok(events.has("session_start"));
   assert.ok(events.has("model_select"));
   assert.ok(events.has("before_agent_start"));
-  assert.deepEqual([...commands].sort(), ["nulfix", "vision-mcp"]);
+  assert.deepEqual([...commands].sort(), ["fullscreen-scroll", "nulfix", "vision-mcp"]);
 });
 
 test("factory remains safe when optional capability methods are absent", async () => {

@@ -37,6 +37,11 @@ export default async function piOptimization(pi: ExtensionAPI): Promise<void> {
       pi,
     ),
     activateFeature(
+      "fullscreen-scroll",
+      () => import("../src/fullscreen-scroll.ts"),
+      pi,
+    ),
+    activateFeature(
       "auto-extension-update",
       () => import("../src/auto-extension-update.ts"),
       pi,
