@@ -128,6 +128,17 @@ test("keeps slash commands local until due and expands them only on dispatch", a
   ]);
 });
 
+test("dispatches when command and session lifecycle handlers receive different context objects", async () => {
+  const harness = createHarness();
+  const sessionContext = { ...harness.ctx };
+  const commandContext = { ...harness.ctx };
+  await harness.handlers.get("session_start")?.({}, sessionContext);
+  await harness.commands.get("wait")?.("1m -- context-safe", commandContext);
+
+  harness.advance(60_000);
+  assert.deepEqual(harness.sent.map((item) => item.content), ["context-safe"]);
+});
+
 test("cancels captured and scheduled tasks", async () => {
   const harness = createHarness();
   await harness.handlers.get("session_start")?.({}, harness.ctx);

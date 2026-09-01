@@ -146,6 +146,7 @@ export function activateWaitExtension(
   let armedDueAt: number | undefined;
   let timer: unknown;
   let activeContext: ExtensionContext | undefined;
+  let sessionGeneration = 0;
   let dispatching = false;
 
   const notify = (
@@ -188,14 +189,16 @@ export function activateWaitExtension(
     const next = [...tasks.values()].sort((a, b) => a.dueAt - b.dueAt)[0];
     if (!next) return;
     const delay = Math.max(0, Math.min(next.dueAt - runtime.now(), MAX_TIMER_DELAY_MS));
+    const generation = sessionGeneration;
     timer = runtime.setTimer(() => {
       timer = undefined;
-      void dispatchDue(ctx);
+      void dispatchDue(generation);
     }, delay);
   };
 
-  const dispatchDue = async (ctx: ExtensionContext): Promise<void> => {
-    if (dispatching || ctx !== activeContext) return;
+  const dispatchDue = async (generation: number): Promise<void> => {
+    const ctx = activeContext;
+    if (dispatching || generation !== sessionGeneration || !ctx) return;
     dispatching = true;
     try {
       const now = runtime.now();
@@ -220,7 +223,7 @@ export function activateWaitExtension(
       }
     } finally {
       dispatching = false;
-      if (ctx === activeContext) armNextTimer(ctx);
+      if (generation === sessionGeneration && ctx === activeContext) armNextTimer(ctx);
     }
   };
 
@@ -259,12 +262,14 @@ export function activateWaitExtension(
 
   pi.on("session_start", async (_event, ctx) => {
     reset();
+    sessionGeneration += 1;
     activeContext = ctx;
     updateStatus(ctx);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
     reset(ctx);
+    sessionGeneration += 1;
     activeContext = undefined;
   });
 
