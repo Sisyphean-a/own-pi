@@ -3,9 +3,15 @@ import { test } from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   CODEX_PROVIDER_ID,
+  OPENCODE_GO_PROVIDER_ID,
   fetchCodexUsage,
+  fetchOpenCodeGoUsage,
+  fetchProviderUsage,
   formatCodexUsage,
+  formatOpenCodeGoUsage,
+  formatProviderUsage,
   type CodexUsage,
+  type OpenCodeGoUsage,
 } from "../src/codex-usage.ts";
 
 const ACCOUNT_ID = "account-test-123";
@@ -65,6 +71,98 @@ test("formats Codex percentages with five-hour time and weekly date resets", () 
   };
 
   assert.equal(formatCodexUsage(usage), "codex [ 50%  19:23 ] [ 78%  08-26 ]");
+});
+
+test("formats OpenCode Go usage with five-hour, weekly, and monthly resets", () => {
+  const usage: OpenCodeGoUsage = {
+    fiveHour: {
+      remainingPercent: 100,
+      resetAt: localTimestamp(2026, 8, 26, 19, 23),
+    },
+    weekly: {
+      remainingPercent: 94,
+      resetAt: localTimestamp(2026, 8, 26),
+    },
+    monthly: {
+      remainingPercent: 64,
+      resetAt: localTimestamp(2026, 9, 18),
+    },
+  };
+
+  assert.equal(
+    formatOpenCodeGoUsage(usage),
+    "opencode-go [ 100%  19:23 ] [ 94%  08-26 ] [ 64%  09-18 ]",
+  );
+  assert.equal(
+    formatProviderUsage({ provider: OPENCODE_GO_PROVIDER_ID, usage }),
+    "opencode-go [ 100%  19:23 ] [ 94%  08-26 ] [ 64%  09-18 ]",
+  );
+});
+
+test("fetches OpenCode Go usage from the official API-key endpoint", async (t) => {
+  const previous = globalThis.fetch;
+  const fiveHourReset = new Date(localTimestamp(2026, 8, 26, 19, 23) * 1000).toISOString();
+  const weeklyReset = new Date(localTimestamp(2026, 8, 26) * 1000).toISOString();
+  const monthlyReset = new Date(localTimestamp(2026, 9, 18) * 1000).toISOString();
+  let requestUrl = "";
+  let requestRedirect: string | undefined;
+  let requestHeaders: Headers | undefined;
+  globalThis.fetch = (async (input, init) => {
+    requestUrl = String(input);
+    requestRedirect = init?.redirect;
+    requestHeaders = new Headers(init?.headers);
+    return new Response(JSON.stringify({
+      usage: {
+        rolling: {
+          status: "ok",
+          percent: 0,
+          resetsAt: fiveHourReset,
+        },
+        weekly: {
+          status: "ok",
+          percent: 6,
+          resetsAt: weeklyReset,
+        },
+        monthly: {
+          status: "ok",
+          percent: 36,
+          resetsAt: monthlyReset,
+        },
+      },
+    }), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = previous;
+  });
+
+  const context = makeContext({ provider: OPENCODE_GO_PROVIDER_ID, apiKey: "go-api-key" });
+  const usage = await fetchOpenCodeGoUsage(context);
+  assert.equal(requestUrl, "https://opencode.ai/zen/go/v1/usage");
+  assert.equal(requestRedirect, "error");
+  assert.equal(requestHeaders?.get("authorization"), "Bearer go-api-key");
+  assert.deepEqual(usage, {
+    fiveHour: { remainingPercent: 100, resetAt: Date.parse(fiveHourReset) / 1000 },
+    weekly: { remainingPercent: 94, resetAt: Date.parse(weeklyReset) / 1000 },
+    monthly: { remainingPercent: 64, resetAt: Date.parse(monthlyReset) / 1000 },
+  });
+
+  const routed = await fetchProviderUsage(context);
+  assert.equal(formatProviderUsage(routed!), "opencode-go [ 100%  19:23 ] [ 94%  08-26 ] [ 64%  09-18 ]");
+});
+
+test("rejects incomplete OpenCode Go usage windows", async (t) => {
+  const previous = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    usage: {
+      rolling: { percent: 10, resetsAt: "2026-08-26T19:23:00.000Z" },
+      weekly: { percent: 20, resetsAt: "2026-08-26T00:00:00.000Z" },
+    },
+  }), { status: 200 })) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = previous;
+  });
+
+  assert.equal(await fetchOpenCodeGoUsage(makeContext({ provider: OPENCODE_GO_PROVIDER_ID })), undefined);
 });
 
 test("fetches official OAuth usage with only the required Codex identity headers", async (t) => {

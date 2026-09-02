@@ -1,7 +1,7 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { fetchCodexUsage, formatCodexUsage } from "./codex-usage.ts";
+import { fetchProviderUsage, formatProviderUsage } from "./codex-usage.ts";
 import { loadCombos } from "./combos.ts";
 import { QuickPanel } from "./quick-panel-ui.ts";
 import { createSkillDirective, getSkills } from "./skills.ts";
@@ -90,11 +90,11 @@ export async function showQuickPanel(pi: ExtensionAPI, ctx: ExtensionContext): P
     return;
   }
 
-  // Codex usage is optional: let the panel open immediately and fill the footer
-  // when the official-account request completes.
+  // Provider usage is optional: let the panel open immediately and fill the
+  // footer when the official request completes.
   const usageModel = ctx.model;
   const usageAbort = new AbortController();
-  const usagePromise = fetchCodexUsage(ctx, usageAbort.signal).catch(() => undefined);
+  const usagePromise = fetchProviderUsage(ctx, usageAbort.signal).catch(() => undefined);
   let closed = false;
   let completed = false;
   let result: PickerResult | undefined;
@@ -126,7 +126,7 @@ export async function showQuickPanel(pi: ExtensionAPI, ctx: ExtensionContext): P
         );
         void usagePromise.then((usage) => {
           if (closed || usage === undefined || !sameModel(ctx.model, usageModel)) return;
-          panel.setCodexUsage(formatCodexUsage(usage));
+          panel.setUsage(formatProviderUsage(usage));
         }).catch(() => {
           // The usage indicator is optional and must not reject the panel.
         });
@@ -134,7 +134,7 @@ export async function showQuickPanel(pi: ExtensionAPI, ctx: ExtensionContext): P
       },
       {
         overlay: true,
-        overlayOptions: { width: "80%", minWidth: 56, maxHeight: "70%", margin: 1 },
+        overlayOptions: { width: "80%", minWidth: 64, maxHeight: "70%", margin: 1 },
       },
     );
   } finally {

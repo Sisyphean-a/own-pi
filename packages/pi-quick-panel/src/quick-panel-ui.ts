@@ -71,7 +71,7 @@ export class QuickPanel {
   private selectList: SelectList;
   private tab: PickerTab = "skills";
   private isFocused = false;
-  private codexUsage: string | undefined;
+  private providerUsage: string | undefined;
 
   constructor(
     skills: Skill[],
@@ -166,9 +166,9 @@ export class QuickPanel {
     this.onDispose();
   }
 
-  setCodexUsage(value: string | undefined): void {
-    if (this.codexUsage === value) return;
-    this.codexUsage = value;
+  setUsage(value: string | undefined): void {
+    if (this.providerUsage === value) return;
+    this.providerUsage = value;
     this.container.invalidate();
     this.tui.requestRender();
   }
@@ -269,9 +269,9 @@ export class QuickPanel {
 
   private renderHelp(width: number): string {
     const left = this.theme.fg("dim", this.helpText());
-    if (!this.codexUsage) return truncateToWidth(left, width, "");
+    if (!this.providerUsage) return truncateToWidth(left, width, "");
 
-    const right = this.theme.fg("dim", this.codexUsage);
+    const right = this.theme.fg("dim", this.providerUsage);
     const rightWidth = visibleWidth(right);
     if (rightWidth >= width) return truncateToWidth(right, width, "");
 

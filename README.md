@@ -26,7 +26,7 @@ pi install ./packages/pi-quick-panel
 
 ## pi-lean-tool-display
 
-紧凑显示扩展，用于隐藏折叠的思考内容、在页脚显示实时思考状态、压缩工具调用和用户消息，并显示 Codex 5 小时窗口额度状态。
+紧凑显示扩展，用于隐藏折叠的思考内容、在页脚显示实时思考状态、压缩工具调用和用户消息，并显示 Codex 或 OpenCode Go 订阅额度状态。
 
 ```bash
 pi -e ./packages/pi-lean-tool-display

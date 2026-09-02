@@ -1,6 +1,6 @@
 # pi-quick-panel
 
-Pi 的交互式快捷面板扩展，集中管理技能、模型、思考等级和模型组合。
+Pi 的交互式快捷面板扩展，集中管理技能、模型、思考等级和模型组合，并在 Codex 或 OpenCode Go 模型下显示订阅限额。
 
 ## 使用
 
@@ -15,7 +15,8 @@ pi install ./packages/pi-quick-panel
 - `Ctrl+L` 打开面板；
 - `/quick-panel` 打开面板；
 - 选择技能会在编辑器当前位置插入 `/skill:<name>`；
-- 输入中的 `/skill:<name>` 会展开为技能正文，技能 frontmatter 不会发送给模型。
+- 输入中的 `/skill:<name>` 会展开为技能正文，技能 frontmatter 不会发送给模型；
+- 当前模型为 `openai-codex` 时显示 5 小时和周限额，当前模型为 `opencode-go` 时显示 5 小时、周和月限额及重置时间。
 
 快捷面板仅在 TUI 中显示；技能指令展开仍由 `input` 事件处理。
 

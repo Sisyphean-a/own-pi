@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CODEX_PROVIDER_ID, createCodexUsageController } from "../src/codex-usage.ts";
+import {
+  CODEX_PROVIDER_ID,
+  OPENCODE_GO_PROVIDER_ID,
+  createCodexUsageController,
+} from "../src/codex-usage.ts";
 
 const STALE_MESSAGE = "This extension ctx is stale after session replacement or reload.";
 
@@ -89,6 +93,31 @@ test("publishes both five-hour and weekly Codex usage percentages", async (t) =>
     id: "lean-codex-usage",
     value: "codex [70%|55%]",
   }]);
+  controller.clear(fake.ctx);
+});
+
+test("publishes all three OpenCode Go usage percentages", async (t) => {
+  let requestUrl = "";
+  let requestHeaders: Headers | undefined;
+  installFetch(t, async (input, init) => {
+    requestUrl = String(input);
+    requestHeaders = new Headers(init?.headers);
+    return new Response(JSON.stringify({
+      usage: {
+        rolling: { status: "ok", percent: 0, resetsAt: "2026-08-26T19:23:00.000Z" },
+        weekly: { status: "ok", percent: 6, resetsAt: "2026-08-26T00:00:00.000Z" },
+        monthly: { status: "ok", percent: 36, resetsAt: "2026-09-18T00:00:00.000Z" },
+      },
+    }), { status: 200 });
+  });
+  const fake = makeFakeContext({ provider: OPENCODE_GO_PROVIDER_ID });
+  const controller = createCodexUsageController();
+
+  await controller.refresh(fake.ctx);
+
+  assert.equal(requestUrl, "https://opencode.ai/zen/go/v1/usage");
+  assert.equal(requestHeaders?.get("authorization"), "Bearer test-key");
+  assert.deepEqual(fake.statusCalls(), [{ id: "lean-codex-usage", value: "opencode-go [100%|94%|64%]" }]);
   controller.clear(fake.ctx);
 });
 

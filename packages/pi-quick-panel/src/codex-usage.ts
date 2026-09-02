@@ -1,7 +1,9 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export const CODEX_PROVIDER_ID = "openai-codex";
+export const OPENCODE_GO_PROVIDER_ID = "opencode-go";
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const OPENCODE_GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 const CODEX_USAGE_TIMEOUT_MS = 10_000;
 const CODEX_AUTH_CLAIM = "https://api.openai.com/auth";
 
@@ -14,6 +16,16 @@ export type CodexUsage = {
   fiveHour: CodexUsageWindow;
   weekly: CodexUsageWindow;
 };
+
+export type OpenCodeGoUsage = {
+  fiveHour: CodexUsageWindow;
+  weekly: CodexUsageWindow;
+  monthly: CodexUsageWindow;
+};
+
+export type ProviderUsage =
+  | { provider: typeof CODEX_PROVIDER_ID; usage: CodexUsage }
+  | { provider: typeof OPENCODE_GO_PROVIDER_ID; usage: OpenCodeGoUsage };
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -78,6 +90,31 @@ function parseCodexUsage(payload: unknown): CodexUsage | undefined {
   return { fiveHour, weekly };
 }
 
+function getOpenCodeGoWindow(value: unknown): CodexUsageWindow | undefined {
+  const window = asRecord(value);
+  const percent = window.percent;
+  const resetsAt = window.resetsAt;
+  if (typeof percent !== "number" || !Number.isFinite(percent)) return undefined;
+  if (typeof resetsAt !== "string" || resetsAt.length === 0) return undefined;
+
+  const resetAt = Date.parse(resetsAt) / 1000;
+  if (!Number.isFinite(resetAt) || resetAt <= 0 || !isValidResetAt(resetAt)) return undefined;
+
+  return {
+    remainingPercent: Math.round(100 - Math.min(100, Math.max(0, percent))),
+    resetAt,
+  };
+}
+
+function parseOpenCodeGoUsage(payload: unknown): OpenCodeGoUsage | undefined {
+  const usage = asRecord(asRecord(payload).usage);
+  const fiveHour = getOpenCodeGoWindow(usage.rolling);
+  const weekly = getOpenCodeGoWindow(usage.weekly);
+  const monthly = getOpenCodeGoWindow(usage.monthly);
+  if (!fiveHour || !weekly || !monthly) return undefined;
+  return { fiveHour, weekly, monthly };
+}
+
 function pad(value: number): string {
   return String(value).padStart(2, "0");
 }
@@ -99,6 +136,21 @@ export function formatCodexUsage(usage: CodexUsage): string {
   const fiveHour = formatWindow(usage.fiveHour, "time");
   const weekly = formatWindow(usage.weekly, "date");
   return fiveHour && weekly ? `codex ${fiveHour} ${weekly}` : "";
+}
+
+export function formatOpenCodeGoUsage(usage: OpenCodeGoUsage): string {
+  const fiveHour = formatWindow(usage.fiveHour, "time");
+  const weekly = formatWindow(usage.weekly, "date");
+  const monthly = formatWindow(usage.monthly, "date");
+  return fiveHour && weekly && monthly
+    ? `opencode-go ${fiveHour} ${weekly} ${monthly}`
+    : "";
+}
+
+export function formatProviderUsage(usage: ProviderUsage): string {
+  return usage.provider === CODEX_PROVIDER_ID
+    ? formatCodexUsage(usage.usage)
+    : formatOpenCodeGoUsage(usage.usage);
 }
 
 export async function fetchCodexUsage(
@@ -142,4 +194,50 @@ export async function fetchCodexUsage(
     clearTimeout(timeout);
     signal?.removeEventListener("abort", abort);
   }
+}
+
+export async function fetchOpenCodeGoUsage(
+  ctx: ExtensionContext,
+  signal?: AbortSignal,
+): Promise<OpenCodeGoUsage | undefined> {
+  if (signal?.aborted) return undefined;
+
+  const model = ctx.model;
+  if (model?.provider !== OPENCODE_GO_PROVIDER_ID) return undefined;
+
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok || typeof auth.apiKey !== "string" || auth.apiKey.length === 0) return undefined;
+  if (signal?.aborted) return undefined;
+
+  const controller = new AbortController();
+  const abort = (): void => controller.abort();
+  const timeout = setTimeout(abort, CODEX_USAGE_TIMEOUT_MS);
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    const response = await fetch(OPENCODE_GO_USAGE_URL, {
+      headers: { Authorization: `Bearer ${auth.apiKey}` },
+      signal: controller.signal,
+      redirect: "error",
+    });
+    if (!response.ok) return undefined;
+    return parseOpenCodeGoUsage(await response.json());
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
+export async function fetchProviderUsage(
+  ctx: ExtensionContext,
+  signal?: AbortSignal,
+): Promise<ProviderUsage | undefined> {
+  if (ctx.model?.provider === CODEX_PROVIDER_ID) {
+    const usage = await fetchCodexUsage(ctx, signal);
+    return usage ? { provider: CODEX_PROVIDER_ID, usage } : undefined;
+  }
+  if (ctx.model?.provider === OPENCODE_GO_PROVIDER_ID) {
+    const usage = await fetchOpenCodeGoUsage(ctx, signal);
+    return usage ? { provider: OPENCODE_GO_PROVIDER_ID, usage } : undefined;
+  }
+  return undefined;
 }

@@ -16,5 +16,5 @@
 - `packages/pi-optimization/src/vision-mcp-auto.ts`：识图 MCP 工具缺失时保持可重试的空操作。
 - `packages/pi-optimization/src/auto-extension-update.ts`：Pi 包管理器能力缺失时不接管更新检查。
 - `packages/pi-quick-panel/extensions/index.ts`：面板 peer 缺失时隐藏面板，技能展开单独降级。
-- `packages/pi-lean-tool-display/extensions/index.ts`：显示补丁、工具显示和 Codex usage 分别降级。
+- `packages/pi-lean-tool-display/extensions/index.ts`：显示补丁、工具显示和 provider usage 分别降级。
 - `packages/pi-wait/extensions/index.ts`：核心模块或 peer 不可用时跳过整个定时消息功能。

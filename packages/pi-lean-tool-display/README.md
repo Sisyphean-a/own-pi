@@ -1,6 +1,6 @@
 # pi-lean-tool-display
 
-Pi 的紧凑显示扩展：隐藏折叠的思考内容、在页脚显示实时思考状态、压缩工具调用和用户消息，并在 Codex 模型下显示 5 小时和周窗口的剩余百分比。
+Pi 的紧凑显示扩展：隐藏折叠的思考内容、在页脚显示实时思考状态、压缩工具调用和用户消息，并在 Codex 或 OpenCode Go 模型下显示订阅限额的剩余百分比。
 
 ## 使用
 
@@ -19,10 +19,10 @@ pi install ./packages/pi-lean-tool-display
 - 用户消息使用紧凑边框渲染；
 - 页脚在空间足够时用 `|` 把仓库/分支、统计、实时思考标记和右对齐模型分组；空间不足时才拆成两行，扩展状态仍保持独立行；
 - 页脚只显示仓库目录名；隐藏 cache read token 数、金额和 `(auto)`，保留输入/输出、cache write、方括号命中率与上下文，并用低饱和近似主题色区分数值类别，其中输入/输出共用 `thinkingLow`；
-- 当前模型为 `openai-codex` 时，从 Codex usage 接口读取并显示 5 小时和周窗口的剩余百分比。
+- 当前模型为 `openai-codex` 时，从 Codex usage 接口读取并显示 5 小时和周窗口的剩余百分比；当前模型为 `opencode-go` 时，从 OpenCode Go usage 接口读取并显示 5 小时、周和月窗口的剩余百分比。
 
-额度显示依赖当前 Pi 认证信息和网络请求；请求失败只清空状态，不影响其他显示功能。
+额度显示依赖当前 Pi 认证信息和网络请求；请求失败只清空状态，不影响其他显示功能。OpenCode Go 使用当前 `opencode-go` API key 请求官方 `https://opencode.ai/zen/go/v1/usage` 接口。
 
-这个包通过 Pi 核心组件的 prototype patch 实现显示定制，依赖 `@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-tui` 的运行时版本兼容性。缺少或版本不兼容时，只跳过受影响的显示补丁或 UI；Codex usage 和其他仍可加载的功能不阻断 Pi 启动。
+这个包通过 Pi 核心组件的 prototype patch 实现显示定制，依赖 `@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-tui` 的运行时版本兼容性。缺少或版本不兼容时，只跳过受影响的显示补丁或 UI；provider usage 和其他仍可加载的功能不阻断 Pi 启动。
 
 迁移完成并确认新包可用后，请停用或移走原 `~/.pi/agent/extensions/lean-tool-display`，避免旧目录与新包同时加载、重复注册快捷键和渲染补丁。

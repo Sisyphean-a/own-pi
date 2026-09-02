@@ -42,7 +42,7 @@ async function refreshUsage(controller: { refresh(ctx: ExtensionContext): Promis
   try {
     await controller.refresh(ctx);
   } catch (error) {
-    console.error(`[pi-lean-tool-display] Codex usage 刷新失败：${errorMessage(error)}`);
+    console.error(`[pi-lean-tool-display] usage 刷新失败：${errorMessage(error)}`);
   }
 }
 
@@ -50,7 +50,7 @@ function clearUsage(controller: { clear(ctx: ExtensionContext): void }, ctx: Ext
   try {
     controller.clear(ctx);
   } catch (error) {
-    console.error(`[pi-lean-tool-display] Codex usage 清理失败：${errorMessage(error)}`);
+    console.error(`[pi-lean-tool-display] usage 清理失败：${errorMessage(error)}`);
   }
 }
 
@@ -104,10 +104,10 @@ export function createThinkingIndicator(clock: IntervalClock = {
 }
 
 export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
-  const [messageDisplay, toolRendering, codexUsageModule, compactFooter] = await Promise.all([
+  const [messageDisplay, toolRendering, usageModule, compactFooter] = await Promise.all([
     loadOptional("消息/思考显示", () => import("../src/message-display.ts")),
     loadOptional("工具显示", () => import("../src/tool-rendering.ts")),
-    loadOptional("Codex usage", () => import("../src/codex-usage.ts")),
+    loadOptional("provider usage", () => import("../src/codex-usage.ts")),
     loadOptional("紧凑页脚", async () => {
       const [footer, tui] = await Promise.all([
         import("../src/compact-footer.ts"),
@@ -134,17 +134,17 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
     thinkingAvailable = runOptional("思考折叠", messageDisplay.installThinkingCollapse);
   }
 
-  let codexUsage: { clear(ctx: ExtensionContext): void; refresh(ctx: ExtensionContext): Promise<void> } | undefined;
+  let usageController: { clear(ctx: ExtensionContext): void; refresh(ctx: ExtensionContext): Promise<void> } | undefined;
   const thinkingIndicator = createThinkingIndicator();
 
   // The controller constructor is local and should not be allowed to affect
   // display registration. Keep this small boundary explicit for old runtimes.
-  if (codexUsageModule) {
+  if (usageModule) {
     try {
-      codexUsage = codexUsageModule.createCodexUsageController();
+      usageController = usageModule.createCodexUsageController();
     } catch (error) {
-      console.error(`[pi-lean-tool-display] Codex usage controller 不可用：${errorMessage(error)}`);
-      codexUsage = undefined;
+      console.error(`[pi-lean-tool-display] provider usage controller 不可用：${errorMessage(error)}`);
+      usageController = undefined;
     }
   }
 
@@ -176,17 +176,15 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
       } catch (error) {
         console.error(`[pi-lean-tool-display] 会话显示初始化失败：${errorMessage(error)}`);
       }
-      if (codexUsage) void refreshUsage(codexUsage, ctx);
+      if (usageController) void refreshUsage(usageController, ctx);
     });
 
-    if (codexUsage) {
-      pi.on("model_select", (event, ctx) => {
+    if (usageController) {
+      pi.on("model_select", (_event, ctx) => {
         try {
-          if (event.model.provider === "openai-codex") {
-            void refreshUsage(codexUsage!, ctx);
-          } else {
-            clearUsage(codexUsage!, ctx);
-          }
+          // The usage controller selects the provider-specific endpoint and
+          // clears the optional status for unsupported providers.
+          void refreshUsage(usageController!, ctx);
         } catch (error) {
           console.error(`[pi-lean-tool-display] 模型切换处理失败：${errorMessage(error)}`);
         }
@@ -199,7 +197,7 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
     pi.on("agent_settled", () => thinkingIndicator.setActive(false));
     pi.on("session_shutdown", (_event, ctx) => {
       thinkingIndicator.setActive(false);
-      if (codexUsage) clearUsage(codexUsage, ctx);
+      if (usageController) clearUsage(usageController, ctx);
     });
 
     if (messageDisplay) {
