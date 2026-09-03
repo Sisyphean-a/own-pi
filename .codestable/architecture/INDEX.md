@@ -9,6 +9,7 @@
 | `package:pi-lean-tool-display` | `packages/pi-lean-tool-display` | [pi-lean-tool-display](packages/pi-lean-tool-display.md) | `extensions/index.ts`、`src/message-display.ts`、`src/tool-rendering.ts`、`src/compact-footer.ts`、`src/codex-usage.ts` |
 | `package:pi-optimization` | `packages/pi-optimization` | [pi-optimization](packages/pi-optimization.md) | `extensions/index.ts`、`src/nul-redirect.ts`、`src/vision-mcp-auto.ts`、`src/auto-extension-update.ts` |
 | `package:pi-wait` | `packages/pi-wait` | [pi-wait](packages/pi-wait.md) | `extensions/index.ts`、`src/wait.ts` |
+| `package:pi-advisor` | `packages/pi-advisor` | [pi-advisor](packages/pi-advisor.md) | `extensions/index.ts`、`src/advisor.ts`、`src/advisor-runner.ts`、`src/advisor-tools.ts`、`src/advisor-messages.ts`、`src/advisor-signals.ts` |
 
 ## 共享机制
 
