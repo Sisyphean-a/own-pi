@@ -4,6 +4,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { Container, Text } from "@earendil-works/pi-tui";
+import { isBuiltInTool, shouldCompact } from "./tool-policy.ts";
 
 type Theme = {
   bold(text: string): string;
@@ -68,7 +69,6 @@ const CONTAINER_PATCH = Symbol.for("pi.lean-tool-display.container-groups.v2");
 const TOOL_PREVIOUS = Symbol.for("pi.lean-tool-display.tool-previous.v1");
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC133_PATTERN = /\x1b\]133;[ABC](?:\x07|\x1b\\)/g;
-const BUILTIN_WITH_COMPACT_RESULTS = new Set(["read", "grep", "find", "ls", "bash"]);
 
 type Patched<T> = T & Record<PropertyKey, unknown>;
 type ToolRendererPatch = {
@@ -392,9 +392,6 @@ function compactWriteResult(
   return emptyResult();
 }
 
-function shouldCompact(component: ToolComponent): boolean {
-  return !component.builtInToolDefinition || BUILTIN_WITH_COMPACT_RESULTS.has(component.toolName);
-}
 
 function isMcpTool(component: ToolComponent): boolean {
   const label = typeof component.toolDefinition?.label === "string" ? component.toolDefinition.label : "";
@@ -473,7 +470,7 @@ export function installToolRenderers(): void {
     if (!shouldCompact(this)) {
       return originalCallRenderer.call(this);
     }
-    if (this.builtInToolDefinition && this.toolName !== "read") {
+    if (isBuiltInTool(this) && this.toolName !== "read") {
       const renderer = originalCallRenderer.call(this);
       return renderer
         ? (args, theme, context) => rememberCallComponent(renderer(args, theme, context), context)
