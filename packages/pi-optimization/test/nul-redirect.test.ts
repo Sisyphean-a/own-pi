@@ -44,6 +44,60 @@ test("only rewrites standalone nul redirect targets", () => {
   assert.equal(rewriteNulRedirects("cmd 2>&1").count, 0);
 });
 
+test("rewrites redirects outside every here-doc while preserving script bodies", () => {
+  const command = [
+    "sh >nul <<SCRIPT >nul",
+    "echo body >nul",
+    "SCRIPT",
+    "printf done >nul",
+  ].join("\n");
+
+  assert.deepEqual(rewriteNulRedirects(command), {
+    command: [
+      "sh >/dev/null <<SCRIPT >/dev/null",
+      "echo body >nul",
+      "SCRIPT",
+      "printf done >/dev/null",
+    ].join("\n"),
+    count: 3,
+    skippedHeredoc: true,
+  });
+});
+
+test("rewrites redirects around here-strings", () => {
+  assert.deepEqual(rewriteNulRedirects("cat <<< 'script' >nul"), {
+    command: "cat <<< 'script' >/dev/null",
+    count: 1,
+    skippedHeredoc: true,
+  });
+});
+
+test("does not rewrite script text passed to write or edit tools", async () => {
+  const pi = createFakePi();
+  installNulRedirect(pi as never);
+
+  const writeEvent = {
+    toolName: "write",
+    input: {
+      path: "script.sh",
+      content: "cat <<SCRIPT\\necho body >nul\\nSCRIPT",
+    },
+  };
+  const editEvent = {
+    toolName: "edit",
+    input: {
+      path: "script.sh",
+      edits: [{ oldText: "echo body", newText: "echo body >nul" }],
+    },
+  };
+
+  await pi.emit("tool_call", writeEvent);
+  await pi.emit("tool_call", editEvent);
+
+  assert.equal(writeEvent.input.content, "cat <<SCRIPT\\necho body >nul\\nSCRIPT");
+  assert.equal(editEvent.input.edits[0].newText, "echo body >nul");
+});
+
 test("AI Bash tool calls are patched without loading the optional Bash backend", async () => {
   const pi = createFakePi();
   installNulRedirect(pi as never);

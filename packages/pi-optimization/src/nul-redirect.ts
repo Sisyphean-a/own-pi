@@ -7,6 +7,17 @@ interface Replacement {
   end: number;
 }
 
+interface HereDoc {
+  delimiter: string;
+  stripTabs: boolean;
+}
+
+interface HereDocOperator {
+  end: number;
+  stripTabs: boolean;
+  hereString: boolean;
+}
+
 export interface NulRewriteResult {
   command: string;
   count: number;
@@ -174,6 +185,94 @@ function applyReplacements(command: string, replacements: Replacement[]): string
   return result;
 }
 
+function getHereDocOperator(command: string, index: number): HereDocOperator | undefined {
+  if (command[index] !== "<" || command[index + 1] !== "<") return undefined;
+
+  if (command[index + 2] === "<") {
+    return { end: index + 3, stripTabs: false, hereString: true };
+  }
+
+  const stripTabs = command[index + 2] === "-";
+  return {
+    end: index + (stripTabs ? 3 : 2),
+    stripTabs,
+    hereString: false,
+  };
+}
+
+function parseHereDocDelimiter(
+  command: string,
+  start: number,
+): { delimiter: string; end: number } | undefined {
+  let index = start;
+  while (isHorizontalWhitespace(command[index])) index++;
+
+  if (index >= command.length || command[index] === "\r" || command[index] === "\n") {
+    return undefined;
+  }
+
+  let delimiter = "";
+  let hasPart = false;
+
+  while (index < command.length) {
+    const char = command[index];
+
+    if (char === "\\") {
+      if (index + 1 >= command.length) return undefined;
+      const next = command[index + 1];
+      if (next === "\r" && command[index + 2] === "\n") {
+        index += 3;
+        continue;
+      }
+      delimiter += next;
+      hasPart = true;
+      index += 2;
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
+      const end = skipQuoted(command, index, char);
+      if (end > command.length || command[end - 1] !== char) return undefined;
+      delimiter += command.slice(index + 1, end - 1);
+      hasPart = true;
+      index = end;
+      continue;
+    }
+
+    if (isTokenBoundary(char)) break;
+
+    delimiter += char;
+    hasPart = true;
+    index++;
+  }
+
+  return hasPart ? { delimiter, end: index } : undefined;
+}
+
+function skipHereDocBodies(command: string, start: number, hereDocs: HereDoc[]): number {
+  let index = start;
+
+  for (const hereDoc of hereDocs) {
+    while (index < command.length) {
+      const lineEnd = command.indexOf("\n", index);
+      const end = lineEnd === -1 ? command.length : lineEnd;
+      let line = command.slice(index, end);
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+
+      const comparableLine = hereDoc.stripTabs ? line.replace(/^\t+/, "") : line;
+      if (comparableLine === hereDoc.delimiter) {
+        index = lineEnd === -1 ? command.length : lineEnd + 1;
+        break;
+      }
+
+      if (lineEnd === -1) return command.length;
+      index = lineEnd + 1;
+    }
+  }
+
+  return index;
+}
+
 /**
  * 安全改写 Bash 命令中的裸 `nul` 重定向目标。
  *
@@ -186,6 +285,8 @@ export function rewriteNulRedirects(command: string): NulRewriteResult {
   }
 
   const replacements: Replacement[] = [];
+  const hereDocs: HereDoc[] = [];
+  let skippedHeredoc = false;
   let index = 0;
 
   while (index < command.length) {
@@ -203,13 +304,42 @@ export function rewriteNulRedirects(command: string): NulRewriteResult {
 
     if (isCommentStart(command, index)) {
       const newline = command.indexOf("\n", index + 1);
-      index = newline === -1 ? command.length : newline + 1;
+      if (hereDocs.length > 0 && newline !== -1) {
+        index = skipHereDocBodies(command, newline + 1, hereDocs);
+        hereDocs.length = 0;
+      } else {
+        index = newline === -1 ? command.length : newline + 1;
+      }
       continue;
     }
 
-    // Here-doc/Here-string 的正文不是普通 Shell 代码，整条命令保持不变。
-    if (char === "<" && command[index + 1] === "<") {
-      return { command, count: 0, skippedHeredoc: true };
+    if (char === "\n" && hereDocs.length > 0) {
+      index = skipHereDocBodies(command, index + 1, hereDocs);
+      hereDocs.length = 0;
+      continue;
+    }
+
+    // Here-doc/Here-string 正文不是普通 Shell 代码，只跳过正文；正文外仍可改写。
+    const hereDocOperator = getHereDocOperator(command, index);
+    if (hereDocOperator) {
+      skippedHeredoc = true;
+      if (hereDocOperator.hereString) {
+        index = hereDocOperator.end;
+        continue;
+      }
+
+      const delimiter = parseHereDocDelimiter(command, hereDocOperator.end);
+      if (!delimiter) {
+        return {
+          command: applyReplacements(command, replacements),
+          count: replacements.length,
+          skippedHeredoc: true,
+        };
+      }
+
+      hereDocs.push({ delimiter: delimiter.delimiter, stripTabs: hereDocOperator.stripTabs });
+      index = delimiter.end;
+      continue;
     }
 
     const operatorEnd = getRedirectOperatorEnd(command, index);
@@ -231,7 +361,7 @@ export function rewriteNulRedirects(command: string): NulRewriteResult {
   return {
     command: applyReplacements(command, replacements),
     count: replacements.length,
-    skippedHeredoc: false,
+    skippedHeredoc,
   };
 }
 
