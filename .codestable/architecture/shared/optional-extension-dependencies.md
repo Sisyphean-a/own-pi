@@ -11,10 +11,11 @@
 
 ## 代码锚点
 
-- `packages/pi-optimization/extensions/index.ts`：三个优化功能独立激活。
+- `packages/pi-optimization/extensions/index.ts`：五个优化/调度功能独立激活。
 - `packages/pi-optimization/src/nul-redirect.ts`：手动 Bash 后端动态加载，缺失时保留 Pi 原始执行路径。
 - `packages/pi-optimization/src/vision-mcp-auto.ts`：识图 MCP 工具缺失时保持可重试的空操作。
 - `packages/pi-optimization/src/auto-extension-update.ts`：Pi 包管理器能力缺失时不接管更新检查。
-- `packages/pi-quick-panel/extensions/index.ts`：面板 peer 缺失时隐藏面板，技能展开单独降级。
-- `packages/pi-lean-tool-display/extensions/index.ts`：显示补丁、工具显示和 provider usage 分别降级。
-- `packages/pi-wait/extensions/index.ts`：核心模块或 peer 不可用时跳过整个定时消息功能。
+- `packages/pi-optimization/src/wait.ts`：定时消息只依赖 Pi 生命周期和发送接口，UI 故障不改变调度。
+- `packages/pi-tui-enhancements/extensions/index.ts`：显示和面板两个功能域独立激活。
+- `packages/pi-tui-enhancements/src/display/index.ts`：显示补丁、工具显示、footer 和 provider usage 分别降级。
+- `packages/pi-tui-enhancements/src/panel/index.ts`：面板 peer 缺失时隐藏面板，技能展开单独降级。

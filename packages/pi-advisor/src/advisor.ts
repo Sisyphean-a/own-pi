@@ -21,10 +21,8 @@
  * - /advisor                     — Show status or manually trigger consultation
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
 import { type Message, type ThinkingLevel } from "@earendil-works/pi-ai";
-import { getAgentDir, keyHint, type ExtensionAPI, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { keyHint, type ExtensionAPI, type ExtensionContext, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { buildAdvisorMessages } from "./advisor-messages.ts";
 import {
 	buildExecutorSignals,
@@ -37,16 +35,15 @@ import {
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { runAdvisor } from "./advisor-runner.ts";
-
-interface AdvisorConfig {
-	enabled: boolean;
-	provider: string;
-	model: string;
-	maxUsesPerRun: number;
-	maxTokens: number;
-	reasoning: ThinkingLevel;
-	maxContextMessages: number;
-}
+import {
+	DEFAULT_CONFIG,
+	VALID_REASONING_LEVELS,
+	loadAdvisorConfig,
+	normalizeSkipWhenCurrentModel,
+	saveAdvisorConfig,
+	shouldSkipAdvisorForCurrentModel,
+	type AdvisorConfig,
+} from "./advisor-config.ts";
 
 interface AdvisorUsage {
 	inputTokens: number;
@@ -63,22 +60,8 @@ interface AdvisorDetails {
 	message?: string;
 }
 
-const DEFAULT_CONFIG: AdvisorConfig = {
-	enabled: false,
-	provider: "anthropic",
-	model: "claude-fable-5",
-	maxUsesPerRun: 3,
-	// Adaptive-thinking models count thinking tokens against the output cap;
-	// 8k left too little room for the actual advice at reasoning=high.
-	maxTokens: 16384,
-	reasoning: "high",
-	maxContextMessages: 18,
-};
-
 const MAX_SYSTEM_PROMPT_CHARS = 12000;
 const RECENT_TOOL_SUMMARY_COUNT = 8;
-
-const VALID_REASONING_LEVELS: ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
 
 const ADVISOR_SYSTEM_PROMPT = `You are a senior engineering advisor. The executor model is doing the work; you observe the transcript and provide strategic guidance when consulted.
 
@@ -103,36 +86,6 @@ Output format:
 - If you disagree with evidence the executor gathered, state the conflict explicitly — don't silently override
 
 Keep it short. The executor will read your advice and immediately act on it.`;
-
-function configPath(): string {
-	return join(getAgentDir(), "advisor.json");
-}
-
-function loadConfig(): AdvisorConfig {
-	const path = configPath();
-	if (!existsSync(path)) return { ...DEFAULT_CONFIG };
-	try {
-		const raw = JSON.parse(readFileSync(path, "utf-8"));
-		return {
-			enabled: typeof raw.enabled === "boolean" ? raw.enabled : DEFAULT_CONFIG.enabled,
-			provider: typeof raw.provider === "string" ? raw.provider : DEFAULT_CONFIG.provider,
-			model: typeof raw.model === "string" ? raw.model : DEFAULT_CONFIG.model,
-			maxUsesPerRun: typeof raw.maxUsesPerRun === "number" ? raw.maxUsesPerRun : DEFAULT_CONFIG.maxUsesPerRun,
-			maxTokens: typeof raw.maxTokens === "number" ? raw.maxTokens : DEFAULT_CONFIG.maxTokens,
-			reasoning: VALID_REASONING_LEVELS.includes(raw.reasoning) ? raw.reasoning : DEFAULT_CONFIG.reasoning,
-			maxContextMessages: typeof raw.maxContextMessages === "number" ? raw.maxContextMessages : DEFAULT_CONFIG.maxContextMessages,
-		};
-	} catch {
-		return { ...DEFAULT_CONFIG };
-	}
-}
-
-function saveConfig(config: AdvisorConfig): void {
-	const path = configPath();
-	const dir = dirname(path);
-	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-	writeFileSync(path, JSON.stringify(config, null, 2), "utf-8");
-}
 
 function hasUsableAuth(auth: { apiKey?: unknown; headers?: unknown }): boolean {
 	if (typeof auth.apiKey === "string" && auth.apiKey.length > 0) return true;
@@ -221,7 +174,7 @@ function buildPreview(text: string, lines: number): { preview: string; truncated
 }
 
 export default function advisorExtension(pi: ExtensionAPI) {
-	let config = loadConfig();
+	let config = loadAdvisorConfig();
 	let usesThisRun = 0;
 	let runToolEvents: RunToolEvent[] = [];
 
@@ -239,14 +192,20 @@ export default function advisorExtension(pi: ExtensionAPI) {
 		runToolEvents.push(summarizeToolResult(event));
 	});
 
-	pi.on("session_start", async () => {
-		config = loadConfig();
-		updateToolRegistration();
+	pi.on("session_start", async (_event, ctx) => {
+		config = loadAdvisorConfig();
+		updateToolRegistration(ctx);
 	});
 
-	function updateToolRegistration() {
+	pi.on("model_select", (_event, ctx) => {
+		config = loadAdvisorConfig();
+		updateToolRegistration(ctx);
+	});
+
+	function updateToolRegistration(ctx?: Pick<ExtensionContext, "model">) {
 		const activeTools = pi.getActiveTools();
-		if (config.enabled) {
+		const shouldEnable = config.enabled && !shouldSkipAdvisorForCurrentModel(ctx?.model, config.skipWhenCurrentModel);
+		if (shouldEnable) {
 			if (!activeTools.includes("advisor")) {
 				pi.setActiveTools([...activeTools, "advisor"]);
 			}
@@ -276,7 +235,15 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 		}),
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			config = loadConfig();
+			config = loadAdvisorConfig();
+
+			if (shouldSkipAdvisorForCurrentModel(ctx.model, config.skipWhenCurrentModel)) {
+				const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown";
+				return {
+					content: [{ type: "text", text: `Advisor skipped for current model ${currentModel}. Continue without advice.` }],
+					details: { error: "current_model_skipped", callNumber: usesThisRun } as AdvisorDetails,
+				};
+			}
 
 			if (usesThisRun >= config.maxUsesPerRun) {
 				return {
@@ -384,6 +351,9 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 				return new Text(theme.fg("muted", "Advisor…"), 0, 0);
 			}
 
+			if (details?.error === "current_model_skipped") {
+				return new Text(theme.fg("dim", text), 0, 0);
+			}
 			if (details?.error) {
 				return new Text(theme.fg("error", "Advisor unavailable: ") + theme.fg("dim", text), 0, 0);
 			}
@@ -436,7 +406,7 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 
 			const parts = trimmed.split(/\s+/);
 			if (parts[0] === "config" && parts.length <= 2) {
-				const keys = ["provider=", "model=", "maxUsesPerRun=", "maxTokens=", "reasoning=", "maxContextMessages="];
+				const keys = ["provider=", "model=", "maxUsesPerRun=", "maxTokens=", "reasoning=", "maxContextMessages=", "skipWhenCurrentModel="];
 				const lastPart = parts[parts.length - 1] ?? "";
 				const matches = keys.filter((k) => k.startsWith(lastPart));
 				return matches.length > 0 ? matches.map((k) => ({ value: `config ${k}`, label: k })) : null;
@@ -473,16 +443,22 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 					config.provider = provider;
 					config.model = modelId;
 					config.enabled = true;
-					saveConfig(config);
-					updateToolRegistration();
-					ctx.ui.notify(`Advisor enabled: ${config.provider}/${config.model}`, "info");
+					saveAdvisorConfig(config);
+					updateToolRegistration(ctx);
+					const currentModelSkipped = shouldSkipAdvisorForCurrentModel(ctx.model, config.skipWhenCurrentModel);
+					ctx.ui.notify(
+						currentModelSkipped
+							? `Advisor enabled: ${config.provider}/${config.model} (skipped for current model)`
+							: `Advisor enabled: ${config.provider}/${config.model}`,
+						"info",
+					);
 					break;
 				}
 
 				case "off": {
 					config.enabled = false;
-					saveConfig(config);
-					updateToolRegistration();
+					saveAdvisorConfig(config);
+					updateToolRegistration(ctx);
 					ctx.ui.notify("Advisor disabled", "info");
 					break;
 				}
@@ -500,6 +476,7 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 							`  Max tokens:   ${config.maxTokens}`,
 							`  Reasoning:    ${config.reasoning}`,
 							`  Context msgs: ${config.maxContextMessages}`,
+							`  Skip models:  ${config.skipWhenCurrentModel.join(", ") || "none"}`,
 							"",
 							"Usage:",
 							"  /advisor on [provider/model]  Enable advisor",
@@ -507,7 +484,8 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 							"  /advisor config key=value     Set config value",
 							"  /advisor ask                  Trigger consultation",
 							"",
-							"Config keys: provider, model, maxUsesPerRun, maxTokens, reasoning, maxContextMessages",
+							"Config keys: provider, model, maxUsesPerRun, maxTokens, reasoning, maxContextMessages, skipWhenCurrentModel",
+							"skipWhenCurrentModel accepts comma-separated model IDs or provider/model glob patterns; use clear to reset",
 							`Reasoning levels: ${VALID_REASONING_LEVELS.join(", ")}`,
 						];
 						ctx.ui.notify(lines.join("\n"), "info");
@@ -563,12 +541,18 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 							config.maxContextMessages = num;
 							break;
 						}
+						case "skipWhenCurrentModel":
+							config.skipWhenCurrentModel = /^(?:clear|none)$/i.test(value)
+								? []
+								: normalizeSkipWhenCurrentModel(value);
+							break;
 						default:
-							ctx.ui.notify("Unknown config key. Valid keys: provider, model, maxUsesPerRun, maxTokens, reasoning, maxContextMessages", "warning");
+							ctx.ui.notify("Unknown config key. Valid keys: provider, model, maxUsesPerRun, maxTokens, reasoning, maxContextMessages, skipWhenCurrentModel", "warning");
 							return;
 					}
 
-					saveConfig(config);
+					saveAdvisorConfig(config);
+					updateToolRegistration(ctx);
 					ctx.ui.notify(`Set ${key}=${value}`, "info");
 					break;
 				}
@@ -576,6 +560,10 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 				case "ask": {
 					if (!config.enabled) {
 						ctx.ui.notify("Advisor is disabled. Use /advisor on to enable.", "warning");
+						return;
+					}
+					if (shouldSkipAdvisorForCurrentModel(ctx.model, config.skipWhenCurrentModel)) {
+						ctx.ui.notify(`Advisor skipped for current model ${ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown"}`, "info");
 						return;
 					}
 					const prompt = "Consult the advisor now using the current stage and recent evidence before proceeding.";

@@ -1,29 +1,3 @@
-# 快捷面板上下文
+# 快捷面板上下文（已合并）
 
-## 作用域
-
-- 上下文：`quick-panel`
-- 实现包：`pi-quick-panel`
-- 入口与证据：`packages/pi-quick-panel/extensions/index.ts`、`src/quick-panel.ts`、`src/quick-panel-ui.ts`、`src/codex-usage.ts`、`README.md`
-
-## 术语
-
-- **快捷面板**：Pi TUI 中统一选择技能、模型、思考等级和模型组合的覆盖层。
-- **组合**：同时指定 provider、model 和 thinkingLevel 的可复用模型选择配置。
-- **内联技能指令**：输入文本中的 `/skill:<name>`，其中 `<name>` 是已发现技能的名称。
-- **技能块**：内联技能指令展开后的 `<skill>` 包装正文，包含技能名称、文件位置和相对引用基准。
-
-## 稳定规则
-
-- 快捷面板以便捷为优先：技能列表应便于查看、筛选和判断是否适合当前任务；模型、思考等级和组合选择应减少手工配置。
-- TUI 编辑器中的 `Ctrl+L` 与 `/quick-panel` 都打开快捷面板；非 TUI 模式不创建面板，并明确提示该功能不可用。
-- 选择技能只向当前编辑器插入 `/skill:<name>`；选择模型或思考等级后调用 Pi 的对应设置接口；选择组合前必须确认目标模型存在且支持指定思考等级。
-- 模型列表按当前模型优先，再按 provider 和模型 ID 排序；思考等级来自当前模型支持的等级。
-- 当前模型的 provider 为 `openai-codex` 且使用官方 OAuth 账号时，快捷面板异步请求官方 usage：页脚第一组显示 5 小时窗口剩余百分比与重置时间，第二组显示周窗口剩余百分比与重置日期，格式为 `codex [ 50%  19:23 ] [ 78%  08-26 ]`；当前模型的 provider 为 `opencode-go` 且有 API key 时，请求 `https://opencode.ai/zen/go/v1/usage`，按同样格式追加月窗口，格式为 `opencode-go [ 100%  06:30 ] [ 94%  09-07 ] [ 64%  09-18 ]`；非目标 provider、未认证、请求失败或响应缺少完整窗口/重置字段时不显示该可选信息，且不阻塞面板打开。
-- 全局 `quick-panel.json` 位于 Pi agent 目录；受信任项目额外读取项目配置目录中的同名文件，项目配置按名称覆盖全局配置。配置必须是对象，每个组合必须有非空 provider、model（或 modelId）和有效 thinkingLevel。
-- 输入中的已知内联技能指令按编辑器出现顺序展开为技能块；未知指令保持原文，用户剩余文本保持原有顺序，技能 frontmatter 被移除。
-- 包不重复分发 Pi 核心运行时依赖；核心包由 Pi 提供并通过 peer dependency 声明。
-
-## 非目标
-
-本上下文不负责模型目录、认证配置、技能发现机制或 Pi 核心 UI 的实现；它只消费 Pi 已提供的模型和技能，并负责面板选择、组合配置编排，以及 Codex/OpenCode Go 官方 usage 的可选展示。
+本页仅作为历史链接兼容入口。快捷面板当前属于 `context:tui-experience`，请以[新的 TUI 体验上下文](./tui-experience.md)为准。

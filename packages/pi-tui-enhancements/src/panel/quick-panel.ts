@@ -1,7 +1,7 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { fetchProviderUsage, formatProviderUsage } from "./codex-usage.ts";
+import { fetchProviderUsage, formatProviderUsage } from "../provider-usage.ts";
 import { loadCombos } from "./combos.ts";
 import { QuickPanel } from "./quick-panel-ui.ts";
 import { createSkillDirective, getSkills } from "./skills.ts";

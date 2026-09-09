@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { expandInlineSkillDirectives } from "../src/skills.ts";
+import { expandInlineSkillDirectives } from "../src/panel/skills.ts";
 
 type TestSkill = {
   name: string;

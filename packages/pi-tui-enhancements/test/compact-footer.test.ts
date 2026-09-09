@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createThinkingIndicator } from "../extensions/index.ts";
-import { createCompactFooter } from "../src/compact-footer.ts";
+import { createThinkingIndicator } from "../src/display/index.ts";
+import { createCompactFooter } from "../src/display/compact-footer.ts";
 
 const widthUtils = {
   visibleWidth(text: string): number {
@@ -75,7 +75,7 @@ function fixture(
 test("combines workspace and usage on one line while preserving the status line", () => {
   const footer = fixture(new Map([
     ["mcp", "MCP: 3 servers enabled"],
-    ["lean-codex-usage", "codex [81%]"],
+    ["tui-provider-usage", "codex [81%]"],
   ]));
 
   const lines = footer.render(180);

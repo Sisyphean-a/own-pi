@@ -28,6 +28,26 @@ pi -e ./packages/pi-advisor
 /advisor ask
 ```
 
+如果当前执行模型不需要再调用顾问，可配置跳过规则：
+
+```json
+{
+  "skipWhenCurrentModel": [
+    "openai-codex/gpt-5.6-sol",
+    "openai-codex/gpt-5.7-*"
+  ]
+}
+```
+
+规则支持精确的 `provider/model`、带 `*` 的 glob，或只写模型 ID（匹配任意 provider）。也可以在 Pi 内设置：
+
+```text
+/advisor config skipWhenCurrentModel=openai-codex/gpt-5.6-sol,openai-codex/gpt-5.7-*
+/advisor config skipWhenCurrentModel=clear
+```
+
+匹配时会从 active tools 中隐藏 `advisor`，并在执行层再次拦截，避免配置刚切换或旧调用仍触发顾问。模型强弱没有跨 provider 的可靠排序；需要跳过更强模型时，请显式加入它的 ID 或使用合适的 glob。
+
 执行模型也可以调用：
 
 ```ts
@@ -68,5 +88,6 @@ advisor 只在被执行模型调用时请求顾问模型并返回反馈；顾问
 | `maxTokens` | `16384` | 每次顾问模型响应的输出上限 |
 | `reasoning` | `high` | `minimal` 到 `xhigh` |
 | `maxContextMessages` | `18` | 发送给顾问的消息总数上限 |
+| `skipWhenCurrentModel` | `[]` | 当前执行模型命中规则时不调用顾问；支持 `provider/model`、glob 或裸模型 ID |
 
 本包当前按原版顾问上下文实现，暂不依赖 `pi-observational-memory`。

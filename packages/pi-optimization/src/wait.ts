@@ -4,7 +4,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
-const STATUS_KEY = "pi-wait";
+const STATUS_KEY = "wait";
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const RETRY_DELAY_MS = 30_000;
 

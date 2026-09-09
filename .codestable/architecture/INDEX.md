@@ -5,11 +5,9 @@
 | 作用域 | 所有者 | 当前页面 | 代码锚点 |
 | --- | --- | --- | --- |
 | `package:pi-lsp-feedback` | `packages/pi-lsp-feedback` | [pi-lsp-feedback](packages/pi-lsp-feedback.md) | `extensions/index.js`、`src/diagnostic-service.js`、`src/lsp-client.js`、`src/servers.js` |
-| `package:pi-quick-panel` | `packages/pi-quick-panel` | [pi-quick-panel](packages/pi-quick-panel.md) | `extensions/index.ts`、`src/quick-panel.ts`、`src/quick-panel-ui.ts`、`src/skills.ts`、`src/combos.ts` |
-| `package:pi-lean-tool-display` | `packages/pi-lean-tool-display` | [pi-lean-tool-display](packages/pi-lean-tool-display.md) | `extensions/index.ts`、`src/message-display.ts`、`src/tool-rendering.ts`、`src/compact-footer.ts`、`src/codex-usage.ts` |
-| `package:pi-optimization` | `packages/pi-optimization` | [pi-optimization](packages/pi-optimization.md) | `extensions/index.ts`、`src/nul-redirect.ts`、`src/vision-mcp-auto.ts`、`src/auto-extension-update.ts` |
-| `package:pi-wait` | `packages/pi-wait` | [pi-wait](packages/pi-wait.md) | `extensions/index.ts`、`src/wait.ts` |
-| `package:pi-advisor` | `packages/pi-advisor` | [pi-advisor](packages/pi-advisor.md) | `extensions/index.ts`、`src/advisor.ts`、`src/advisor-runner.ts`、`src/advisor-tools.ts`、`src/advisor-messages.ts`、`src/advisor-signals.ts` |
+| `package:pi-tui-enhancements` | `packages/pi-tui-enhancements` | [pi-tui-enhancements](packages/pi-tui-enhancements.md) | `extensions/index.ts`、`src/display/`、`src/panel/`、`src/provider-usage.ts` |
+| `package:pi-optimization` | `packages/pi-optimization` | [pi-optimization](packages/pi-optimization.md) | `extensions/index.ts`、`src/nul-redirect.ts`、`src/vision-mcp-auto.ts`、`src/fullscreen-scroll.ts`、`src/wait.ts` |
+| `package:pi-advisor` | `packages/pi-advisor` | [pi-advisor](packages/pi-advisor.md) | `extensions/index.ts`、`src/advisor.ts`、`src/advisor-config.ts`、`src/advisor-runner.ts`、`src/advisor-tools.ts`、`src/advisor-messages.ts`、`src/advisor-signals.ts` |
 
 ## 共享机制
 

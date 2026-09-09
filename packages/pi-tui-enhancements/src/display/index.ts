@@ -14,8 +14,8 @@ async function loadOptional<T>(name: string, load: () => Promise<T>): Promise<T 
     return await load();
   } catch (error) {
     // Rule: optional peer packages and prototype APIs may disappear without
-    // preventing Pi or the other independent display features from loading.
-    console.error(`[pi-lean-tool-display] ${name} 不可用，已隐藏相关功能：${errorMessage(error)}`);
+    // preventing Pi or the other independent TUI features from loading.
+    console.error(`[pi-tui-enhancements/display] ${name} 不可用，已隐藏相关功能：${errorMessage(error)}`);
     return undefined;
   }
 }
@@ -25,7 +25,7 @@ function runOptional(name: string, effect: () => void): boolean {
     effect();
     return true;
   } catch (error) {
-    console.error(`[pi-lean-tool-display] ${name} 不可用，已隐藏相关功能：${errorMessage(error)}`);
+    console.error(`[pi-tui-enhancements/display] ${name} 不可用，已隐藏相关功能：${errorMessage(error)}`);
     return false;
   }
 }
@@ -42,7 +42,7 @@ async function refreshUsage(controller: { refresh(ctx: ExtensionContext): Promis
   try {
     await controller.refresh(ctx);
   } catch (error) {
-    console.error(`[pi-lean-tool-display] usage 刷新失败：${errorMessage(error)}`);
+    console.error(`[pi-tui-enhancements/display] usage 刷新失败：${errorMessage(error)}`);
   }
 }
 
@@ -50,7 +50,7 @@ function clearUsage(controller: { clear(ctx: ExtensionContext): void }, ctx: Ext
   try {
     controller.clear(ctx);
   } catch (error) {
-    console.error(`[pi-lean-tool-display] usage 清理失败：${errorMessage(error)}`);
+    console.error(`[pi-tui-enhancements/display] usage 清理失败：${errorMessage(error)}`);
   }
 }
 
@@ -103,14 +103,14 @@ export function createThinkingIndicator(clock: IntervalClock = {
   };
 }
 
-export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
+export default async function displayEnhancements(pi: ExtensionAPI): Promise<void> {
   const [messageDisplay, toolRendering, usageModule, compactFooter] = await Promise.all([
-    loadOptional("消息/思考显示", () => import("../src/message-display.ts")),
-    loadOptional("工具显示", () => import("../src/tool-rendering.ts")),
-    loadOptional("provider usage", () => import("../src/codex-usage.ts")),
+    loadOptional("消息/思考显示", () => import("./message-display.ts")),
+    loadOptional("工具显示", () => import("./tool-rendering.ts")),
+    loadOptional("provider usage", () => import("../provider-usage.ts")),
     loadOptional("紧凑页脚", async () => {
       const [footer, tui] = await Promise.all([
-        import("../src/compact-footer.ts"),
+        import("./compact-footer.ts"),
         import("@earendil-works/pi-tui"),
       ]);
       return {
@@ -141,9 +141,9 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
   // display registration. Keep this small boundary explicit for old runtimes.
   if (usageModule) {
     try {
-      usageController = usageModule.createCodexUsageController();
+      usageController = usageModule.createProviderUsageController();
     } catch (error) {
-      console.error(`[pi-lean-tool-display] provider usage controller 不可用：${errorMessage(error)}`);
+      console.error(`[pi-tui-enhancements/display] provider usage controller 不可用：${errorMessage(error)}`);
       usageController = undefined;
     }
   }
@@ -152,7 +152,7 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
     pi.on("session_start", (_event, ctx) => {
       try {
         if (ctx.hasUI && ctx.ui?.theme) {
-          (globalThis as { __piLeanTheme?: ThemeLike }).__piLeanTheme = ctx.ui.theme as unknown as ThemeLike;
+          (globalThis as { __piTuiTheme?: ThemeLike }).__piTuiTheme = ctx.ui.theme as unknown as ThemeLike;
           if (thinkingAvailable && hasUiMethod(ctx, "setHiddenThinkingLabel")) {
             ctx.ui.setHiddenThinkingLabel(messageDisplay!.getThinkingLabel(messageDisplay!.getThinkingState().collapsed));
           }
@@ -174,7 +174,7 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
           }
         }
       } catch (error) {
-        console.error(`[pi-lean-tool-display] 会话显示初始化失败：${errorMessage(error)}`);
+        console.error(`[pi-tui-enhancements/display] 会话显示初始化失败：${errorMessage(error)}`);
       }
       if (usageController) void refreshUsage(usageController, ctx);
     });
@@ -186,7 +186,7 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
           // clears the optional status for unsupported providers.
           void refreshUsage(usageController!, ctx);
         } catch (error) {
-          console.error(`[pi-lean-tool-display] 模型切换处理失败：${errorMessage(error)}`);
+          console.error(`[pi-tui-enhancements/display] 模型切换处理失败：${errorMessage(error)}`);
         }
       });
     }
@@ -208,7 +208,7 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
             messageDisplay.labelThinking(event.message, ctx.ui.theme as unknown as ThemeLike);
           }
         } catch (error) {
-          console.error(`[pi-lean-tool-display] 思考内容标记失败：${errorMessage(error)}`);
+          console.error(`[pi-tui-enhancements/display] 思考内容标记失败：${errorMessage(error)}`);
         }
       });
 
@@ -219,7 +219,7 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
             messageDisplay.labelThinking(event.message, ctx.ui.theme as unknown as ThemeLike);
           }
         } catch (error) {
-          console.error(`[pi-lean-tool-display] 思考内容标记失败：${errorMessage(error)}`);
+          console.error(`[pi-tui-enhancements/display] 思考内容标记失败：${errorMessage(error)}`);
         }
       });
 
@@ -227,7 +227,7 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
         try {
           event.messages.splice(0, event.messages.length, ...messageDisplay.sanitizeThinking(event.messages));
         } catch (error) {
-          console.error(`[pi-lean-tool-display] 思考内容清理失败：${errorMessage(error)}`);
+          console.error(`[pi-tui-enhancements/display] 思考内容清理失败：${errorMessage(error)}`);
         }
       });
     }
@@ -243,7 +243,7 @@ export default async function leanToolDisplay(pi: ExtensionAPI): Promise<void> {
           messageDisplay!.setThinkingCollapsed(ctx, !messageDisplay!.getThinkingState().collapsed);
         }
       } catch (error) {
-        console.error(`[pi-lean-tool-display] thinking 快捷键失败：${errorMessage(error)}`);
+        console.error(`[pi-tui-enhancements/display] thinking 快捷键失败：${errorMessage(error)}`);
       }
     },
   });

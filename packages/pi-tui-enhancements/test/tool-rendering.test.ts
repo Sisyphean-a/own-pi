@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isBuiltInTool, shouldCompact } from "../src/tool-policy.ts";
+import { isBuiltInTool, shouldCompact } from "../src/display/tool-policy.ts";
 
 test("recognizes Pi's current built-in renderer shape and preserves native edit rendering", () => {
   const edit = {

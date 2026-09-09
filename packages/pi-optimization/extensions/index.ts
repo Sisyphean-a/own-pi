@@ -46,5 +46,10 @@ export default async function piOptimization(pi: ExtensionAPI): Promise<void> {
       () => import("../src/auto-extension-update.ts"),
       pi,
     ),
+    activateFeature(
+      "wait",
+      () => import("../src/wait.ts"),
+      pi,
+    ),
   ]);
 }

@@ -90,8 +90,8 @@ export function installCompactUserMessage(): void {
   if (!previousPatch && prototype[LEGACY_USER_PATCH]) return;
   const originalRender = previousPatch?.originalRender ?? prototype.render;
 
-  prototype.render = function renderLeanUserMessage(this: UserMessageComponent, width: number): string[] {
-    const theme = (globalThis as { __piLeanTheme?: Theme }).__piLeanTheme;
+  prototype.render = function renderCompactUserMessage(this: UserMessageComponent, width: number): string[] {
+    const theme = (globalThis as { __piTuiTheme?: Theme }).__piTuiTheme;
     if (!theme || width < 12) return originalRender.call(this, width);
 
     const contentWidth = width - 4;

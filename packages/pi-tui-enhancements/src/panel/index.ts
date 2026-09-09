@@ -10,7 +10,7 @@ async function loadOptional<T>(name: string, load: () => Promise<T>): Promise<T 
   } catch (error) {
     // Rule: a missing peer package or incompatible TUI only disables this
     // optional feature; it must not reject Pi's extension loading.
-    console.error(`[pi-quick-panel] ${name} 不可用，已隐藏相关功能：${errorMessage(error)}`);
+    console.error(`[pi-tui-enhancements/panel] ${name} 不可用，已隐藏相关功能：${errorMessage(error)}`);
     return undefined;
   }
 }
@@ -26,7 +26,7 @@ function notify(ctx: ExtensionContext, message: string, level: "info" | "warning
 }
 
 export default async function quickPanel(pi: ExtensionAPI): Promise<void> {
-  const skills = await loadOptional("技能展开", () => import("../src/skills.ts"));
+  const skills = await loadOptional("技能展开", () => import("./skills.ts"));
   if (skills && typeof pi.on === "function") {
     pi.on("input", async (event) => {
       try {
@@ -35,7 +35,7 @@ export default async function quickPanel(pi: ExtensionAPI): Promise<void> {
           ? { action: "continue" as const }
           : { action: "transform" as const, text: expanded };
       } catch (error) {
-        console.error(`[pi-quick-panel] 技能展开失败，保留原输入：${errorMessage(error)}`);
+        console.error(`[pi-tui-enhancements/panel] 技能展开失败，保留原输入：${errorMessage(error)}`);
         return { action: "continue" as const };
       }
     });
@@ -43,8 +43,8 @@ export default async function quickPanel(pi: ExtensionAPI): Promise<void> {
 
   const panel = await loadOptional("快捷面板", async () => {
     const [quickPanelModule, editorModule] = await Promise.all([
-      import("../src/quick-panel.ts"),
-      import("../src/quick-panel-editor.ts"),
+      import("./quick-panel.ts"),
+      import("./quick-panel-editor.ts"),
     ]);
     return {
       showQuickPanel: quickPanelModule.showQuickPanel,
@@ -68,7 +68,7 @@ export default async function quickPanel(pi: ExtensionAPI): Promise<void> {
           },
         ));
       } catch (error) {
-        console.error(`[pi-quick-panel] 编辑器接入失败，已隐藏快捷面板：${errorMessage(error)}`);
+        console.error(`[pi-tui-enhancements/panel] 编辑器接入失败，已隐藏快捷面板：${errorMessage(error)}`);
       }
     });
   }

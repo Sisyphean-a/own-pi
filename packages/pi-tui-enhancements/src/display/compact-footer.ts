@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { TUI_PROVIDER_USAGE_STATUS_ID } from "../provider-usage.ts";
 
 type ThemeLike = {
   fg(color: string, text: string): string;
@@ -284,7 +285,11 @@ export function createCompactFooter(
       }
 
       const statuses = Array.from(footerData.getExtensionStatuses().entries())
-        .sort(([a], [b]) => a.localeCompare(b))
+        .sort(([a], [b]) => {
+          const aPriority = a === TUI_PROVIDER_USAGE_STATUS_ID ? 0 : 1;
+          const bPriority = b === TUI_PROVIDER_USAGE_STATUS_ID ? 0 : 1;
+          return aPriority - bPriority || a.localeCompare(b);
+        })
         .map(([, text]) => sanitizeStatusText(text))
         .filter(Boolean);
       if (statuses.length > 0) {
