@@ -22,46 +22,33 @@ const OAUTH_TOKEN = "Bearer pi-oauth-access-token";
 
 type RecordedRequest = { headers: Record<string, string | undefined>; body: any };
 
-function sse(events: Array<[string, unknown]>): string {
-	return events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join("");
-}
-
-function toolUseStream(toolInput: unknown): string {
-	return sse([
-		["message_start", {
-			type: "message_start",
-			message: {
-				id: "msg_e2e",
-				type: "message",
-				role: "assistant",
-				model: "om-e2e",
-				content: [],
-				stop_reason: null,
-				stop_sequence: null,
-				usage: { input_tokens: 12, output_tokens: 0 },
+function openAIToolUseStream(toolInput: unknown): string {
+	const id = "chatcmpl_e2e";
+	const chunk = (choice: unknown) => `data: ${JSON.stringify({
+		id,
+		object: "chat.completion.chunk",
+		choices: [choice],
+	})}\n\n`;
+	return [
+		chunk({ index: 0, delta: { role: "assistant" }, finish_reason: null }),
+		chunk({
+			index: 0,
+			delta: {
+				tool_calls: [{
+					index: 0,
+					id: "toolu_e2e",
+					type: "function",
+					function: { name: "record_observations", arguments: JSON.stringify(toolInput) },
+				}],
 			},
-		}],
-		["content_block_start", {
-			type: "content_block_start",
-			index: 0,
-			content_block: { type: "tool_use", id: "toolu_e2e", name: "record_observations", input: {} },
-		}],
-		["content_block_delta", {
-			type: "content_block_delta",
-			index: 0,
-			delta: { type: "input_json_delta", partial_json: JSON.stringify(toolInput) },
-		}],
-		["content_block_stop", { type: "content_block_stop", index: 0 }],
-		["message_delta", {
-			type: "message_delta",
-			delta: { stop_reason: "tool_use", stop_sequence: null },
-			usage: { output_tokens: 30 },
-		}],
-		["message_stop", { type: "message_stop" }],
-	]);
+			finish_reason: null,
+		}),
+		chunk({ index: 0, delta: {}, finish_reason: "tool_calls" }),
+		"data: [DONE]\n\n",
+	].join("");
 }
 
-async function startMockAnthropic(requests: RecordedRequest[]): Promise<{ server: Server; baseUrl: string }> {
+async function startMockOpenAI(requests: RecordedRequest[]): Promise<{ server: Server; baseUrl: string }> {
 	const server = createServer((req, res) => {
 		const chunks: Buffer[] = [];
 		req.on("data", (chunk) => chunks.push(chunk));
@@ -69,7 +56,7 @@ async function startMockAnthropic(requests: RecordedRequest[]): Promise<{ server
 			const raw = Buffer.concat(chunks).toString("utf8");
 			requests.push({ headers: req.headers as Record<string, string | undefined>, body: raw ? JSON.parse(raw) : undefined });
 			res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-			res.end(toolUseStream({
+			res.end(openAIToolUseStream({
 				observations: [{
 					timestamp: "2026-05-02 10:30",
 					content: "User authenticated with an OAuth provider and asked for memory consolidation.",
@@ -93,7 +80,7 @@ function oauthModelRegistry(): any {
 	return new ModelRegistry({
 		getAuth: async () => undefined,
 		getCompatibilityRequestConfig: () => ({ headers: { Authorization: OAUTH_TOKEN }, authHeader: false }),
-		isUsingOAuth: (providerId: string) => providerId === "kimi-coding",
+		isUsingOAuth: (providerId: string) => providerId === "opencode-go",
 	} as any);
 }
 
@@ -116,16 +103,16 @@ afterEach(async () => {
 describe("OAuth provider end-to-end consolidation", () => {
 	it("records observations using headers-only OAuth auth on a real model request", async () => {
 		const requests: RecordedRequest[] = [];
-		const { server, baseUrl } = await startMockAnthropic(requests);
+		const { server, baseUrl } = await startMockOpenAI(requests);
 		activeServer = server;
 
 		const model = {
 			id: "om-e2e",
 			name: "OAuth E2E",
-			api: "anthropic-messages",
-			provider: "kimi-coding",
+			api: "openai-completions",
+			provider: "opencode-go",
 			baseUrl,
-			reasoning: false,
+			reasoning: true,
 			input: ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 200_000,
@@ -156,7 +143,10 @@ describe("OAuth provider end-to-end consolidation", () => {
 			ui: { notify: (message: string) => notices.push(message) },
 			model,
 			modelRegistry: oauthModelRegistry(),
-			sessionManager: { getBranch: () => entries },
+			sessionManager: {
+				getBranch: () => entries,
+				getSessionId: () => "session-opencode-e2e",
+			},
 		});
 		await runtime.consolidationPromise;
 
@@ -164,6 +154,8 @@ describe("OAuth provider end-to-end consolidation", () => {
 		expect(requests).toHaveLength(1);
 		expect(requests[0].headers.authorization).toBe(OAUTH_TOKEN);
 		expect(requests[0].headers["x-api-key"]).toBeUndefined();
+		expect(requests[0].headers["x-opencode-session"]).toBe("session-opencode-e2e");
+		expect(requests[0].headers["x-opencode-client"]).toBe("pi");
 
 		// The observation reached the session ledger; nothing was skipped.
 		const recorded = appended.filter((entry) => entry.customType === OM_OBSERVATIONS_RECORDED);
@@ -177,9 +169,10 @@ describe("OAuth provider end-to-end consolidation", () => {
 			"",
 			"── OAuth consolidation transcript ─────────────────────────────",
 			`resolved auth        : apiKey=<none> headers.Authorization=${OAUTH_TOKEN}`,
-			`provider request     : POST ${baseUrl}/v1/messages`,
+			`provider request     : POST ${baseUrl}/chat/completions`,
 			`request authorization: ${requests[0].headers.authorization}`,
 			`request x-api-key    : ${requests[0].headers["x-api-key"] ?? "<none>"}`,
+			`request x-opencode-session: ${requests[0].headers["x-opencode-session"] ?? "<none>"}`,
 			`ledger entry         : ${recorded[0].customType} coversUpToId=${recorded[0].data.coversUpToId}`,
 			`observation          : ${recorded[0].data.observations[0].content}`,
 			`user notices         : ${notices.join(" | ")}`,
