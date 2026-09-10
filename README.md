@@ -1,6 +1,6 @@
 # own-pi
 
-本仓库维护四个可独立安装的 Pi 扩展包。下面的命令都在仓库根目录运行。
+本仓库维护五个可独立安装的 Pi 扩展包。下面的命令都在仓库根目录运行。
 
 ## 一键重新安装当前目录扩展
 
@@ -64,5 +64,16 @@ pi install ./packages/pi-advisor
 ```
 
 详见 [`packages/pi-advisor/README.md`](packages/pi-advisor/README.md)。
+
+## pi-observational-memory
+
+观察式记忆扩展：后台提取 observations/reflections，维护记忆池，并在压缩时快速恢复上下文；支持 `recall` 追溯原始证据。
+
+```bash
+pi -e ./packages/pi-observational-memory
+pi install ./packages/pi-observational-memory
+```
+
+详见 [`packages/pi-observational-memory/README.md`](packages/pi-observational-memory/README.md)。
 
 所有包对可选外部能力采用软依赖：缺少对应插件或运行时 API 时只停用受影响的逻辑，不阻断 Pi 或其他扩展启动。
