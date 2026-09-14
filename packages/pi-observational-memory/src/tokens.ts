@@ -5,11 +5,9 @@ export function estimateStringTokens(text: string): number {
 }
 
 /**
- * Estimate the rendered footprint of an observation line as it appears in
- * summaries / pool listings: "[id] YYYY-MM-DD HH:MM [relevance] content".
- * Pool budgets that only count bare content undercount every line's
- * metadata overhead (id + timestamp + relevance tags), so the configured
- * pool target was reached later than the rendered memory actually allowed.
+ * 估算一条观察行在摘要/观察池列表中的渲染占位："[id] YYYY-MM-DD HH:MM [relevance] content"。
+ * 只统计纯内容的池预算会低估每行的元数据开销（id + 时间戳 + 重要度标签），导致实际达到
+ * 配置的池目标比渲染记忆真正允许的更晚。
  */
 export function observationLineTokenCount(observation: {
 	id: string;

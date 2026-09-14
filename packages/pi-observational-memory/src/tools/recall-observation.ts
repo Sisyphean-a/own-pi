@@ -25,6 +25,16 @@ type RecallObservationToolStatus =
 	| "no_source"
 	| "source_unavailable";
 
+/** 召回状态的中文标签，用于 TUI 头部与备注。 */
+const RECALL_STATUS_LABELS: Record<RecallObservationToolStatus, string> = {
+	ok: "正常",
+	partial: "部分可用",
+	invalid_id: "id 非法",
+	not_found: "未找到",
+	no_source: "无源条目",
+	source_unavailable: "源条目不可用",
+};
+
 type ObservationDetails = Pick<Observation, "id" | "content" | "timestamp" | "relevance"> & { status?: "active" | "dropped" };
 type ReflectionDetails = Pick<Reflection, "id" | "content" | "supportingObservationIds"> & { reflectionIndex: number };
 
@@ -85,7 +95,7 @@ function formatDisplayTimestamp(...values: Array<number | string | undefined>): 
 		const d = new Date(v);
 		if (!Number.isNaN(d.getTime())) return fmtLocal(d);
 	}
-	return "Unknown time";
+	return "未知时间";
 }
 
 function textContentBlocks(content: unknown): Array<Record<string, unknown>> {
@@ -100,32 +110,32 @@ function sourceOriginAndQualifiers(entry: Entry): { origin: string; timestamp: s
 	if (entry.type === "message" && entry.message && typeof entry.message === "object") {
 		const msg = entry.message as Message;
 		const timestamp = formatDisplayTimestamp(msg.timestamp, entry.timestamp);
-		if (msg.role === "user") return { origin: "User", timestamp, qualifiers: [] };
+		if (msg.role === "user") return { origin: "用户", timestamp, qualifiers: [] };
 		if (msg.role === "assistant") {
 			const toolCalls = uniqueStrings(
 				textContentBlocks(msg.content)
 					.filter((block) => block.type === "toolCall" && typeof block.name === "string")
 					.map((block) => block.name as string),
 			);
-			return { origin: "Assistant", timestamp, qualifiers: toolCalls.length > 0 ? [`tool calls: ${toolCalls.join(", ")}`] : [] };
+			return { origin: "助手", timestamp, qualifiers: toolCalls.length > 0 ? [`工具调用：${toolCalls.join("、")}`] : [] };
 		}
 		const toolName = (msg as ToolResultMessage).toolName;
-		return { origin: `Tool result: ${typeof toolName === "string" && toolName ? toolName : "unknown"}`, timestamp, qualifiers: [] };
+		return { origin: `工具结果：${typeof toolName === "string" && toolName ? toolName : "未知"}`, timestamp, qualifiers: [] };
 	}
 	if (entry.type === "custom_message") {
 		return {
-			origin: "Custom message",
+			origin: "自定义消息",
 			timestamp: formatDisplayTimestamp(entry.timestamp),
-			qualifiers: typeof entry.customType === "string" && entry.customType ? [`custom: ${entry.customType}`] : [],
+			qualifiers: typeof entry.customType === "string" && entry.customType ? [`自定义：${entry.customType}`] : [],
 		};
 	}
-	if (entry.type === "branch_summary") return { origin: "Branch summary", timestamp: formatDisplayTimestamp(entry.timestamp), qualifiers: [] };
-	return { origin: entry.type || "Entry", timestamp: formatDisplayTimestamp(entry.timestamp), qualifiers: [] };
+	if (entry.type === "branch_summary") return { origin: "分支摘要", timestamp: formatDisplayTimestamp(entry.timestamp), qualifiers: [] };
+	return { origin: entry.type || "条目", timestamp: formatDisplayTimestamp(entry.timestamp), qualifiers: [] };
 }
 
 function renderSourceEntryContentOnly(entry: Entry): string | undefined {
 	const rendered = renderRecallSourceEntry(entry);
-	return rendered?.replace(/^\[[^\]]+\]:\s?/, "") || undefined;
+	return rendered?.replace(/^\[[^\]]+\][:：]\s?/, "") || undefined;
 }
 
 function sourceEntryDetails(entry: Entry, includeContent: boolean): RecallSourceEntryDetails {
@@ -197,13 +207,13 @@ function aggregateStatus(details: Omit<RecallObservationToolDetails, "status">):
 }
 
 function friendlyNoSourceMessage(memoryId: string): string {
-	return `Observation ${memoryId} has no source entries associated with it.`;
+	return `观察 ${memoryId} 没有关联的源条目。`;
 }
 
 function friendlySourceUnavailableMessage(match: RecallObservationMatchDetails): string {
-	const missing = match.missingSourceEntryIds && match.missingSourceEntryIds.length > 0 ? ` missing: ${match.missingSourceEntryIds.join(", ")}` : "";
-	const nonSource = match.nonSourceEntryIds && match.nonSourceEntryIds.length > 0 ? ` non-source: ${match.nonSourceEntryIds.join(", ")}` : "";
-	return `Observation ${match.observation.id} has source entries associated, but some are unavailable on the current branch or are not source-renderable.${missing}${nonSource}`;
+	const missing = match.missingSourceEntryIds && match.missingSourceEntryIds.length > 0 ? ` 缺失：${match.missingSourceEntryIds.join("、")}` : "";
+	const nonSource = match.nonSourceEntryIds && match.nonSourceEntryIds.length > 0 ? ` 非源条目：${match.nonSourceEntryIds.join("、")}` : "";
+	return `观察 ${match.observation.id} 有关联的源条目，但其中一些在当前分支上不可用，或无法作为源渲染。${missing}${nonSource}`;
 }
 
 function reflectionLineText(reflection: ReflectionDetails): string {
@@ -211,7 +221,7 @@ function reflectionLineText(reflection: ReflectionDetails): string {
 }
 
 function observationLineText(observation: ObservationDetails): string {
-	const status = observation.status === "dropped" ? " [dropped]" : "";
+	const status = observation.status === "dropped" ? " [已精简]" : "";
 	return `[${observation.id}]${status} ${observation.timestamp} [${observation.relevance}] ${observation.content}`;
 }
 
@@ -221,9 +231,9 @@ function directObservationMatches(result: Extract<RecallResult, { status: "found
 
 function renderObservationOnlyTextFromResult(result: Extract<RecallResult, { status: "found" }>): string {
 	const sections: string[] = [];
-	if (result.collision) sections.push(`Memory id ${result.memoryId} matched multiple observations; returning all matching source results from the current branch.`);
+	if (result.collision) sections.push(`记忆 id ${result.memoryId} 匹配到多条观察；返回当前分支上所有匹配的源结果。`);
 	for (const match of directObservationMatches(result)) {
-		if (match.status === "dropped") sections.push(`Observation ${match.observation.id} is dropped from active memory but remains recallable.`);
+		if (match.status === "dropped") sections.push(`观察 ${match.observation.id} 已从活跃记忆精简，但仍可召回。`);
 		if (match.missingSourceEntryIds.length > 0 || match.nonSourceEntryIds.length > 0) {
 			sections.push(friendlySourceUnavailableMessage(observationMatchDetails(match, false)));
 			continue;
@@ -233,30 +243,30 @@ function renderObservationOnlyTextFromResult(result: Extract<RecallResult, { sta
 			continue;
 		}
 		const sourceText = renderRecallSourceEntries(match.sourceEntries);
-		sections.push(sourceText.trim() ? sourceText : `Observation ${match.observation.id} has source entries associated, but they rendered no text content.`);
+		sections.push(sourceText.trim() ? sourceText : `观察 ${match.observation.id} 有关联的源条目，但没有渲染出文本内容。`);
 	}
 	return sections.join("\n\n");
 }
 
 function unavailableSupportingLineText(item: RecallUnavailableSupportingObservationDetails): string {
-	return `Supporting observation ${item.observationId} is unavailable on the current branch.`;
+	return `支撑观察 ${item.observationId} 在当前分支上不可用。`;
 }
 
 function renderMemoryText(result: Extract<RecallResult, { status: "found" }>): string {
 	const sections: string[] = [];
-	if (result.collision) sections.push(`Memory id ${result.memoryId} matched multiple observations/reflections; returning all available evidence from the current branch.`);
-	if (result.reflections.length > 0) sections.push(`Reflections:\n${result.reflections.map((match) => reflectionLineText(reflectionDetails(match.reflection, match.reflectionRecordIndex))).join("\n")}`);
-	if (result.observations.length > 0) sections.push(`Observations:\n${result.observations.map((match) => observationLineText(observationDetails(match.observation, match.status))).join("\n")}`);
-	if (result.missingSupportingObservationIds.length > 0) sections.push(`Unavailable supporting observations:\n${result.missingSupportingObservationIds.map((id) => unavailableSupportingLineText({ observationId: id })).join("\n")}`);
+	if (result.collision) sections.push(`记忆 id ${result.memoryId} 匹配到多条观察/反思；返回当前分支上所有可用证据。`);
+	if (result.reflections.length > 0) sections.push(`反思：\n${result.reflections.map((match) => reflectionLineText(reflectionDetails(match.reflection, match.reflectionRecordIndex))).join("\n")}`);
+	if (result.observations.length > 0) sections.push(`观察：\n${result.observations.map((match) => observationLineText(observationDetails(match.observation, match.status))).join("\n")}`);
+	if (result.missingSupportingObservationIds.length > 0) sections.push(`不可用的支撑观察：\n${result.missingSupportingObservationIds.map((id) => unavailableSupportingLineText({ observationId: id })).join("\n")}`);
 	if (result.missingSourceEntryIds.length > 0 || result.nonSourceEntryIds.length > 0) {
 		const parts: string[] = [];
-		if (result.missingSourceEntryIds.length > 0) parts.push(`missing: ${result.missingSourceEntryIds.join(", ")}`);
-		if (result.nonSourceEntryIds.length > 0) parts.push(`non-source: ${result.nonSourceEntryIds.join(", ")}`);
-		sections.push(`Unavailable source entries: ${parts.join("; ")}`);
+		if (result.missingSourceEntryIds.length > 0) parts.push(`缺失：${result.missingSourceEntryIds.join("、")}`);
+		if (result.nonSourceEntryIds.length > 0) parts.push(`非源条目：${result.nonSourceEntryIds.join("、")}`);
+		sections.push(`不可用的源条目：${parts.join("；")}`);
 	}
 	const sourceText = renderRecallSourceEntries(result.sourceEntries);
-	if (sourceText.trim()) sections.push(`Sources:\n${sourceText}`);
-	if (sections.length === 0) sections.push(`Memory ${result.memoryId} was found, but no source evidence rendered.`);
+	if (sourceText.trim()) sections.push(`源内容：\n${sourceText}`);
+	if (sections.length === 0) sections.push(`已找到记忆 ${result.memoryId}，但没有渲染出源证据。`);
 	return sections.join("\n\n");
 }
 
@@ -293,8 +303,8 @@ function renderFoundResult(result: Extract<RecallResult, { status: "found" }>): 
 	return textResult(text, details);
 }
 
-function plural(n: number, singular: string, pluralForm = `${singular}s`): string {
-	return `${n.toLocaleString()} ${n === 1 ? singular : pluralForm}`;
+function plural(n: number, unit: string): string {
+	return `${n.toLocaleString()} ${unit}`;
 }
 
 function sourceEntriesFromDetails(details: RecallObservationToolDetails): RecallSourceEntryDetails[] {
@@ -303,7 +313,7 @@ function sourceEntriesFromDetails(details: RecallObservationToolDetails): Recall
 }
 
 function tokenSummary(tokens: number): string {
-	return `~${tokens.toLocaleString()} ${tokens === 1 ? "token" : "tokens"}`;
+	return `~${tokens.toLocaleString()} token`;
 }
 
 function isFailureStatus(status: RecallObservationToolStatus): boolean {
@@ -315,16 +325,16 @@ function observationCountForHeader(details: RecallObservationToolDetails): numbe
 }
 
 export function formatRecallHeaderForTui(details: RecallObservationToolDetails): string {
-	if (isFailureStatus(details.status)) return "× failure";
-	const parts = ["✓ success"];
-	if (details.reflections.length > 0) parts.push(plural(details.reflections.length, "reflection"));
+	if (isFailureStatus(details.status)) return "× 失败";
+	const parts = ["✓ 成功"];
+	if (details.reflections.length > 0) parts.push(plural(details.reflections.length, "条反思"));
 	const observations = observationCountForHeader(details);
-	if (observations > 0) parts.push(plural(observations, "observation"));
+	if (observations > 0) parts.push(plural(observations, "条观察"));
 	const sources = sourceEntriesFromDetails(details);
-	if (sources.length > 0) parts.push(plural(sources.length, "source"));
+	if (sources.length > 0) parts.push(plural(sources.length, "个源条目"));
 	const tokens = sources.reduce((sum, source) => sum + source.tokens, 0);
 	if (tokens > 0) parts.push(tokenSummary(tokens));
-	if (details.partial && details.status !== "ok") parts.push(details.status.replace(/_/g, " "));
+	if (details.partial && details.status !== "ok") parts.push(RECALL_STATUS_LABELS[details.status] ?? details.status);
 	return parts.join(" · ");
 }
 
@@ -336,30 +346,30 @@ function alignedRow(type: string, meta: string, text: string): string {
 }
 
 function sourceTag(source: RecallSourceEntryDetails): string {
-	const origin = source.origin.trim().toLowerCase();
-	if (origin === "user") return "user";
-	if (origin === "assistant") return "assistant";
-	if (origin.startsWith("tool result")) return "tool";
-	if (origin.startsWith("custom message")) return "custom";
-	if (origin.startsWith("branch summary")) return "summary";
-	return origin.split(/[^a-z0-9]+/).find(Boolean) ?? "entry";
+	const origin = source.origin.trim();
+	if (origin === "用户") return "用户";
+	if (origin === "助手") return "助手";
+	if (origin.startsWith("工具结果")) return "工具";
+	if (origin.startsWith("自定义消息")) return "自定义";
+	if (origin.startsWith("分支摘要")) return "摘要";
+	return origin.split(/[^\p{L}\p{N}]+/u).find(Boolean) ?? "条目";
 }
 
 function sourceMetadataLine(source: RecallSourceEntryDetails): string {
-	return alignedRow("✓ source", `${source.timestamp} [${sourceTag(source)}]`, tokenSummary(source.tokens));
+	return alignedRow("✓ 源", `${source.timestamp} [${sourceTag(source)}]`, tokenSummary(source.tokens));
 }
 
 function observationLine(observation: ObservationDetails): string {
-	const status = observation.status === "dropped" ? " dropped" : "";
-	return alignedRow("✓ observation", `${observation.timestamp} [${observation.relevance}]${status}`, observation.content);
+	const status = observation.status === "dropped" ? " 已精简" : "";
+	return alignedRow("✓ 观察", `${observation.timestamp} [${observation.relevance}]${status}`, observation.content);
 }
 
 function reflectionLine(reflection: ReflectionDetails): string {
-	return alignedRow("✓ reflection", "", reflection.content);
+	return alignedRow("✓ 反思", "", reflection.content);
 }
 
 function noteLine(kind: string, text: string): string {
-	return alignedRow("• note", `[${kind}]`, text);
+	return alignedRow("• 说明", `[${kind}]`, text);
 }
 
 function indentContent(content: string): string {
@@ -367,7 +377,7 @@ function indentContent(content: string): string {
 }
 
 function unavailableEvidenceMessage(_details: RecallObservationToolDetails): string {
-	return "no source entries are available for this memory id";
+	return "该记忆 id 没有可用的源条目";
 }
 
 function pushSourceLines(lines: string[], sources: RecallSourceEntryDetails[], expanded: boolean): void {
@@ -388,19 +398,19 @@ function memoryRows(details: RecallObservationToolDetails): string[] {
 function noteRows(details: RecallObservationToolDetails, sources: RecallSourceEntryDetails[]): string[] {
 	const notes: string[] = [];
 	if (details.status === "invalid_id") {
-		notes.push(noteLine("invalid id", `memory ids must be 12 lowercase hex characters; received ${details.memoryId}`));
+		notes.push(noteLine("id 非法", `记忆 id 必须是 12 位小写十六进制字符；收到 ${details.memoryId}`));
 		return notes;
 	}
 	if (details.status === "not_found") {
-		notes.push(noteLine("not found", `no observation or reflection with id ${details.memoryId} was found on the current branch`));
+		notes.push(noteLine("未找到", `当前分支上找不到 id 为 ${details.memoryId} 的观察或反思`));
 		return notes;
 	}
-	if (details.collision) notes.push(noteLine("id collision", `multiple memory items share ${details.memoryId}`));
-	if (details.observations.some((match) => match.observation.status === "dropped")) notes.push(noteLine("dropped", "one or more observations are dropped from active memory but remain recallable"));
-	if (details.unavailableSupportingObservations.length > 0) notes.push(noteLine("missing support", details.unavailableSupportingObservations.map((item) => item.observationId).join(", ")));
-	if (details.missingSourceEntryIds.length > 0) notes.push(noteLine("missing source", details.missingSourceEntryIds.join(", ")));
-	if (details.nonSourceEntryIds.length > 0) notes.push(noteLine("non-source", details.nonSourceEntryIds.join(", ")));
-	if (sources.length === 0 && (details.reflections.length > 0 || details.observations.length > 0 || details.matches.length > 0)) notes.push(noteLine("unavailable evidence", unavailableEvidenceMessage(details)));
+	if (details.collision) notes.push(noteLine("id 冲突", `多个记忆项共用 ${details.memoryId}`));
+	if (details.observations.some((match) => match.observation.status === "dropped")) notes.push(noteLine("已精简", "一条或多条观察已从活跃记忆精简，但仍可召回"));
+	if (details.unavailableSupportingObservations.length > 0) notes.push(noteLine("缺失支撑", details.unavailableSupportingObservations.map((item) => item.observationId).join("、")));
+	if (details.missingSourceEntryIds.length > 0) notes.push(noteLine("缺失源条目", details.missingSourceEntryIds.join("、")));
+	if (details.nonSourceEntryIds.length > 0) notes.push(noteLine("非源条目", details.nonSourceEntryIds.join("、")));
+	if (sources.length === 0 && (details.reflections.length > 0 || details.observations.length > 0 || details.matches.length > 0)) notes.push(noteLine("证据不可用", unavailableEvidenceMessage(details)));
 	return notes;
 }
 
@@ -408,7 +418,7 @@ export function formatRecallResultForTui(result: AgentToolResult<RecallObservati
 	const details = result.details;
 	if (!details) {
 		const text = result.content.filter((part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n");
-		return text || "recall";
+		return text || "召回";
 	}
 	const sources = sourceEntriesFromDetails(details);
 	const lines: string[] = [];
@@ -419,12 +429,12 @@ export function formatRecallResultForTui(result: AgentToolResult<RecallObservati
 	lines.push(...notes);
 	if ((rows.length > 0 || notes.length > 0) && sources.length > 0) lines.push("");
 	pushSourceLines(lines, sources, expanded);
-	if (!expanded && sources.some((source) => source.content)) lines.push("", "(Ctrl+O to expand)");
+	if (!expanded && sources.some((source) => source.content)) lines.push("", "（Ctrl+O 展开）");
 	return lines.join("\n").trimEnd();
 }
 
 export function formatRecallCallForTui(id: string | undefined): string {
-	return `recall ${id ?? "..."}`;
+	return `召回 ${id ?? "..."}`;
 }
 
 export function formatRecallRenderedResultForTui(result: AgentToolResult<RecallObservationToolDetails>, expanded: boolean): string {
@@ -437,23 +447,23 @@ export function formatRecallRenderedResultForTui(result: AgentToolResult<RecallO
 
 export const recallObservationTool = defineTool({
 	name: RECALL_OBSERVATION_TOOL_NAME,
-	label: "Recall memory evidence",
+	label: "召回记忆证据",
 	description:
-		"Recover exact evidence and source context behind a compacted observational-memory observation or reflection id on the current branch. " +
-		"Use when compressed memory is important and original source context is needed before acting.",
-	promptSnippet: "Use recall(<id>) to recover exact source context behind compacted memory observations/reflections when precision matters.",
+		"恢复当前分支上某条已压缩的观察式记忆观察或反思背后的精确证据与源上下文。" +
+		"当压缩记忆很重要、行动前需要原始源上下文时使用。",
+	promptSnippet: "需要精确性时，用 recall(<id>) 恢复已压缩记忆观察/反思背后的精确源上下文。",
 	promptGuidelines: [
-		"Use recall before making an important decision that depends on a compacted observation or reflection whose details are unclear.",
-		"Use recall when you need exact wording, rationale, file paths, commands, errors, commits, user constraints, or provenance behind a remembered claim.",
-		"Use recall when a broad reflection is relevant but you need its supporting observations or raw sources to continue safely.",
-		"Use recall when the user asks why you believe something, what supports a memory, or what was decided earlier.",
-		"Do not use recall as semantic search or transcript browsing; you must already have a specific 12-character memory id.",
-		"Do not recall every id preemptively. Recall only when exact source context will materially improve the next action.",
+		"当重要决定依赖某条细节不清的已压缩观察或反思时，先用 recall 再决定。",
+		"当需要记忆声明的精确措辞、理由、文件路径、命令、错误、提交、用户约束或来源时，使用 recall。",
+		"当某条宽泛反思相关、但需要它的支撑观察或原始源内容才能安全继续时，使用 recall。",
+		"当用户询问你为什么相信某事、某条记忆的依据，或之前决定了什么时，使用 recall。",
+		"不要把 recall 当作语义搜索或会话浏览；必须已经有具体的 12 字符记忆 id。",
+		"不要预先召回每个 id。只在精确源上下文能实质改善下一步行动时使用 recall。",
 	],
 	parameters: Type.Object({
 		id: Type.String({
 			pattern: "^[a-f0-9]{12}$",
-			description: "12-character lowercase hex observation or reflection id shown in compacted memory, /om:view, or a previous recall result. Must be a specific id; this tool does not search by topic.",
+			description: "压缩记忆、/om:view 或之前召回结果中显示的 12 位小写十六进制观察或反思 id。必须是具体 id；本工具不按主题搜索。",
 		}),
 	}),
 	renderCall(args) {
@@ -465,13 +475,13 @@ export const recallObservationTool = defineTool({
 	async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 		const memoryId = params.id;
 		if (!MEMORY_ID_PATTERN.test(memoryId)) {
-			const message = `Memory id must be 12 lowercase hex characters. Received: ${memoryId}`;
+			const message = `记忆 id 必须是 12 位小写十六进制字符。收到：${memoryId}`;
 			return textResult(message, emptyDetails("invalid_id", memoryId, message));
 		}
 		const branchEntries = ctx.sessionManager.getBranch() as Entry[];
 		const result = recallMemorySources(branchEntries, memoryId);
 		if (result.status === "not_found") {
-			const message = `No observation or reflection with id ${memoryId} was found on the current branch.`;
+			const message = `当前分支上找不到 id 为 ${memoryId} 的观察或反思。`;
 			return textResult(message, emptyDetails("not_found", memoryId, message));
 		}
 		return renderFoundResult(result);

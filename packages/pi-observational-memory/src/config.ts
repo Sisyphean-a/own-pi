@@ -10,23 +10,19 @@ export interface ConfiguredModel {
 }
 
 /**
- * How `compactAfterTokens` is interpreted.
+ * `compactAfterTokens` 的语义。
  *
- * - `"calibrated"` (default): use the static `compactAfterTokens` value directly.
- *   Backwards-compatible with all existing V3 configs.
+ * - `"calibrated"`（默认）：直接使用静态 `compactAfterTokens` 值，兼容所有现有 V3 配置。
  *
- * - `"ratio"`: compute the effective threshold as
- *   `floor(model.contextWindow * compactAfterTokensRatio)`. This auto-scales the
- *   proactive compaction trigger to the active model's context window, so a 1M
- *   context model is not preempted at the same 81K threshold as a 128K model.
+ * - `"ratio"`：有效阈值按 `floor(model.contextWindow * compactAfterTokensRatio)` 计算。
+ *   它让主动压缩阈值随当前模型的上下文窗口自动缩放，使 1M 上下文的模型不会像 128K
+ *   模型那样在同样的 81K 阈值被提前压缩。
  *
- *   Some models advertise a large context window but lose attention at long
- *   range; users can lower `compactAfterTokensRatio` to compact earlier on such
- *   models without giving up the window on models that stay sharp.
+ *   有些模型宣称很大的上下文窗口，但长距离注意力会下降；用户可以在这些模型上降低
+ *   `compactAfterTokensRatio` 以更早压缩，而不必在保持敏锐的模型上放弃窗口。
  *
- *   When the active model's `contextWindow` is unavailable (undefined, 0, or
- *   negative), ratio mode falls back to the calibrated `compactAfterTokens`
- *   value so compaction still triggers safely.
+ *   当前模型的 `contextWindow` 不可用时（undefined、0 或负数），ratio 模式回退到
+ *   calibrated 的 `compactAfterTokens` 值，保证压缩仍能安全触发。
  */
 export type CompactAfterTokensMode = "calibrated" | "ratio";
 
@@ -34,9 +30,8 @@ export interface Config {
 	observeAfterTokens: number;
 	reflectAfterTokens: number;
 	/**
-	 * Maximum estimated source tokens serialized into a single observer chunk.
-	 * Unset (default) derives the cap from the resolved memory model's context
-	 * window; see {@link resolveObserverChunkMaxTokens}.
+	 * 单次序列化给观察器的最大估算源 token 数。
+	 * 未设置（默认）时从已解析的记忆模型上下文窗口推导；见 {@link resolveObserverChunkMaxTokens}。
 	 */
 	observerChunkMaxTokens?: number;
 	compactAfterTokens: number;
@@ -68,14 +63,13 @@ export const DEFAULTS: Config = {
 export const COMPACT_AFTER_TOKENS_MODE_VALUES: readonly CompactAfterTokensMode[] = ["calibrated", "ratio"] as const;
 
 /**
- * Resolve the effective proactive-compaction token threshold for the given
- * config and active model context window.
+ * 根据配置和当前模型上下文窗口解析有效的主动压缩 token 阈值。
  *
- * In `"calibrated"` mode this is always `config.compactAfterTokens`.
+ * `"calibrated"` 模式下始终为 `config.compactAfterTokens`。
  *
- * In `"ratio"` mode this is `floor(contextWindow * compactAfterTokensRatio)`
- * (clamped to a minimum of 1) when `contextWindow` is a positive number, and
- * falls back to `config.compactAfterTokens` otherwise.
+ * `"ratio"` 模式下，`contextWindow` 为正数时取
+ * `floor(contextWindow * compactAfterTokensRatio)`（下限为 1），否则回退到
+ * `config.compactAfterTokens`。
  */
 export function resolveCompactAfterTokens(config: Config, contextWindow: number | undefined): number {
 	if (config.compactAfterTokensMode === "ratio" && typeof contextWindow === "number" && contextWindow > 0) {
@@ -86,34 +80,29 @@ export function resolveCompactAfterTokens(config: Config, contextWindow: number 
 
 export const THINKING_LEVEL_VALUES: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-/** Observer chunk cap used when no config is set and the model's context window is unknown. */
+/** 未配置且模型上下文窗口未知时使用的观察器分块上限。 */
 export const OBSERVER_CHUNK_FALLBACK_MAX_TOKENS = 60_000;
 
-/** Smallest useful observer chunk: enough for labels, omission markers, and source context. */
+/** 最小可用观察器分块：足以容纳标签、省略标记和源上下文。 */
 export const OBSERVER_CHUNK_MIN_TOKENS = 256;
 
 /**
- * Fraction of the memory model's context window used for the derived observer
- * chunk cap. Chunk sizes are estimated at ~4 chars/token, which can undercount
- * real tokens by up to ~4x on non-ASCII content, so 0.2 keeps even the worst
- * case at ~80% of the window with room left for the system prompt, prior
- * memory, and the response.
+ * 推导观察器分块上限时使用的记忆模型上下文窗口比例。分块大小按约 4 字符/token 估算，
+ * 在非 ASCII 内容上可能低估真实 token 达约 4 倍，因此 0.2 让最坏情况也只占窗口的约 80%，
+ * 为系统提示词、既有记忆和响应留出余量。
  */
 export const OBSERVER_CHUNK_CONTEXT_RATIO = 0.2;
 
 /**
- * Resolve the maximum estimated tokens the observer serializes into one chunk.
+ * 解析观察器单次序列化到分块中的最大估算 token 数。
  *
- * An explicit `observerChunkMaxTokens` config value always wins. Otherwise the
- * cap is `floor(contextWindow * OBSERVER_CHUNK_CONTEXT_RATIO)` for the resolved
- * memory model, falling back to {@link OBSERVER_CHUNK_FALLBACK_MAX_TOKENS} when
- * the context window is unavailable.
+ * 显式配置的 `observerChunkMaxTokens` 始终优先。否则上限为已解析记忆模型的
+ * `floor(contextWindow * OBSERVER_CHUNK_CONTEXT_RATIO)`，上下文窗口不可用时回退到
+ * {@link OBSERVER_CHUNK_FALLBACK_MAX_TOKENS}。
  *
- * Without a cap, a backlog that outgrows the model's context window (e.g.
- * after repeated observer failures, or when the extension is enabled mid-way
- * into a long session) makes every observer call fail, so coverage never
- * advances and the session can never recover. With the cap, oversized backlogs
- * are drained oldest-first across successive runs.
+ * 没有上限时，超出模型上下文窗口的积压（例如观察器反复失败之后，或在长会话中途启用
+ * 本扩展时）会让每次观察器调用都失败，覆盖范围无法推进，会话也永远无法恢复。有了上限，
+ * 过大的积压会在连续运行中从最旧开始逐步排空。
  */
 export function resolveObserverChunkMaxTokens(config: Config, contextWindow: number | undefined): number {
 	if (config.observerChunkMaxTokens !== undefined && config.observerChunkMaxTokens > 0) {
@@ -153,9 +142,8 @@ function isCompactAfterTokensMode(value: unknown): value is CompactAfterTokensMo
 }
 
 /**
- * A valid ratio is a finite number strictly between 0 and 1.
- * 0 would never trigger; >= 1 would compact at/after the full window with no
- * room left for the response.
+ * 有效 ratio 是严格介于 0 和 1 之间的有限数字。
+ * 0 永远不会触发；>= 1 会在占满整个窗口时才压缩，没有给响应留任何余量。
  */
 function validRatioOrUndefined(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1 ? value : undefined;

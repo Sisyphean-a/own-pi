@@ -21,7 +21,7 @@ function formatRecallTimestamp(...values: Array<number | string | undefined>): s
 		const d = new Date(v);
 		if (!Number.isNaN(d.getTime())) return fmtLocal(d);
 	}
-	return "Unknown time";
+	return "未知时间";
 }
 
 function textAndPlaceholders(
@@ -29,12 +29,12 @@ function textAndPlaceholders(
 	options: { omitRedactedThinking?: boolean; includeThinking?: boolean } = {},
 ): string {
 	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "[non-text content omitted]";
+	if (!Array.isArray(content)) return "[非文本内容已省略]";
 
 	const parts: string[] = [];
 	for (const block of content as Array<Record<string, unknown>>) {
 		if (!block || typeof block !== "object") {
-			parts.push("[non-text content omitted]");
+			parts.push("[非文本内容已省略]");
 			continue;
 		}
 		if (block.type === "text" && typeof block.text === "string") {
@@ -44,17 +44,17 @@ function textAndPlaceholders(
 		if (block.type === "thinking") {
 			if (options.omitRedactedThinking && block.redacted === true) continue;
 			if (options.includeThinking && typeof block.thinking === "string") {
-				parts.push(`[thinking: ${block.thinking}]`);
+				parts.push(`[思考：${block.thinking}]`);
 				continue;
 			}
-			parts.push("[non-text content omitted]");
+			parts.push("[非文本内容已省略]");
 			continue;
 		}
 		if (block.type === "toolCall" && typeof block.name === "string") {
 			parts.push(`[${block.name}(${JSON.stringify(block.arguments ?? {})})]`);
 			continue;
 		}
-		parts.push("[non-text content omitted]");
+		parts.push("[非文本内容已省略]");
 	}
 	return parts.join("\n");
 }
@@ -75,7 +75,7 @@ export function serializeConversation(messages: Message[]): string {
 			const time = formatTimestamp(msg.timestamp);
 			if (msg.role === "user") {
 				const text = textOnly(msg.content);
-				return `[User @ ${time}]: ${text}`;
+				return `[用户 @ ${time}]：${text}`;
 			}
 			if (msg.role === "assistant") {
 				const body = textAndPlaceholders(msg.content, {
@@ -86,10 +86,10 @@ export function serializeConversation(messages: Message[]): string {
 					.filter(Boolean)
 					.join("\n");
 				if (!body) return null;
-				return `[Assistant @ ${time}]: ${body}`;
+				return `[助手 @ ${time}]：${body}`;
 			}
 			const text = textOnly(msg.content);
-			return `[Tool result for ${(msg as ToolResultMessage).toolName} @ ${time}]: ${text}`;
+			return `[工具结果 ${(msg as ToolResultMessage).toolName} @ ${time}]：${text}`;
 		})
 		.filter((line): line is string => line !== null)
 		.join("\n\n");
@@ -105,7 +105,7 @@ export function truncateRecordContent(content: string): string {
 	if (content.length <= MAX_RECORD_CONTENT_CHARS) return content;
 	const head = content.slice(0, MAX_RECORD_CONTENT_CHARS);
 	const dropped = content.length - MAX_RECORD_CONTENT_CHARS;
-	return `${head} … [truncated ${dropped} chars]`;
+	return `${head} … [已截断 ${dropped} 字符]`;
 }
 
 export type RenderableEntry = {
@@ -131,11 +131,11 @@ function renderCustomMessage(entry: RenderableEntry, options: { recallFormat: bo
 						.join("\n")
 				: "";
 	if (options.recallFormat) {
-		const origin = entry.customType ? `Custom message (${entry.customType})` : "Custom message";
-		return `[${origin} @ ${time}]: ${text}`;
+		const origin = entry.customType ? `自定义消息（${entry.customType}）` : "自定义消息";
+		return `[${origin} @ ${time}]：${text}`;
 	}
-	const tag = entry.customType ? `Custom (${entry.customType})` : "Custom";
-	return `[${tag} @ ${time}]: ${text}`;
+	const tag = entry.customType ? `自定义（${entry.customType}）` : "自定义";
+	return `[${tag} @ ${time}]：${text}`;
 }
 
 export function serializeBranchEntries(entries: RenderableEntry[]): string {
@@ -152,7 +152,7 @@ export function serializeBranchEntries(entries: RenderableEntry[]): string {
 		}
 		if (entry.type === "branch_summary" && typeof entry.summary === "string") {
 			const time = formatTimestamp(entry.timestamp);
-			blocks.push(`[Branch summary @ ${time}]: ${entry.summary}`);
+			blocks.push(`[分支摘要 @ ${time}]：${entry.summary}`);
 		}
 	}
 	return blocks.join("\n\n");
@@ -166,12 +166,12 @@ export type SourceAddressedSerialization = {
 };
 
 export type SourceAddressedSerializationOptions = {
-	/** Maximum estimated tokens in the final source-addressed text. */
+	/** 最终源寻址文本的最大估算 token 数。 */
 	maxTokens?: number;
 };
 
 const SOURCE_OMISSION_MARKER =
-	"\n\n[… middle omitted: source exceeds observer input budget; original source remains in the session ledger …]\n\n";
+	"\n\n[… 中间部分已省略：源内容超出观察器输入预算；原始源内容仍保留在会话账本中 …]\n\n";
 
 function truncateSourceBlockToTokenBudget(label: string, rendered: string, maxTokens: number): string | undefined {
 	const required = `${label}\n${SOURCE_OMISSION_MARKER}`;
@@ -191,10 +191,9 @@ function isSourceRenderableEntry(entry: RenderableEntry): boolean {
 }
 
 /**
- * Serialize complete source entries up to the token budget. If the first entry
- * alone exceeds the budget, include a clearly marked head/tail excerpt so one
- * pathological tool result cannot permanently block observation coverage.
- * The original ledger entry is never modified and remains recallable by id.
+ * 在 token 预算内序列化完整的源条目。如果首个条目单独就超出预算，则包含一个带明显标记的
+ * 首尾摘录，避免一个病态的工具结果永久阻断观察覆盖。
+ * 原始 ledger 条目永不修改，且仍可按 id 召回。
  */
 export function serializeSourceAddressedBranchEntries(
 	entries: RenderableEntry[],
@@ -240,7 +239,7 @@ function renderRecallMessage(entry: RenderableEntry): string | null {
 	const msg = entry.message as Message;
 	const time = formatRecallTimestamp(msg.timestamp, entry.timestamp);
 	if (msg.role === "user") {
-		return `[User @ ${time}]: ${textAndPlaceholders(msg.content)}`;
+		return `[用户 @ ${time}]：${textAndPlaceholders(msg.content)}`;
 	}
 	if (msg.role === "assistant") {
 		const body = textAndPlaceholders(msg.content, {
@@ -251,9 +250,9 @@ function renderRecallMessage(entry: RenderableEntry): string | null {
 			.filter(Boolean)
 			.join("\n");
 		if (!body) return null;
-		return `[Assistant @ ${time}]: ${body}`;
+		return `[助手 @ ${time}]：${body}`;
 	}
-	return `[Tool result: ${(msg as ToolResultMessage).toolName} @ ${time}]: ${textAndPlaceholders(msg.content)}`;
+	return `[工具结果：${(msg as ToolResultMessage).toolName} @ ${time}]：${textAndPlaceholders(msg.content)}`;
 }
 
 export function renderRecallSourceEntry(entry: RenderableEntry): string | null {
@@ -261,7 +260,7 @@ export function renderRecallSourceEntry(entry: RenderableEntry): string | null {
 	if (entry.type === "custom_message") return renderCustomMessage(entry, { recallFormat: true });
 	if (entry.type === "branch_summary" && typeof entry.summary === "string") {
 		const time = formatRecallTimestamp(entry.timestamp);
-		return `[Branch summary @ ${time}]: ${entry.summary}`;
+		return `[分支摘要 @ ${time}]：${entry.summary}`;
 	}
 	return null;
 }

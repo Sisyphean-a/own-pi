@@ -122,6 +122,7 @@ PI_OBSERVATIONAL_MEMORY_PASSIVE=true pi
 - 没有可用模型或认证时，后台阶段会跳过或报告错误，不会伪造记忆；
 - 记忆 worker 失败不会阻塞 Pi 的主回合；
 - 压缩时只使用已经写入 ledger 的记忆，不等待正在运行的 worker；
+- 会话替换、重载或退出时，在途后台整理会被作废，旧会话的 worker 结果不会写入新会话；
 - `passive: true` 仍保留手动/Pi 压缩、状态命令、查看命令和 recall；
 - V3 不迁移 V2 的设置或记忆条目。升级后建议使用新会话。
 

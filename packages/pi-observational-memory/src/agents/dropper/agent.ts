@@ -66,7 +66,7 @@ const DropObservationsSchema = Type.Object({
 type DropObservationsArgs = Static<typeof DropObservationsSchema>;
 
 function joinOrEmpty(items: string[]): string {
-	return items.length ? items.join("\n") : "(none yet)";
+	return items.length ? items.join("\n") : "（暂无）";
 }
 
 function relevanceCounts(observations: readonly Observation[]): Record<Observation["relevance"], number> {
@@ -176,8 +176,8 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 
 	const dropObservations: AgentTool<typeof DropObservationsSchema> = {
 		name: "drop_observations",
-		label: "Drop observations",
-		description: "Propose active observation ids that are safe to remove from compacted memory.",
+		label: "精简观察",
+		description: "提交可以安全地从压缩记忆中移除的活跃观察 id。",
 		parameters: DropObservationsSchema,
 		execute: async (_id, params: DropObservationsArgs) => {
 			toolCallCount++;
@@ -226,14 +226,14 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 				maxDropsAllowed,
 			});
 			return {
-				content: [{ type: "text", text: `Queued ${added} drop candidate${added === 1 ? "" : "s"}. Candidates this run: ${proposedDropIds.length}. Maximum drops allowed: ${maxDropsAllowed}.` }],
+				content: [{ type: "text", text: `已加入 ${added} 条待精简候选。本次运行累计候选：${proposedDropIds.length}。本次允许的最大精简数：${maxDropsAllowed}。` }],
 				details: { added, totalCandidates: proposedDropIds.length, maxDropsAllowed },
 			};
 		},
 	};
 
 	const fullnessPercent = Math.round(fullness * 100);
-	const userText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map((observation) => observationToDropperLine(observation, coverageTierForObservation(observation, coverageById))))}\n\nActive observation pool: ~${observationTokens.toLocaleString()} tokens; target: ~${targetTokens.toLocaleString()} tokens; fullness against target: ~${fullnessPercent.toLocaleString()}%; over target by ~${tokensOverTarget.toLocaleString()} tokens.\nMaximum drops allowed this run: ${maxDropsAllowed.toLocaleString()} observation${maxDropsAllowed === 1 ? "" : "s"}. This maximum is sized to move the active pool toward the target if every proposed drop is clearly safe.\nThis maximum is a hard upper bound, not a target. Drop fewer or none if fewer observations are clearly safe.`;
+	const userText = `当前反思：\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\n当前观察：\n${joinOrEmpty(observations.map((observation) => observationToDropperLine(observation, coverageTierForObservation(observation, coverageById))))}\n\n活跃观察池：约 ${observationTokens.toLocaleString()} token；目标：约 ${targetTokens.toLocaleString()} token；相对目标的充满度：约 ${fullnessPercent.toLocaleString()}%；超出目标约 ${tokensOverTarget.toLocaleString()} token。\n本次允许的最大精简数：${maxDropsAllowed.toLocaleString()} 条观察。该上限的设定前提是：每一条候选都被判定为明确安全，才能把活跃池拉向目标。\n这个上限是硬上限，不是目标。若明确安全的观察更少，就少精简或不精简。`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
 	const context: AgentContext = { systemPrompt: DROPPER_SYSTEM, messages: [], tools: [dropObservations as AgentTool<any>] };
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
@@ -255,7 +255,7 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 	const loop = args.agentLoop ?? agentLoop;
 	const stream = loop(prompts, context, config, signal, streamSimple);
 	for await (const event of stream) {
-		// Tool execution collects candidate ids.
+		// 工具执行时收集候选 id。
 		logAgentStreamError("dropper", event);
 	}
 	await stream.result();

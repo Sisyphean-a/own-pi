@@ -20,6 +20,8 @@ function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensM
 			passive: args.passive ?? false,
 		},
 		compactInFlight: args.compactInFlight ?? false,
+		sessionEpoch: 0,
+		isSessionCurrent: (epoch: number) => runtime.sessionEpoch === epoch,
 		observerPromise: new Promise(() => {}),
 		reflectDropPromise: new Promise(() => {}),
 	};
@@ -80,9 +82,38 @@ describe("V3 compaction trigger", () => {
 
 		expect(ctx.compact).toHaveBeenCalledTimes(1);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: compaction threshold reached (~3 estimated source tokens); triggering compaction",
+			"观察式记忆：已达压缩阈值（约 3 估算源 token），开始触发压缩",
 			"info",
 		);
+	});
+
+	it("abandons the deferred compaction when the session is replaced", async () => {
+		const { handler, runtime } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([dueBranch]);
+
+		handler(agentSettled(), ctx);
+		// 模拟 Pi 在会话替换/重载前触发 session_shutdown。
+		runtime.sessionEpoch += 1;
+		await vi.runAllTimersAsync();
+
+		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.compact).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not warn when the ctx goes stale before the deferred compaction runs", async () => {
+		const { handler, runtime } = captureHandler({ compactAfterTokens: 3 });
+		const ctx = fakeCtx([dueBranch], {
+			isIdle: vi.fn(() => {
+				throw new Error("This extension ctx is stale after session replacement or reload.");
+			}),
+		});
+
+		handler(agentSettled(), ctx);
+		await vi.runAllTimersAsync();
+
+		expect(runtime.compactInFlight).toBe(false);
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("stale"), expect.anything());
 	});
 
 	it("skips passive mode", async () => {
@@ -128,7 +159,7 @@ describe("V3 compaction trigger", () => {
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(runtime.compactInFlight).toBe(false);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: compaction deferred — agent became busy before compaction",
+			"观察式记忆：压缩已延后——代理在压缩前变为忙碌",
 			"info",
 		);
 	});
@@ -143,7 +174,7 @@ describe("V3 compaction trigger", () => {
 		expect(ctx.compact).not.toHaveBeenCalled();
 		expect(runtime.compactInFlight).toBe(false);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: compaction skipped — another compaction already ran before deferred compaction",
+			"观察式记忆：压缩已跳过——延迟压缩前已有其他压缩完成",
 			"info",
 		);
 	});

@@ -25,12 +25,13 @@ function renderList<T>(items: T[], render: (item: T) => string, empty: string): 
 }
 
 function renderContentOnlyProjection(projection: Projection, emptyScope: "visible" | "recorded"): string {
+	const scope = emptyScope === "visible" ? "可见" : "已记录";
 	return [
-		"── Reflections ──",
-		renderList(projection.reflections, reflectionToSummaryLine, `No ${emptyScope} reflections.`),
+		"── 反思 ──",
+		renderList(projection.reflections, reflectionToSummaryLine, `暂无${scope}反思。`),
 		"",
-		"── Observations ──",
-		renderList(projection.observations, observationToSummaryLine, `No ${emptyScope} observations.`),
+		"── 观察 ──",
+		renderList(projection.observations, observationToSummaryLine, `暂无${scope}观察。`),
 	].join("\n");
 }
 
@@ -42,7 +43,7 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options:
 	const copyToClipboard = options.copyToClipboard ?? copyTextToClipboard;
 
 	pi.registerCommand("om:view", {
-		description: "Print and copy observational memory content (visible by default, full for recorded memory)",
+		description: "打印并复制观察式记忆内容（默认可见范围，full 为全部已记录记忆）",
 		handler: async (args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);
 			const entries = ctx.sessionManager.getBranch() as Entry[];
@@ -52,8 +53,8 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options:
 				const copied = await copyToClipboard(output).catch(() => false);
 				ctx.ui.notify(
 					copied
-						? `${output}\n\nCopied /om:view output to clipboard.`
-						: `${output}\n\nWarning: failed to copy /om:view output to clipboard.`,
+						? `${output}\n\n已复制 /om:view 输出到剪贴板。`
+						: `${output}\n\n警告：复制 /om:view 输出到剪贴板失败。`,
 					"info",
 				);
 			};
@@ -64,7 +65,7 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options:
 			}
 
 			if (mode && mode !== "visible") {
-				ctx.ui.notify("Usage: /om:view [full]", "info");
+				ctx.ui.notify("用法：/om:view [full]", "info");
 				return;
 			}
 

@@ -14,9 +14,8 @@ export type ObservationPoolMetrics = {
 };
 
 export function observationTokenSum(observations: readonly Observation[]): number {
-	// Count the full rendered line (id + timestamp + relevance + content), not
-	// bare content: the pool budget caps how much observation text is re-rendered
-	// into future contexts, and every line carries metadata overhead.
+	// 统计完整渲染行（id + 时间戳 + 重要度 + 内容），而不是纯内容：池预算限制的是重新渲染
+	// 到未来上下文中的观察文本总量，而每行都携带元数据开销。
 	return observations.reduce((sum, observation) => sum + observationLineTokenCount(observation), 0);
 }
 

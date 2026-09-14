@@ -34,7 +34,7 @@ pi install ./packages/pi-lsp-feedback
 
 ## pi-tui-enhancements
 
-TUI 体验增强扩展，合并快捷面板和紧凑显示：可选择技能、模型、思考等级和模型组合，也可折叠思考内容、压缩工具/用户消息、优化页脚并显示 provider 额度。
+TUI 体验增强扩展，合并快捷面板、紧凑显示和上下文查看：可选择技能、模型、思考等级和模型组合，也可折叠思考内容、压缩工具/用户消息、优化页脚并显示 provider 额度，或用 `/context` 查看完整 LLM 上下文。
 
 ```bash
 pi -e ./packages/pi-tui-enhancements

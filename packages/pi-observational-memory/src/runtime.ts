@@ -6,28 +6,27 @@ export type ResolveResult =
 	| { ok: false; reason: string };
 
 /**
- * Mirrors pi's own request-auth acceptance rule (`AgentSession._getRequiredRequestAuth`):
- * resolved auth is usable when it carries an apiKey OR at least one header value.
- * OAuth providers (kimi-coding, xai, openai-codex, anthropic OAuth, …) authenticate via
- * `toAuth()` returning `{ headers: { Authorization: "Bearer …" } }` with no apiKey, and
- * pi-ai providers accept a caller-supplied Authorization header in place of an apiKey.
+ * 与 pi 自己的请求认证判定规则（`AgentSession._getRequiredRequestAuth`）一致：
+ * 只要解析出的认证带有 apiKey 或至少一个 header 值，就视为可用。
+ * OAuth provider（kimi-coding、xai、openai-codex、anthropic OAuth 等）通过 `toAuth()`
+ * 返回 `{ headers: { Authorization: "Bearer …" } }` 且没有 apiKey 来认证，
+ * pi-ai provider 接受调用方提供的 Authorization header 代替 apiKey。
  *
- * NOTE: a `false` result does NOT mean "unauthenticated" — see `resolveModel`. Providers
- * that authenticate at request time (Amazon Bedrock SigV4 from AWS_PROFILE/SSO, Google
- * Vertex ADC) legitimately expose neither an apiKey nor a header, because pi signs their
- * requests itself.
+ * 注意：`false` 结果并不等于“未认证”——见 `resolveModel`。在请求时认证的 provider
+ * （Amazon Bedrock 用 AWS_PROFILE/SSO 做 SigV4、Google Vertex 用 ADC）本来就不会
+ * 暴露 apiKey 或 header，因为 pi 自己给它们的请求签名。
  */
 function hasUsableAuth(auth: { apiKey?: unknown; headers?: unknown }): boolean {
 	if (typeof auth.apiKey === "string" && auth.apiKey.length > 0) return true;
 	return countUsableHeaders(auth.headers) > 0;
 }
 
-/** How many headers the auth payload carries at all (diagnostics only, never values). */
+/** 认证负载携带的 header 总数（仅诊断，绝不记录值）。 */
 function countHeaders(headers: unknown): number {
 	return headers && typeof headers === "object" ? Object.keys(headers as Record<string, unknown>).length : 0;
 }
 
-/** How many headers carry a non-empty string value — the ones pi could actually send. */
+/** 携带非空字符串值的 header 数量——也就是 pi 真正可能发送的那些。 */
 function countUsableHeaders(headers: unknown): number {
 	if (!headers || typeof headers !== "object") return 0;
 	return Object.values(headers as Record<string, unknown>).filter(
@@ -36,45 +35,58 @@ function countUsableHeaders(headers: unknown): number {
 }
 
 /**
- * How long to wait for the availability re-check in `recheckProviderCredential`, and how
- * long before the same provider may be re-checked again.
+ * `recheckProviderCredential` 中可用性复检的等待上限，以及同一 provider 再次复检的冷却间隔。
  *
- * The re-check is network-free and measured at ~1ms on a warm Bedrock/SSO host, but
- * `checkAuth` can block on a provider's own credential resolution, so it is bounded. The
- * re-arm interval keeps an unauthenticated host from paying the cost on every
- * consolidation while still recovering within a session when credentials are renewed out
- * of band (`aws sso login` in another terminal, `gcloud auth application-default login`).
+ * 复检不访问网络，在热身的 Bedrock/SSO 主机上实测约 1ms，但 `checkAuth` 可能阻塞在
+ * provider 自己的凭据解析上，所以必须有界。冷却间隔避免未认证的主机在每次整理时都
+ * 付出这份开销，同时仍能在会话内恢复带外续期的凭据（在另一个终端执行
+ * `aws sso login`、`gcloud auth application-default login`）。
  */
 const AVAILABILITY_RECHECK_TIMEOUT_MS = 5_000;
 const AVAILABILITY_RECHECK_REARM_MS = 60_000;
 
-type NotifyLevel = "warning" | "info" | "error";
+export type NotifyLevel = "warning" | "info" | "error";
 type Notify = (message: string, type?: NotifyLevel) => void;
 export type ConsolidationPhase = "observer" | "reflector" | "dropper";
 
+/** 阶段中文名，用于通知、状态与错误提示。 */
+export const CONSOLIDATION_PHASE_LABELS: Record<ConsolidationPhase, string> = {
+	observer: "观察",
+	reflector: "反思",
+	dropper: "精简",
+};
+
 /**
- * Whether pi positively reports a working credential source for this model's provider.
+ * Pi 在会话替换或重载时会先触发 `session_shutdown`，再让旧 ctx 与 pi 失效。
+ * 失效后调用 ctx 的 getter、`getContextUsage()`、`compact()` 或 pi 的任何方法都会抛出
+ * stale 错误，因此后台任务必须把该错误当成"已被取代"而不是"失败"。
+ */
+export function isStaleSessionError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return message.includes("stale after session replacement") || message.includes("ctx is stale");
+}
+
+/**
+ * pi 是否明确报告该模型 provider 存在可用凭据来源。
  *
- * `ModelRegistry.hasConfiguredAuth(model)` is true when pi's availability check
- * (`ModelRuntime.checkAuth`) resolved *something* for the provider — an API key, a
- * stored credential, or an ambient source such as `AWS_PROFILE` / `AWS_ACCESS_KEY_ID`
- * / gcloud ADC. Combined with `auth.ok === true` and an auth payload that carries
- * nothing, that is the signature of a provider pi signs at request time:
+ * 当 pi 的可用性检查（`ModelRuntime.checkAuth`）为该 provider 解析到*某些东西*时，
+ * `ModelRegistry.hasConfiguredAuth(model)` 为 true——API key、存储的凭据，或
+ * `AWS_PROFILE` / `AWS_ACCESS_KEY_ID` / gcloud ADC 这类环境来源。它和
+ * `auth.ok === true` 且认证负载为空一起，构成“pi 在请求时签名”的特征：
  *
- *   pi has a credential source, and deliberately hands the caller nothing to attach.
+ *   pi 有凭据来源，但故意不交给调用方任何可附加的东西。
  *
- * Measured on a Bedrock/SSO host (pi 0.84.2), with `AWS_PROFILE` exported:
+ * 在 Bedrock/SSO 主机上实测（pi 0.84.2，已导出 `AWS_PROFILE`）：
  *   checkAuth("amazon-bedrock") -> { source: "AWS_PROFILE", type: "api_key" }
  *   hasConfiguredAuth(model)    -> true
  *   getApiKeyAndHeaders(model)  -> { ok: true, apiKey: undefined, headers: undefined }
- * `googleVertexProvider`'s ADC branch returns the same empty-auth resolution.
+ * `googleVertexProvider` 的 ADC 分支返回同样的空认证解析。
  *
- * The inverse case — `hasConfiguredAuth === false` with an empty auth payload — is a
- * provider pi could not authenticate at all (no key, no ambient source). That must
- * keep failing: it is the ordinary "not logged in" state, not ambient auth.
+ * 反过来的情况——`hasConfiguredAuth === false` 且认证负载为空——是 pi 完全无法认证的
+ * provider（没有 key，也没有环境来源）。它必须继续失败：这是普通的“未登录”状态，
+ * 不是环境认证。
  *
- * Defensive: older pi versions and partial test doubles may not expose this, and an
- * unknown answer must not be read as "authenticated".
+ * 防御性：旧版 pi 和部分测试替身可能不暴露该接口，未知答案不得读作“已认证”。
  */
 function hasConfiguredProviderCredential(registry: unknown, model: unknown): boolean {
 	try {
@@ -104,13 +116,18 @@ export class Runtime {
 	consolidationPhase: ConsolidationPhase | undefined;
 	compactInFlight = false;
 	compactHookInFlight = false;
+	/**
+	 * 会话代次：每次会话替换、重载或退出都自增。后台任务在启动时捕获代次，
+	 * 代次变化后立即停止，不再触碰已失效的 ctx/pi。
+	 */
+	sessionEpoch = 0;
 	resolveFailureNotified = false;
 	lastObserverError: string | undefined;
 	lastReflectorError: string | undefined;
 	lastDropperError: string | undefined;
-	/** provider -> epoch ms of the last availability re-check (see `recheckProviderCredential`). */
+	/** provider -> 上次可用性复检的毫秒时间戳（见 `recheckProviderCredential`）。 */
 	availabilityRecheckedAt = new Map<string, number>();
-	/** Deliberate-empty backoff (#23): skip observer re-fires over the same span until enough new tokens arrive. */
+	/** 刻意空结果退避（#23）：同一区间内不再重复触发观察器，直到累计足够的新 token。 */
 	observerEmptyBackoff: {
 		sessionIdentity: string | undefined;
 		coverageId: string | undefined;
@@ -123,6 +140,22 @@ export class Runtime {
 		this.configLoaded = true;
 	}
 
+	/** 会话替换、重载或退出：作废在途后台任务，并释放会被下一个会话复用的运行标志。 */
+	endSession(): void {
+		this.sessionEpoch += 1;
+		this.consolidationInFlight = false;
+		this.consolidationPhase = undefined;
+		this.consolidationPromise = null;
+		this.compactInFlight = false;
+		this.compactHookInFlight = false;
+		this.observerEmptyBackoff = undefined;
+	}
+
+	/** 代次仍匹配时，启动该任务时的 ctx/pi 才可用。 */
+	isSessionCurrent(epoch: number): boolean {
+		return this.sessionEpoch === epoch;
+	}
+
 	async resolveModel(ctx: ResolveCtx): Promise<ResolveResult> {
 		let model = ctx.model;
 		if (this.config.model) {
@@ -131,55 +164,47 @@ export class Runtime {
 				model = configured;
 			} else if (ctx.hasUI && ctx.ui) {
 				ctx.ui.notify(
-					`Observational memory: configured model ${this.config.model.provider}/${this.config.model.id} not found, using session model`,
+					`观察式记忆：配置的模型 ${this.config.model.provider}/${this.config.model.id} 不存在，改用当前会话模型`,
 					"warning",
 				);
 			}
 		}
-		if (!model) return { ok: false, reason: "no model available (session has no model and no observational-memory model configured)" };
+		if (!model) return { ok: false, reason: "没有可用模型（当前会话没有模型，也未配置观察式记忆模型）" };
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		const provider = (model as { provider?: string }).provider ?? "unknown";
 		const isOAuth = ctx.modelRegistry.isUsingOAuth?.(model) === true;
-		// `auth.ok === false` is the only unambiguous failure: pi returns it when a
-		// provider requires a request auth header and no credential resolved.
+		// `auth.ok === false` 是唯一明确的失败：provider 需要请求认证头但没有解析到凭据时，
+		// pi 会返回它。
 		//
-		// `auth.ok === true` with neither apiKey nor headers, for a provider pi DOES
-		// report a credential source for, is not a failure — it is how pi describes a
-		// provider that authenticates at request time: Amazon Bedrock signing SigV4 from
-		// ambient AWS credentials (`bedrockAuth.resolve` returns `{ auth: {}, source:
-		// "AWS_PROFILE" }`), Google Vertex using ADC (same empty resolution). pi's own
-		// native streaming path forwards no apiKey either, and its pre-prompt gate is
-		// merely `hasConfiguredAuth(provider) || checkAuth(provider) !== undefined` —
-		// om's pre-flight check must not be stricter than pi's own. Treating it as "no
-		// auth" aborted consolidation before the model was ever called, disabling
-		// observational memory silently — no error, no cost, no latency — on such hosts.
+		// `auth.ok === true` 但既没有 apiKey 也没有 headers，而 pi 又*确实*报告了该 provider
+		// 的凭据来源，这不算失败——这是 pi 描述“在请求时认证的 provider”的方式：Amazon
+		// Bedrock 用环境 AWS 凭据签 SigV4（`bedrockAuth.resolve` 返回 `{ auth: {},
+		// source: "AWS_PROFILE" }`），Google Vertex 用 ADC（同样的空解析）。pi 自己的原生
+		// 流式路径也不转发 apiKey，它的提示前门禁只是
+		// `hasConfiguredAuth(provider) || checkAuth(provider) !== undefined`——om 的预检
+		// 不能比 pi 自己更严格。把它当成“没有认证”会让整理在模型被调用之前就中止，在这类
+		// 主机上静默禁用观察式记忆——没有错误、没有开销、没有延迟。
 		//
-		// Three cases deliberately keep failing: OAuth providers, where an empty
-		// resolution means the credentials no longer resolve and the user must log in
-		// again; a credential that resolved to an empty *string* key, which is a
-		// misconfiguration rather than ambient auth; and a provider pi reports no
-		// credential source for at all, which is simply unauthenticated.
+		// 三种情况刻意保持失败：OAuth provider，空解析意味着凭据不再可用、用户必须重新登录；
+		// 解析到空*字符串* key 的凭据，这是配置错误而不是环境认证；以及 pi 完全没有报告
+		// 凭据来源的 provider，那就是未认证。
 		const usable = hasUsableAuth(auth);
 		const resolvedEmptyApiKey = typeof auth.apiKey === "string" && auth.apiKey.length === 0;
 		let providerCredentialConfigured = hasConfiguredProviderCredential(ctx.modelRegistry, model);
-		// pi's gate has TWO halves and never trusts the snapshot alone (agent-session.js):
+		// pi 的门禁有两半，且从不单独信任快照（agent-session.js）：
 		//
 		//   hasConfiguredAuth(provider) || (await checkAuth(provider)) !== undefined
 		//
-		// `hasConfiguredAuth` reads `snapshot.configuredProviders`, which is populated by an
-		// availability pass — and left untouched when that pass is skipped
-		// (`refreshOnCreate: false`), aborted, or FAILS (its catch records `availabilityError`
-		// and returns). A provider whose credential could not be checked at startup — an
-		// expired SSO token, say — is therefore absent from the snapshot for the rest of the
-		// session, even after the user renews it out of band. pi recovers on the next turn
-		// because its second half re-checks live; reading only the snapshot half would leave
-		// consolidation dead for the whole session, which is the same silent-failure class as
-		// the bug this gate was fixed for.
+		// `hasConfiguredAuth` 读取 `snapshot.configuredProviders`，该快照由可用性检查填充，
+		// 并在检查被跳过（`refreshOnCreate: false`）、被中止或失败（其 catch 记录
+		// `availabilityError` 后返回）时保持原样。启动时无法检查凭据的 provider——比如过期的
+		// SSO token——因此在整个会话中都不在快照里，即使用户后来带外续期也一样。pi 能在下一
+		// 轮恢复，因为它的第二半会实时复检；只读快照那一半会让整理在整个会话中失效，这与当初
+		// 修复本门禁的缺陷属于同一类静默失败。
 		//
-		// The facade exposes no `checkAuth`, but `refresh({ providers })` performs the same
-		// live check and then updates the snapshot, so re-reading afterwards is equivalent.
-		// Only attempted when everything else already looks like the ambient shape, so an
-		// ordinary unauthenticated provider still fails on the first call.
+		// 门面不暴露 `checkAuth`，但 `refresh({ providers })` 会执行同样的实时检查并更新快照，
+		// 因此之后再读等价。只有其他一切都符合环境认证特征时才会尝试，所以普通的未认证
+		// provider 仍在第一次调用就失败。
 		if (auth.ok === true && !usable && !isOAuth && !resolvedEmptyApiKey && !providerCredentialConfigured) {
 			providerCredentialConfigured = await this.recheckProviderCredential(ctx.modelRegistry, model, provider);
 		}
@@ -187,11 +212,10 @@ export class Runtime {
 			auth.ok === true && !isOAuth && !resolvedEmptyApiKey && providerCredentialConfigured;
 		if (!auth.ok || (!usable && !signsAtRequestTime)) {
 			const reason = isOAuth
-				? `authentication failed for provider "${provider}" — OAuth credentials may have expired; run '/login ${provider}' to re-authenticate`
-				: `no API key or auth headers for provider "${provider}"`;
-			// The reason string alone cannot tell `ok: false` from `ok: true` with nothing to
-			// carry, which is what made the ambient-credential outage un-diagnosable from the
-			// debug log. Record the decision inputs — booleans and counts only, never values.
+				? `provider "${provider}" 认证失败——OAuth 凭据可能已过期；请运行 '/login ${provider}' 重新登录`
+				: `provider "${provider}" 没有 API key 或认证头`;
+			// 仅凭 reason 字符串无法区分 `ok: false` 与“`ok: true` 但无可携带内容”，这正是环境
+			// 凭据中断无法从调试日志诊断的原因。记录决策输入——只有布尔值和计数，绝不记录值。
 			debugLog("resolve.rejected", {
 				provider,
 				reason,
@@ -220,11 +244,10 @@ export class Runtime {
 	}
 
 	/**
-	 * Re-check one provider's credential live, then re-read pi's snapshot.
+	 * 实时复检单个 provider 的凭据，然后重新读取 pi 的快照。
 	 *
-	 * Implements the second half of pi's own auth gate for the only case that needs it: an
-	 * otherwise-ambient-looking resolution whose provider is missing from a stale or never
-	 * populated availability snapshot. Bounded and rate-limited; never throws.
+	 * 实现 pi 自己认证门禁的第二半，只用于唯一需要它的情况：解析结果看起来像环境认证，
+	 * 但该 provider 不在（过期或从未填充的）可用性快照中。有界且限流；从不抛错。
 	 */
 	private async recheckProviderCredential(registry: unknown, model: unknown, provider: string): Promise<boolean> {
 		const last = this.availabilityRecheckedAt.get(provider);
@@ -243,14 +266,13 @@ export class Runtime {
 		let refreshError: string | undefined;
 		let timedOut = false;
 		try {
-			// allowNetwork:false — a credential re-check must not wait on a model-catalog fetch.
-			// providers:[provider] — scope the work, and the snapshot writes, to the one provider.
+			// allowNetwork:false——凭据复检不应等待模型目录拉取。
+			// providers:[provider]——把工作和快照写入限定在该 provider 上。
 			//
-			// Both are honoured from pi 0.84; on pi 0.81 the facade is `refresh()` with no
-			// parameters, delegating to `runtime.reloadConfig()`, which reloads models.json and
-			// then runs a FULL, network-permitted availability pass. Passing the options is
-			// harmless there, but the work is wider and slower — hence the race below rather
-			// than relying on the abort signal, which that version never sees.
+			// 两者从 pi 0.84 起被支持；在 pi 0.81 上门面是无参数的 `refresh()`，委托给
+			// `runtime.reloadConfig()`，它会重载 models.json 并运行一次完整的、允许网络的可用性
+			// 检查。在那里传选项无害，但工作更宽更慢——所以下面用竞速，而不是依赖那个版本
+			// 永远看不到的中止信号。
 			await Promise.race([
 				refresh.call(registry, { allowNetwork: false, providers: [provider], signal: controller.signal }),
 				new Promise<void>((resolve) => {
@@ -266,8 +288,8 @@ export class Runtime {
 			clearTimeout(timer);
 		}
 
-		// Re-read even when the refresh reported an error or timed out: a scoped pass can
-		// update the snapshot for this provider and still fail elsewhere.
+		// 即使 refresh 报错或超时也重新读取：限定范围的检查可能已更新该 provider 的快照，
+		// 却在别处失败。
 		const recovered = hasConfiguredProviderCredential(registry, model);
 		debugLog("resolve.availability_recheck", {
 			provider,
@@ -286,7 +308,7 @@ export class Runtime {
 		this.lastObserverError = undefined;
 		this.lastReflectorError = undefined;
 		this.lastDropperError = undefined;
-		const promise = this.launchTrackedTask(ctx, "consolidation", work, () => {
+		const promise = this.launchTrackedTask(ctx, "记忆整理", work, () => {
 			this.consolidationInFlight = false;
 			this.consolidationPhase = undefined;
 			if (this.consolidationPromise === promise) this.consolidationPromise = null;
@@ -300,7 +322,9 @@ export class Runtime {
 		if (phase === "observer") this.lastObserverError = message;
 		if (phase === "reflector") this.lastReflectorError = message;
 		if (phase === "dropper") this.lastDropperError = message;
-		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`Observational memory: ${phase} failed: ${message}`, "warning");
+		// 会话已被替换/重载时，旧 ctx 已失效：这不是需要提醒用户的失败。
+		if (isStaleSessionError(error)) return message;
+		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`观察式记忆：${CONSOLIDATION_PHASE_LABELS[phase]}阶段失败：${message}`, "warning");
 		return message;
 	}
 
@@ -318,7 +342,10 @@ export class Runtime {
 				await work();
 			} catch (error) {
 				errorMessage = error instanceof Error ? error.message : String(error);
-				if (hasUI && ui) ui.notify(`Observational memory: ${label} failed: ${errorMessage}`, "warning");
+				// 会话替换/重载导致的 stale 错误属于正常收尾，不打扰用户。
+				if (!isStaleSessionError(error) && hasUI && ui) {
+					ui.notify(`观察式记忆：${label} 任务失败：${errorMessage}`, "warning");
+				}
 			} finally {
 				onFinally(errorMessage);
 			}

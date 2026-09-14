@@ -69,20 +69,20 @@ describe("V3 dropper agent", () => {
 
 		await runDropper({ ...baseArgs, agentLoop: loop });
 
-		expect(systemPrompt).toContain("Active-memory framing");
-		expect(systemPrompt).toContain("Age-gradient rule");
+		expect(systemPrompt).toContain("活跃记忆的定位");
+		expect(systemPrompt).toContain("年龄梯度规则");
 		expect(systemPrompt).toContain("critical");
-		expect(systemPrompt).toContain("highest importance and strongest resistance");
-		expect(systemPrompt).toContain("Relevance is importance/resistance, not an absolute keep/drop lock");
-		expect(systemPrompt).toContain("Coverage is evidence, not an automatic decision");
-		expect(systemPrompt).toContain("age alone is not enough");
+		expect(systemPrompt).toContain("重要度最高、抵抗力最强");
+		expect(systemPrompt).toContain("重要度是重要性与抵抗力，不是绝对的保留/精简锁");
+		expect(systemPrompt).toContain("coverage 是证据，不是自动决定");
+		expect(systemPrompt).toContain("仅有年龄不足以精简");
 		expect(systemPrompt).not.toContain("NEVER drop");
-		expect(systemPrompt).toContain("Preservation floor");
-		expect(systemPrompt).toContain("Do not force drops");
-		expect(systemPrompt).toContain("You cannot merge observations");
-		expect(systemPrompt).toContain("Default action is KEEP");
-		expect(systemPrompt).toContain("When uncertain, keep");
-		expect(systemPrompt).toContain("active observation pool target");
+		expect(systemPrompt).toContain("保留底线");
+		expect(systemPrompt).toContain("不要强行精简");
+		expect(systemPrompt).toContain("不能合并观察");
+		expect(systemPrompt).toContain("默认动作是保留");
+		expect(systemPrompt).toContain("拿不准时就保留");
+		expect(systemPrompt).toContain("活跃观察池目标");
 		expect(systemPrompt).not.toContain("drop freely");
 		expect(systemPrompt).not.toContain("pruner");
 		expect(systemPrompt).not.toContain("drop-priority");
@@ -100,14 +100,14 @@ describe("V3 dropper agent", () => {
 		await runDropper({ ...baseArgs, agentLoop: loop });
 
 		// Pool metrics count full rendered lines: 19 + 18 + 19 = 56 tokens against a 20-token target.
-		expect(userText).toContain("fullness against target: ~280%");
-		expect(userText).toContain("over target by ~36 tokens");
+		expect(userText).toContain("相对目标的充满度：约 280%");
+		expect(userText).toContain("超出目标约 36 token");
 		expect(userText).toContain("[coverage: partial]");
 		expect(userText).toContain("[coverage: none]");
-		expect(userText).toContain("Maximum drops allowed this run: 2 observations");
-		expect(userText).toContain("sized to move the active pool toward the target");
-		expect(userText).toContain("hard upper bound, not a target");
-		expect(userText).toContain("Drop fewer or none");
+		expect(userText).toContain("本次允许的最大精简数：2 条观察");
+		expect(userText).toContain("该上限的设定前提是：每一条候选都被判定为明确安全，才能把活跃池拉向目标");
+		expect(userText).toContain("这个上限是硬上限，不是目标");
+		expect(userText).toContain("若明确安全的观察更少，就少精简或不精简");
 		expect(userText).not.toContain("Drop urgency");
 		expect(userText).not.toContain("drop-priority");
 		expect(userText).not.toContain("drop-resistance");

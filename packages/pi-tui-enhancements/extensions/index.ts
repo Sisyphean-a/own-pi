@@ -28,5 +28,6 @@ export default async function piTuiEnhancements(pi: ExtensionAPI): Promise<void>
   await Promise.all([
     activateFeature("紧凑显示", () => import("../src/display/index.ts"), pi),
     activateFeature("快捷面板", () => import("../src/panel/index.ts"), pi),
+    activateFeature("上下文查看", () => import("../src/context/index.ts"), pi),
   ]);
 }

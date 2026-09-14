@@ -40,11 +40,11 @@ const RecordObservationsSchema = Type.Object({
 		Type.Object({
 			timestamp: Type.String({
 				pattern: OBSERVATION_TIMESTAMP_PATTERN,
-				description: "Observation time in local 'YYYY-MM-DD HH:MM' format.",
+				description: "观察时间，本地时间，格式 'YYYY-MM-DD HH:MM'。",
 			}),
 			content: Type.String({
 				minLength: 1,
-				description: "Single-line plain prose. No markdown, no tags, no embedded timestamp.",
+				description: "单行纯文本。不要 markdown、标签或内嵌时间戳。",
 			}),
 			relevance: RelevanceSchema,
 			sourceEntryIds: Type.Array(
@@ -52,34 +52,33 @@ const RecordObservationsSchema = Type.Object({
 				{
 					minItems: 1,
 					description:
-						"Exact source entry ids from the chunk that directly support this observation. " +
-						"Use only ids shown in '[Source entry id: ...]' labels; never invent ids.",
+						"分块中直接支持这条观察的精确源条目 id。" +
+						"只能使用 '[Source entry id: ...]' 标签中出现的 id，绝不编造 id。",
 				},
 			),
 		}),
-		{ description: "Batch of new observations. May be empty only if the tool is not called at all." },
+		{ description: "一批新观察。只有完全不调用该工具时才允许为空。" },
 	),
 });
 
 type RecordObservationsArgs = Static<typeof RecordObservationsSchema>;
 
 /**
- * Thrown when the agent loop ends with an API/stream failure (`stopReason`
- * `"error"`/`"aborted"`) without recording anything. agent-core returns such
- * runs normally, so without this the caller cannot tell a hard failure from a
- * deliberate empty result (#32).
+ * 当 agent 循环以 API/流失败（`stopReason` 为 `"error"`/`"aborted"`）结束且没有记录任何
+ * 内容时抛出。agent-core 会正常返回这类运行，因此没有这个错误时，调用方无法区分硬失败和
+ * 刻意空结果（#32）。
  */
 export class ObserverStreamError extends Error {
 	readonly stopReason: string;
 	constructor(stopReason: string, errorMessage?: string) {
-		super(`observer stream ended with stopReason "${stopReason}"${errorMessage ? `: ${errorMessage}` : ""}`);
+		super(`观察器流以 stopReason "${stopReason}" 结束${errorMessage ? `：${errorMessage}` : ""}`);
 		this.name = "ObserverStreamError";
 		this.stopReason = stopReason;
 	}
 }
 
 function joinOrEmpty(items: string[]): string {
-	return items.length ? items.join("\n") : "(none yet)";
+	return items.length ? items.join("\n") : "（暂无）";
 }
 
 export function normalizeSourceEntryIds(
@@ -108,11 +107,10 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 
 	const recordObservations: AgentTool<typeof RecordObservationsSchema> = {
 		name: "record_observations",
-		label: "Record observations",
+		label: "记录观察",
 		description:
-			"Record a batch of new observations distilled from the conversation chunk. " +
-			"Call this multiple times as you work through the chunk. Stop calling when coverage is complete, " +
-			"then emit a short plain-text confirmation to end the run.",
+			"记录从对话分块中提炼的一批新观察。处理分块时可以多次调用；覆盖完成后停止调用，" +
+			"然后输出一句简短纯文本确认来结束本次运行。",
 		parameters: RecordObservationsSchema,
 		execute: async (_id, params: RecordObservationsArgs) => {
 			let added = 0;
@@ -146,30 +144,30 @@ export async function runObserver(args: RunObserverArgs): Promise<Observation[] 
 				added++;
 			}
 			const rejectedPart = rejected > 0
-				? ` ${rejected} observation${rejected === 1 ? "" : "s"} rejected for missing or invalid sourceEntryIds.`
+				? ` ${rejected} 条观察因 sourceEntryIds 缺失或非法被拒绝。`
 				: "";
 			const ack =
-				`Recorded ${added} new observation${added === 1 ? "" : "s"} ` +
-				(duplicates > 0 ? `(${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped).` : ".") +
+				`已记录 ${added} 条新观察` +
+				(duplicates > 0 ? `（跳过 ${duplicates} 条重复）。` : "。") +
 				rejectedPart +
-				` Total so far this run: ${accumulated.size}. ` +
-				`Continue if the chunk still has uncovered content; otherwise stop calling the tool and emit a short plain-text confirmation.`;
+				` 本次运行累计 ${accumulated.size} 条。` +
+				`如果分块仍有未覆盖内容，继续调用工具；否则停止调用并输出一句简短纯文本确认。`;
 			return { content: [{ type: "text", text: ack }], details: { added, duplicates, rejected, total: accumulated.size } };
 		},
 	};
 
 	const now = nowTimestamp();
-	const userText = `Current local time: ${now}
+	const userText = `当前本地时间：${now}
 
-CURRENT REFLECTIONS:
+当前反思：
 ${joinOrEmpty(priorReflections)}
 
-CURRENT OBSERVATIONS:
+当前观察：
 ${joinOrEmpty(priorObservations)}
 
-Compress the following new conversation chunk into observations by calling record_observations one or more times. Do not restate facts already present in current reflections or current observations. Prefer inline conversation timestamps when assigning times; fall back to the current local time above only if no message timestamp applies. Stop calling the tool and reply with a short plain-text confirmation once the chunk is fully covered.
+请调用 record_observations 一次或多次，把下面这段新对话分块压缩成观察。不要重复当前反思或当前观察中已有的事实。分配时间时优先使用对话内联时间戳；只有在没有消息时间戳可用时才回退到上面的当前本地时间。分块完全覆盖后停止调用工具，并回复一句简短纯文本确认。
 
-NEW CONVERSATION CHUNK:
+新对话分块：
 ${conversation}`;
 
 	const prompts: Message[] = [
@@ -213,10 +211,9 @@ ${conversation}`;
 	const stream = loop(prompts, context, config, signal, streamSimple);
 	let streamError: { stopReason: string; errorMessage?: string } | undefined;
 	for await (const event of stream) {
-		// Drain events; the tool's execute already collects records.
+		// 排空事件；工具执行已经收集了记录。
 		logAgentStreamError("observer", event);
-		// Watch for a terminal API/stream failure so it is not conflated with
-		// a deliberate empty result.
+		// 监测终止性 API/流失败，避免与刻意空结果混为一谈。
 		const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
 		if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
 			streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };

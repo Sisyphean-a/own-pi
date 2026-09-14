@@ -46,13 +46,13 @@ describe("runObserver", () => {
 
 		await runObserver({ ...baseArgs, agentLoop: loop });
 
-		expect(systemPrompt).toContain("Preserve user assertions exactly");
-		expect(systemPrompt).toContain("Detail preservation");
-		expect(systemPrompt).toContain("Frame state changes as supersession");
+		expect(systemPrompt).toContain("精确保留用户的断言");
+		expect(systemPrompt).toContain("细节保留");
+		expect(systemPrompt).toContain("把状态变化表述为取代关系");
 		expect(systemPrompt).toContain("sourceEntryIds");
-		expect(systemPrompt).toContain("zero observations");
-		expect(systemPrompt).toContain("The dropper will drop these first");
-		expect(systemPrompt).toContain("highest-resistance, load-bearing observations");
+		expect(systemPrompt).toContain("产出零条观察");
+		expect(systemPrompt).toContain("精简器会最先精简这些");
+		expect(systemPrompt).toContain("抵抗力最强、最承重的观察");
 		expect(systemPrompt).not.toContain("will NEVER be dropped");
 		expect(systemPrompt).not.toContain("pruner");
 	});

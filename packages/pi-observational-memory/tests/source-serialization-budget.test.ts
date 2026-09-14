@@ -84,14 +84,14 @@ describe("source-addressed serialization budget", () => {
 		expect(result.truncatedSourceEntryIds).toEqual(["raw-huge"]);
 		expect(result.estimatedTokens).toBeLessThanOrEqual(100);
 		expect(result.text).toContain("[Source entry id: raw-huge]");
-		expect(result.text).toContain("[Tool result for bash");
+		expect(result.text).toContain("[工具结果 bash");
 		expect(result.text).toContain("HEAD:");
 		expect(result.text).toContain(":TAIL");
 		expect(result.text).toContain(
-			"middle omitted: source exceeds observer input budget",
+			"中间部分已省略：源内容超出观察器输入预算",
 		);
 		expect(result.text).toContain(
-			"original source remains in the session ledger",
+			"原始源内容仍保留在会话账本中",
 		);
 		expect(result.text).not.toContain("raw-next");
 

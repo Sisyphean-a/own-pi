@@ -21,7 +21,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 		if (runtime.compactHookInFlight) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(
-					"Observational memory: another compaction is already in progress; cancelling duplicate",
+					"观察式记忆：已有压缩正在进行，取消重复请求",
 					"warning",
 				);
 			}
@@ -40,7 +40,7 @@ export function registerCompactionHook(pi: ExtensionAPI, runtime: Runtime): void
 			);
 			const summary = renderSummary(projection.reflections, projection.observations);
 			if (summary.length === 0) {
-				// Decline ownership so Pi's native summarizer preserves the pre-cut context.
+				// 放弃接管，让 Pi 原生摘要器保留切割前的上下文。
 				return;
 			}
 

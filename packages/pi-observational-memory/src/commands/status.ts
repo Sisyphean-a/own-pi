@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { resolveCompactAfterTokens } from "../config.js";
-import type { Runtime } from "../runtime.js";
+import { CONSOLIDATION_PHASE_LABELS, type Runtime } from "../runtime.js";
 import {
 	diffProjection,
 	foldLedger,
@@ -36,7 +36,7 @@ function appendSuffixes(line: string, suffixes: (string | undefined)[]): string 
 
 export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void {
 	pi.registerCommand("om:status", {
-		description: "Show observational memory status",
+		description: "查看观察式记忆状态",
 		handler: async (_args, ctx) => {
 			runtime.ensureConfig(ctx.cwd);
 			const entries = ctx.sessionManager.getBranch() as Entry[];
@@ -49,14 +49,14 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const visibleReflectionTokens = tokenSum(visible.reflections);
 			const activeObservationPool = observationPoolMetrics(folded.activeObservations, runtime.config.observationsPoolTargetTokens);
 			const observationLine = appendSuffixes(
-				`Observations: ${folded.observations.length} recorded / ${folded.droppedObservationIds.size} dropped / ${folded.activeObservations.length} active / ${visible.observations.length} visible`,
+				`观察：已记录 ${folded.observations.length} / 已精简 ${folded.droppedObservationIds.size} / 活跃 ${folded.activeObservations.length} / 可见 ${visible.observations.length}`,
 				[
 					addedSuffix(drift.observationsOnlyInFull.length),
 					removedSuffix(drift.droppedOnlyInFull.length),
 				],
 			);
 			const reflectionLine = appendSuffixes(
-				`Reflections:  ${folded.reflections.length} recorded / ${visible.reflections.length} visible`,
+				`反思：已记录 ${folded.reflections.length} / 可见 ${visible.reflections.length}`,
 				[addedSuffix(drift.reflectionsOnlyInFull.length)],
 			);
 			const obsProgress = rawTokensSinceObservationCoverage(entries);
@@ -67,42 +67,42 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 
 			const passiveLines = runtime.config.passive === true
 				? [
-					"── Mode ──",
-					"Passive: automatic memory workers and auto-compaction disabled; manual/Pi compaction, commands, and recall remain active",
+					"── 模式 ──",
+					"被动模式：自动记忆 worker 与自动压缩已禁用；手动/Pi 压缩、命令和 recall 仍可用",
 					"",
 				]
 				: [];
 
 			const lines = [
 				...passiveLines,
-				"── Memory ──",
+				"── 记忆 ──",
 				observationLine,
 				reflectionLine,
 				"",
-				"── Activity ──",
-				`Next observation: ~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} tokens (${pct(obsProgress, runtime.config.observeAfterTokens)}%)`,
-				`Next reflection:  ~${reflectionProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} tokens (${pct(reflectionProgress, runtime.config.reflectAfterTokens)}%)`,
-				`Next compaction:  ~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} estimated source tokens (${pct(compactionProgress, compactThreshold)}%)`,
-				`Visible observation pool: ~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} tokens (${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%)`,
-				`Active observation pool: ~${activeObservationPool.observationTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} target tokens (${pct(activeObservationPool.observationTokens, runtime.config.observationsPoolTargetTokens)}%)`,
-				`Reflection pool:         ~${visibleReflectionTokens.toLocaleString()} tokens`,
+				"── 进度 ──",
+				`下次观察：~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} token（${pct(obsProgress, runtime.config.observeAfterTokens)}%）`,
+				`下次反思：~${reflectionProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} token（${pct(reflectionProgress, runtime.config.reflectAfterTokens)}%）`,
+				`下次压缩：~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} 估算源 token（${pct(compactionProgress, compactThreshold)}%）`,
+				`可见观察池：~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} token（${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%）`,
+				`活跃观察池：~${activeObservationPool.observationTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} 目标 token（${pct(activeObservationPool.observationTokens, runtime.config.observationsPoolTargetTokens)}%）`,
+				`反思池：~${visibleReflectionTokens.toLocaleString()} token`,
 			];
 
 			if (runtime.consolidationInFlight || runtime.compactInFlight || runtime.compactHookInFlight) {
-				lines.push("", "── In flight ──");
+				lines.push("", "── 进行中 ──");
 				if (runtime.consolidationInFlight) {
-					const phase = runtime.consolidationPhase ? ` (${runtime.consolidationPhase})` : "";
-					lines.push(`Consolidation: running${phase}`);
+					const phase = runtime.consolidationPhase ? `（${CONSOLIDATION_PHASE_LABELS[runtime.consolidationPhase]}）` : "";
+					lines.push(`记忆整理：运行中${phase}`);
 				}
-				if (runtime.compactInFlight) lines.push("Auto-compaction: running");
-				if (runtime.compactHookInFlight) lines.push("Compaction hook: running");
+				if (runtime.compactInFlight) lines.push("自动压缩：运行中");
+				if (runtime.compactHookInFlight) lines.push("压缩钩子：运行中");
 			}
 
 			if (runtime.lastObserverError || runtime.lastReflectorError || runtime.lastDropperError) {
-				lines.push("", "── Last error ──");
-				if (runtime.lastObserverError) lines.push(`Observer: ${runtime.lastObserverError}`);
-				if (runtime.lastReflectorError) lines.push(`Reflector: ${runtime.lastReflectorError}`);
-				if (runtime.lastDropperError) lines.push(`Dropper: ${runtime.lastDropperError}`);
+				lines.push("", "── 最近错误 ──");
+				if (runtime.lastObserverError) lines.push(`观察器：${runtime.lastObserverError}`);
+				if (runtime.lastReflectorError) lines.push(`反思器：${runtime.lastReflectorError}`);
+				if (runtime.lastDropperError) lines.push(`精简器：${runtime.lastDropperError}`);
 			}
 
 			ctx.ui.notify(lines.join("\n"), "info");

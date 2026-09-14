@@ -116,7 +116,7 @@ describe("resolveModel with request-time-signed providers", () => {
 		});
 
 		expect(result.ok).toBe(false);
-		if (!result.ok) expect(result.reason).toContain('no API key or auth headers for provider "amazon-bedrock"');
+		if (!result.ok) expect(result.reason).toContain('provider "amazon-bedrock" 没有 API key 或认证头');
 	});
 
 	it("still fails for OAuth providers whose credentials no longer resolve", async () => {
@@ -144,7 +144,7 @@ describe("resolveModel with request-time-signed providers", () => {
 		});
 
 		expect(result.ok).toBe(false);
-		if (!result.ok) expect(result.reason).toContain('no API key or auth headers for provider "xai"');
+		if (!result.ok) expect(result.reason).toContain('provider "xai" 没有 API key 或认证头');
 	});
 
 	it("does not accept an unconfigured provider just because auth.ok is true", async () => {

@@ -79,8 +79,8 @@ describe("V3 compaction hook", () => {
 		expect(result.compaction.details.fullFold).toBe(false);
 		expect(result.compaction.details.observations.map((obs: any) => obs.id)).toEqual(["aaaaaaaaaaaa"]);
 		expect(result.compaction.details.reflections).toEqual([]);
-		expect(result.compaction.summary).toContain("## Observations");
-		expect(result.compaction.summary).not.toContain("## Reflections");
+		expect(result.compaction.summary).toContain("## 观察");
+		expect(result.compaction.summary).not.toContain("## 反思");
 	});
 
 	it("writes a normal V3 projection without applying new reflections or drops", async () => {
@@ -105,8 +105,8 @@ describe("V3 compaction hook", () => {
 		expect(result.compaction.details).toMatchObject({ type: "om.folded", version: 1, fullFold: false });
 		expect(result.compaction.details.observations.map((obs: any) => obs.id)).toEqual(["aaaaaaaaaaaa", "bbbbbbbbbbbb"]);
 		expect(result.compaction.details.reflections.map((ref: any) => ref.id)).toEqual(["eeeeeeeeeeee"]);
-		expect(result.compaction.summary).toContain("## Reflections\n[eeeeeeeeeeee]");
-		expect(result.compaction.summary).toContain("## Observations");
+		expect(result.compaction.summary).toContain("## 反思\n[eeeeeeeeeeee]");
+		expect(result.compaction.summary).toContain("## 观察");
 	});
 
 	it("writes a full V3 projection when observation pool pressure reaches the threshold", async () => {
@@ -165,7 +165,7 @@ describe("V3 compaction hook", () => {
 
 		await expect(run("raw-1")).resolves.toEqual({ cancel: true });
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Observational memory: another compaction is already in progress; cancelling duplicate",
+			"观察式记忆：已有压缩正在进行，取消重复请求",
 			"warning",
 		);
 	});

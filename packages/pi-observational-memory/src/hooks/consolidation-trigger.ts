@@ -1,11 +1,11 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runDropper } from "../agents/dropper/agent.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { ObserverStreamError, runObserver } from "../agents/observer/agent.js";
 import { runReflector } from "../agents/reflector/agent.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
 import { resolveObserverChunkMaxTokens } from "../config.js";
-import type { ResolveResult, Runtime } from "../runtime.js";
+import { CONSOLIDATION_PHASE_LABELS, type ResolveResult, type Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
@@ -34,8 +34,9 @@ import {
 type ResolvedModel = Extract<ResolveResult, { ok: true }>;
 
 type ConsolidationCtx = {
-	cwd: string;
-	hasUI: boolean;
+	/** 启动时的会话代次；代次变化后 ctx/pi 已失效，后台任务必须立即退出。 */
+	epoch: number;
+	cwd: string;	hasUI: boolean;
 	ui?: { notify: (message: string, type?: "warning" | "info" | "error") => void };
 	model: unknown;
 	modelRegistry: any;
@@ -47,6 +48,9 @@ type ConsolidationCtx = {
 	};
 };
 
+/** 事件回调里拿到的实时 ctx；启动后台任务时再固化为带代次的 ConsolidationCtx。 */
+type LiveCtx = Omit<ConsolidationCtx, "epoch">;
+
 type StageOutcome = "continue" | "abort";
 
 type ReflectorStageResult = {
@@ -57,6 +61,11 @@ type ReflectorStageResult = {
 
 function sourceEntriesAfter(entries: Entry[], index: number): Entry[] {
 	return entries.slice(index + 1).filter(isSourceEntry);
+}
+
+/** 会话代次变化后，Pi 已让旧 ctx/pi 失效：停止后续阶段，不再触碰它们。 */
+function sessionActive(runtime: Runtime, ctx: ConsolidationCtx): boolean {
+	return runtime.isSessionCurrent(ctx.epoch);
 }
 
 function appendEntry(pi: ExtensionAPI, customType: string, data: unknown): void {
@@ -75,15 +84,23 @@ function mergeReflections(existing: Reflection[], additional: Reflection[]): Ref
 }
 
 /**
- * Real current context tokens from the session (provider-reported usage, the
- * same basis the footer percentage uses). Falls back to undefined when the
- * host pi lacks getContextUsage or the count is unknown (e.g. right after a
- * compaction, before the next valid assistant response).
+ * 从会话读取真实当前上下文 token（provider 上报的 usage，与 footer 百分比同一基准）。
+ * 宿主 pi 不支持 getContextUsage 或计数未知时回退为 undefined（例如刚压缩完、下一条有效
+ * 助手响应之前）。
  */
-function realContextTokens(ctx: ConsolidationCtx): number | undefined {
-	const usage = typeof ctx.getContextUsage === "function" ? ctx.getContextUsage() : undefined;
-	const tokens = usage?.tokens;
-	return typeof tokens === "number" && Number.isFinite(tokens) ? tokens : undefined;
+function rawContextTokens(ctx: LiveCtx): number | undefined {
+	try {
+		const usage = typeof ctx.getContextUsage === "function" ? ctx.getContextUsage() : undefined;
+		const tokens = usage?.tokens;
+		return typeof tokens === "number" && Number.isFinite(tokens) ? tokens : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function realContextTokens(runtime: Runtime, ctx: ConsolidationCtx): number | undefined {
+	if (!sessionActive(runtime, ctx)) return undefined;
+	return rawContextTokens(ctx);
 }
 
 function stageDue(
@@ -98,9 +115,8 @@ function stageDue(
 		const real = realTokensSinceAnchor(entries, customType, currentTokens);
 		if (real !== undefined) return real >= threshold;
 	}
-	// Real delta unmeasurable (no usage baseline, or accounting basis changed) or
-	// old pi host without getContextUsage — fall back to the raw estimate, which
-	// self-limits after coverage and cannot over-fire or starve.
+	// 真实增量无法度量（没有 usage 基线，或计量基准变了），或宿主 pi 不支持 getContextUsage：
+	// 回退到原始估算，它在覆盖后自我限制，既不会过度触发也不会饥饿。
 	return rawEstimateFn(entries) >= threshold;
 }
 
@@ -110,12 +126,13 @@ function anyStageDue(entries: Entry[], runtime: Runtime, currentTokens: number |
 }
 
 function shouldNotifyWorker(runtime: Runtime, ctx: ConsolidationCtx): boolean {
-	return runtime.config.showWorkerNotifications && ctx.hasUI;
+	return runtime.config.showWorkerNotifications && ctx.hasUI && sessionActive(runtime, ctx);
 }
 
 function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "observer" | "reflector" | "dropper") => Promise<ResolvedModel | undefined> {
 	let cached: ResolveResult | undefined;
 	return async (stage) => {
+		if (!sessionActive(runtime, ctx)) return undefined;
 		cached ??= await runtime.resolveModel({
 			model: ctx.model,
 			modelRegistry: ctx.modelRegistry,
@@ -142,8 +159,8 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "ob
 			return cached;
 		}
 		debugLog(`${stage}.model_unavailable`, { reason: cached.reason });
-		if (!runtime.resolveFailureNotified && ctx.hasUI && ctx.ui) {
-			ctx.ui.notify(`Observational memory: ${stage} skipped — ${cached.reason}`, "warning");
+		if (!runtime.resolveFailureNotified && ctx.hasUI && ctx.ui && sessionActive(runtime, ctx)) {
+			ctx.ui.notify(`观察式记忆：${CONSOLIDATION_PHASE_LABELS[stage]}已跳过——${cached.reason}`, "warning");
 			runtime.resolveFailureNotified = true;
 		}
 		return undefined;
@@ -151,14 +168,14 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "ob
 }
 
 export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime): void {
-	const launch = (_event: unknown, ctx: ConsolidationCtx) => {
+	const launch = (_event: unknown, ctx: ExtensionContext) => {
 		maybeLaunchConsolidation(pi, runtime, ctx);
 	};
 	pi.on("agent_start", launch);
 	pi.on("turn_end", launch);
 }
 
-function debugSessionMetadata(ctx: ConsolidationCtx): { sessionId?: string; sessionFile?: string } {
+function debugSessionMetadata(ctx: LiveCtx): { sessionId?: string; sessionFile?: string } {
 	try {
 		return {
 			sessionId: ctx.sessionManager.getSessionId?.(),
@@ -169,16 +186,17 @@ function debugSessionMetadata(ctx: ConsolidationCtx): { sessionId?: string; sess
 	}
 }
 
-function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): void {
+function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: LiveCtx): void {
 	runtime.ensureConfig(ctx.cwd);
 	if (runtime.config.passive === true) return;
 	if (runtime.consolidationInFlight) return;
 
 	const entries = ctx.sessionManager.getBranch() as Entry[];
-	if (!anyStageDue(entries, runtime, realContextTokens(ctx))) return;
+	if (!anyStageDue(entries, runtime, rawContextTokens(ctx))) return;
 
 	const runId = `consolidation-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 	const consolidationCtx: ConsolidationCtx = {
+		epoch: runtime.sessionEpoch,
 		cwd: ctx.cwd,
 		hasUI: ctx.hasUI,
 		ui: ctx.ui,
@@ -204,6 +222,7 @@ export async function runConsolidationPipeline(
 	runtime: Runtime,
 	ctx: ConsolidationCtx,
 ): Promise<void> {
+	if (!sessionActive(runtime, ctx)) return;
 	const resolveModel = makeModelResolver(runtime, ctx);
 
 	runtime.consolidationPhase = "observer";
@@ -239,8 +258,9 @@ async function runObserverStage(
 	ctx: ConsolidationCtx,
 	resolveModel: (stage: "observer") => Promise<ResolvedModel | undefined>,
 ): Promise<StageOutcome> {
+	if (!sessionActive(runtime, ctx)) return "abort";
 	const entries = ctx.sessionManager.getBranch() as Entry[];
-	const currentTokens = realContextTokens(ctx);
+	const currentTokens = realContextTokens(runtime, ctx);
 	const real = currentTokens !== undefined ? realTokensSinceAnchor(entries, OM_OBSERVATIONS_RECORDED, currentTokens) : undefined;
 	const tokens = real !== undefined ? real : rawTokensSinceObservationCoverage(entries); // fallback: no usage baseline / basis change
 	if (tokens < runtime.config.observeAfterTokens) return "continue";
@@ -249,10 +269,8 @@ async function runObserverStage(
 	const sessionIdentity = sessionMetadata.sessionId ?? sessionMetadata.sessionFile;
 	const coverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);
 
-	// Deliberate-empty backoff (#23): an intentional "nothing to record" verdict
-	// must not re-fire the observer every turn over the same span. Retry only
-	// after another observeAfterTokens worth of new source tokens arrives, and
-	// drop the backoff as soon as coverage advances.
+	// 刻意空结果退避（#23）：有意得出的“无可记录”结论不得在同一区间内每轮重复触发观察器。
+	// 只有再来 observeAfterTokens 数量的新源 token 后才重试，并在覆盖推进后立即解除退避。
 	const backoff = runtime.observerEmptyBackoff;
 	if (backoff) {
 		if (
@@ -267,18 +285,15 @@ async function runObserverStage(
 		}
 	}
 
-	// Resolve the model before building the chunk: the default chunk cap
-	// derives from the resolved model's context window.
+	// 先解析模型再构建分块：默认分块上限从已解析模型的上下文窗口推导。
 	const resolved = await resolveModel("observer");
 	if (!resolved) return "abort";
 
 	const lastCoverageIdx = latestCoverageIndex(entries, OM_OBSERVATIONS_RECORDED);
 	const backlogEntries = sourceEntriesAfter(entries, lastCoverageIdx);
 
-	// Budget the text that is actually sent to the observer, including source
-	// labels and rendered message content. Complete entries are kept intact.
-	// Only a first entry that cannot fit by itself is represented by a clearly
-	// marked head/tail excerpt; the original ledger entry remains untouched.
+	// 为实际发给观察器的文本做预算，包括源标签和渲染后的消息内容。完整条目保持原样。
+	// 只有单条都放不下的首个条目才用带明显标记的首尾摘录表示；原始 ledger 条目保持不变。
 	const contextWindow = (resolved.model as { contextWindow?: number }).contextWindow;
 	const maxChunkTokens = resolveObserverChunkMaxTokens(runtime.config, contextWindow);
 	const {
@@ -307,7 +322,7 @@ async function runObserverStage(
 	const priorObservations = memory.observations.map(observationToSummaryLine);
 
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: observer running on ~${chunkTokens.toLocaleString()}-token chunk`,
+		`观察式记忆：观察器正在处理约 ${chunkTokens.toLocaleString()} token 的分块`,
 		"info",
 	);
 	debugLog("observer.start", {
@@ -336,20 +351,19 @@ async function runObserverStage(
 		});
 	} catch (error) {
 		if (error instanceof ObserverStreamError) {
-			// API/stream failure is not a clean empty (#32): surface it as a real
-			// failure instead of the "no observations" path. Coverage stays put.
+			// API/流失败不是干净的空结果（#32）：作为真实失败上报，而不是走“没有观察”路径。
+			// 覆盖范围保持不动。
 			runtime.recordConsolidationStageError(ctx, "observer", error);
 			return "abort";
 		}
 		throw error;
 	}
 	if (!observations || observations.length === 0) {
-		// Deliberate empty: routine info, not a warning, and back off re-fires
-		// over the same span (#23).
+		// 刻意空结果：例行信息而非警告，并在同一区间内退避重触发（#23）。
 		debugLog("observer.empty", { coversUpToId });
 		runtime.observerEmptyBackoff = { sessionIdentity, coverageId, tokensAtEmpty: tokens };
 		if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-			"Observational memory: observer found nothing new in this chunk (coverage unchanged; will retry later)",
+			"观察式记忆：观察器未在本分块发现新内容（覆盖范围不变，稍后重试）",
 			"info",
 		);
 		return "continue";
@@ -358,6 +372,7 @@ async function runObserverStage(
 
 	const data = buildObservationsRecordedData(observations, coversUpToId);
 	if (!data) return "continue";
+	if (!sessionActive(runtime, ctx)) return "abort";
 	debugLog("observer.records", {
 		count: observations.length,
 		observationTokens: observations.reduce((sum, observation) => sum + observation.tokenCount, 0),
@@ -366,7 +381,7 @@ async function runObserverStage(
 	appendEntry(pi, OM_OBSERVATIONS_RECORDED, data);
 	debugLog("observer.appended", { count: observations.length, coversUpToId });
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: ${observations.length} observation${observations.length === 1 ? "" : "s"} recorded`,
+		`观察式记忆：已记录 ${observations.length} 条观察`,
 		"info",
 	);
 	return "continue";
@@ -378,8 +393,9 @@ async function runReflectorStage(
 	ctx: ConsolidationCtx,
 	resolveModel: (stage: "reflector") => Promise<ResolvedModel | undefined>,
 ): Promise<ReflectorStageResult> {
+	if (!sessionActive(runtime, ctx)) return { outcome: "abort", sameRunReflections: [] };
 	const entries = ctx.sessionManager.getBranch() as Entry[];
-	const currentTokens = realContextTokens(ctx);
+	const currentTokens = realContextTokens(runtime, ctx);
 	const real = currentTokens !== undefined ? realTokensSinceAnchor(entries, OM_REFLECTIONS_RECORDED, currentTokens) : undefined;
 	const reflectionTokens = real !== undefined ? real : rawTokensSinceReflectionCoverage(entries); // fallback: no usage baseline / basis change
 	if (reflectionTokens < runtime.config.reflectAfterTokens) return { outcome: "continue", sameRunReflections: [] };
@@ -388,7 +404,7 @@ async function runReflectorStage(
 	if (!observationCoverageId) return { outcome: "continue", sameRunReflections: [] };
 
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: reflector running (~${reflectionTokens.toLocaleString()} tokens)`,
+		`观察式记忆：反思器正在处理（约 ${reflectionTokens.toLocaleString()} token）`,
 		"info",
 	);
 	const resolved = await resolveModel("reflector");
@@ -409,6 +425,7 @@ async function runReflectorStage(
 
 	const data = buildReflectionsRecordedData(reflections, observationCoverageId);
 	if (!data) return { outcome: "continue", sameRunReflections: [] };
+	if (!sessionActive(runtime, ctx)) return { outcome: "abort", sameRunReflections: [] };
 	appendEntry(pi, OM_REFLECTIONS_RECORDED, data);
 	return {
 		outcome: "continue",
@@ -425,6 +442,7 @@ async function runDropperStage(
 	sameRunReflections: Reflection[],
 	sameRunReflectionCoverageId: string | undefined,
 ): Promise<StageOutcome> {
+	if (!sessionActive(runtime, ctx)) return "abort";
 	if (!sameRunReflectionCoverageId || sameRunReflections.length === 0) {
 		debugLog("dropper.waiting_for_reflection", { sameRunReflections: sameRunReflections.length });
 		return "continue";
@@ -461,7 +479,7 @@ async function runDropperStage(
 	});
 
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(
-		`Observational memory: dropper running after reflection — active observation pool ~${metrics.observationTokens.toLocaleString()} / ${metrics.targetTokens.toLocaleString()} target tokens (${Math.round(metrics.fullness * 100).toLocaleString()}%)`,
+		`观察式记忆：精简器在反思后运行——活跃观察池约 ${metrics.observationTokens.toLocaleString()} / ${metrics.targetTokens.toLocaleString()} 目标 token（${Math.round(metrics.fullness * 100).toLocaleString()}%）`,
 		"info",
 	);
 	const resolved = await resolveModel("dropper");
@@ -481,6 +499,7 @@ async function runDropperStage(
 	});
 	const coversUpToId = earlierCoverageMarkerId(entries, observationCoverageId, sameRunReflectionCoverageId);
 	const data = coversUpToId && droppedIds ? buildObservationsDroppedData(droppedIds, coversUpToId) : undefined;
+	if (!data || !sessionActive(runtime, ctx)) return "abort";
 	debugLog("dropper.append", {
 		droppedIdsCount: droppedIds?.length ?? 0,
 		coversUpToId,

@@ -15,6 +15,7 @@ vi.mock("../src/agents/dropper/agent.js", () => ({ runDropper: mockAgents.runDro
 
 import { ObserverStreamError } from "../src/agents/observer/agent.js";
 import { registerConsolidationTrigger } from "../src/hooks/consolidation-trigger.js";
+import { Runtime } from "../src/runtime.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
@@ -80,6 +81,8 @@ function setup(args: {
 			model: { provider: "anthropic", id: "memory", thinking: "minimal" },
 		},
 		consolidationInFlight: args.consolidationInFlight ?? false,
+		sessionEpoch: 0,
+		isSessionCurrent: (epoch: number) => runtime.sessionEpoch === epoch,
 		consolidationPhase: undefined as "observer" | "reflector" | "dropper" | undefined,
 		resolveFailureNotified: false,
 		lastObserverError: undefined as string | undefined,
@@ -92,15 +95,10 @@ function setup(args: {
 			launchedWork = work;
 			return Promise.resolve();
 		}),
-		recordConsolidationStageError: vi.fn((ctx, phase: "observer" | "reflector" | "dropper", error: unknown) => {
-			const message = error instanceof Error ? error.message : String(error);
-			if (phase === "observer") runtime.lastObserverError = message;
-			if (phase === "reflector") runtime.lastReflectorError = message;
-			if (phase === "dropper") runtime.lastDropperError = message;
-			ctx.ui?.notify(`Observational memory: ${phase} failed: ${message}`, "warning");
-			return message;
-		}),
 	};
+	// 使用真实实现，保证 stale 会话的失败处理与生产路径一致。
+	runtime.recordConsolidationStageError = Runtime.prototype.recordConsolidationStageError.bind(runtime);
+	runtime.endSession = Runtime.prototype.endSession.bind(runtime);
 	registerConsolidationTrigger(pi as any, runtime as any);
 	if (!handlers.agent_start) throw new Error("agent_start consolidation handler not registered");
 	if (!handlers.turn_end) throw new Error("turn_end consolidation handler not registered");
@@ -321,10 +319,10 @@ describe("V3 consolidation trigger", () => {
 		await runLaunchedWork();
 
 		expect(ctx.ui.notify.mock.calls).toEqual([
-			[expect.stringMatching(/^Observational memory: observer running on ~\d+-token chunk$/), "info"],
-			["Observational memory: 1 observation recorded", "info"],
-			["Observational memory: reflector running (~2 tokens)", "info"],
-			["Observational memory: dropper running after reflection — active observation pool ~19 / 5 target tokens (380%)", "info"],
+			[expect.stringMatching(/^观察式记忆：观察器正在处理约 \d+ token 的分块$/), "info"],
+			["观察式记忆：已记录 1 条观察", "info"],
+			["观察式记忆：反思器正在处理（约 2 token）", "info"],
+			["观察式记忆：精简器在反思后运行——活跃观察池约 19 / 5 目标 token（380%）", "info"],
 		]);
 	});
 
@@ -364,7 +362,7 @@ describe("V3 consolidation trigger", () => {
 
 		expect(failed.ctx.ui.notify).toHaveBeenCalledOnce();
 		expect(failed.ctx.ui.notify.mock.calls[0][1]).toBe("warning");
-		expect(failed.ctx.ui.notify.mock.calls[0][0]).toContain("observer failed");
+		expect(failed.ctx.ui.notify.mock.calls[0][0]).toContain("观察阶段失败");
 	});
 
 	it("reports deliberate empty as info, not a warning", async () => {
@@ -375,8 +373,8 @@ describe("V3 consolidation trigger", () => {
 		await runLaunchedWork();
 
 		expect(ctx.ui.notify.mock.calls).toEqual([
-			[expect.stringMatching(/^Observational memory: observer running on ~\d+-token chunk$/), "info"],
-			["Observational memory: observer found nothing new in this chunk (coverage unchanged; will retry later)", "info"],
+			[expect.stringMatching(/^观察式记忆：观察器正在处理约 \d+ token 的分块$/), "info"],
+			["观察式记忆：观察器未在本分块发现新内容（覆盖范围不变，稍后重试）", "info"],
 		]);
 	});
 
@@ -441,7 +439,7 @@ describe("V3 consolidation trigger", () => {
 
 		expect(runtime.lastObserverError).toContain("prompt is too long");
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			'Observational memory: observer failed: observer stream ended with stopReason "error": prompt is too long: 5198507 tokens > 1000000 maximum',
+			'观察式记忆：观察阶段失败：观察器流以 stopReason "error" 结束：prompt is too long: 5198507 tokens > 1000000 maximum',
 			"warning",
 		);
 		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("no observations"), expect.anything());
@@ -460,7 +458,7 @@ describe("V3 consolidation trigger", () => {
 		await runLaunchedWork();
 
 		expect(pi.appendEntry).not.toHaveBeenCalled();
-		expect(ctx.ui.notify).toHaveBeenCalledWith("Observational memory: observer skipped — no model", "warning");
+		expect(ctx.ui.notify).toHaveBeenCalledWith("观察式记忆：观察已跳过——no model", "warning");
 	});
 
 	it("re-reads branch so observer append can unblock reflector in the same consolidation run", async () => {
@@ -738,7 +736,7 @@ describe("observer chunk cap", () => {
 		expect(firstCall.allowedSourceEntryIds).toEqual(["raw-huge"]);
 		expect(firstCall.chunk).toContain("HEAD:");
 		expect(firstCall.chunk).toContain(":TAIL");
-		expect(firstCall.chunk).toContain("middle omitted: source exceeds observer input budget");
+		expect(firstCall.chunk).toContain("中间部分已省略：源内容超出观察器输入预算");
 		expect(firstCall.chunk).not.toContain("raw-next");
 		expect(pi.appendEntry).toHaveBeenNthCalledWith(1, OM_OBSERVATIONS_RECORDED, { observations: [first], coversUpToId: "raw-huge" });
 
@@ -768,5 +766,35 @@ describe("observer chunk cap", () => {
 
 		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({ allowedSourceEntryIds: ["raw-1"] }));
 		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, expect.objectContaining({ coversUpToId: "raw-1" }));
+	});
+
+	it("abandons an in-flight consolidation when the session is replaced", async () => {
+		mockAgents.runObserver.mockResolvedValueOnce([observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"], tokenCount: 10 })]);
+		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+		const { fire, runLaunchedWork, pi, runtime, ctx } = setup({ entries, reflectAfterTokens: 999 });
+
+		fire();
+		// 模拟 Pi 在会话替换/重载前触发 session_shutdown。
+		runtime.endSession();
+		await runLaunchedWork();
+
+		expect(pi.appendEntry).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("treats a stale-ctx failure as a benign cancellation instead of a warning", async () => {
+		mockAgents.runObserver.mockRejectedValueOnce(
+			new Error("This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession()."),
+		);
+		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
+		const { fire, runLaunchedWork, pi, runtime, ctx } = setup({ entries, reflectAfterTokens: 999 });
+
+		fire();
+		await runLaunchedWork();
+
+		expect(runtime.lastObserverError).toContain("stale");
+		expect(pi.appendEntry).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("stale"), expect.anything());
+		expect(ctx.ui.notify.mock.calls.every((call) => call[1] !== "warning")).toBe(true);
 	});
 });

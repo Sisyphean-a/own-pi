@@ -59,7 +59,7 @@ export function debugLog(event: string, data: Record<string, unknown> = {}): voi
 		};
 		appendFileSync(path, `${JSON.stringify(payload)}\n`, "utf-8");
 	} catch {
-		// Debug logging must never affect memory behavior.
+		// 调试日志绝不能影响记忆行为。
 	}
 }
 

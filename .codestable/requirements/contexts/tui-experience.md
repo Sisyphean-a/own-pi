@@ -10,12 +10,13 @@ code-paths:
 
 - 上下文：`tui-experience`
 - 实现包：`pi-tui-enhancements`
-- 入口与证据：`packages/pi-tui-enhancements/extensions/index.ts`、`src/display/`、`src/panel/`、`src/provider-usage.ts`、`README.md`
+- 入口与证据：`packages/pi-tui-enhancements/extensions/index.ts`、`src/display/`、`src/panel/`、`src/context/`、`src/provider-usage.ts`、`README.md`
 
 ## 术语
 
 - **快捷面板**：Pi TUI 中统一选择技能、模型、思考等级和模型组合的覆盖层。
 - **紧凑显示**：在保留行动信息的前提下减少工具、消息、thinking 和 footer 的视觉噪音。
+- **上下文查看**：`/context` 打开的带标签页覆盖层，展示统计、系统提示词、工具、消息和完整上下文，并提供滚动、搜索与复制。
 - **组合**：同时指定 provider、model 和 thinkingLevel 的可复用模型选择配置。
 - **内联技能指令**：输入文本中的 `/skill:<name>`，其中 `<name>` 是已发现技能的名称。
 - **技能块**：内联技能指令展开后的 `<skill>` 包装正文，包含技能名称、文件位置和相对引用基准。
@@ -28,8 +29,11 @@ code-paths:
 - `Ctrl+Shift+T` 切换 thinking 显示状态；折叠时完全移除 thinking 内容、标签及其占位行，显示处理不改变发送给模型的消息语义。
 - 工具标题和结果采用紧凑摘要，但必须保留路径、错误、行数和 diff；折叠态每个可分组工具行最多保留一行正文，裁剪只在折叠态生效，`Ctrl+O` 或点击展开后输出完整结果；连续可见工具调用合并间距，`edit` 和 `write` 保持 Pi 原生渲染与独立边界。
 - footer 优先单行显示仓库/分支、统计、上下文、实时 Thinking 标记和当前模型；空间不足时才拆行，扩展状态保持独立行。
+- `/context` 仅在交互式终端可用，非 TUI 模式只提示不可用；弹窗包含统计、系统、工具、消息、完整五个标签页，`Tab`/`Shift+Tab` 切换，`q`/`Esc` 关闭，搜索态 `Esc` 只退出搜索。
+- 上下文弹窗的每一行必须按显示宽度裁剪再补齐，中文、长路径和 ANSI 颜色不得撑破边框或触发换行；窄终端按优先级去掉网格、百分比列和页脚提示，不裁断数值；网格与色块不依赖 Nerd Font 图标。
+- 上下文分类按字符估算后整体缩放到 provider 上报的总量，分类之和与总量一致；读取技能文件的工具调用计入技能而不是工具。
 - 当前模型为 `openai-codex` 且使用官方 OAuth 时，provider usage 显示 5 小时和周窗口；`opencode-go` 使用官方 API key 显示 5 小时、周和月窗口。面板显示重置时间，footer 显示紧凑剩余百分比；非目标 provider、认证失败、响应不完整或网络失败不阻塞 TUI。
-- 面板和显示两个功能域独立动态激活；缺少 Pi peer、TUI seam 或单侧内部模块时，只隐藏受影响功能，不阻断另一侧或 Pi 启动。
+- 面板、上下文查看和显示三个功能域独立动态激活；缺少 Pi peer、TUI seam 或单侧内部模块时，只隐藏受影响功能，不阻断其他侧或 Pi 启动。
 - 包不重复分发 Pi 核心运行时依赖；核心包由 Pi 提供并通过可选 peer dependency 声明。
 
 ## 非目标

@@ -117,11 +117,10 @@ export function findLastCompactionIndex(entries: Entry[]): number {
 	return -1;
 }
 
-// ==== Real (provider-reported) token accounting ====
+// ==== 真实（provider 上报）token 计量 ====
 //
-// These helpers measure context growth from provider-reported usage for the
-// observation and reflection coverage clocks. Automatic compaction keeps its
-// separate raw source-entry clock because its setting counts ledger entries.
+// 这些辅助函数用 provider 上报的 usage 度量上下文增长，供观察与反思的覆盖时钟使用。
+// 自动压缩保留独立的原始源条目时钟，因为它的设置统计的是 ledger 条目。
 
 type UsageLike = {
 	totalTokens?: number;
@@ -152,14 +151,11 @@ function validAssistantContextTokens(entry: Entry): number | undefined {
 }
 
 /**
- * Real context tokens right after a compaction anchor.
+ * 压缩锚点之后立即的真实上下文 token。
  *
- * Only usage from an assistant that responded AFTER the compaction is a valid
- * post-compaction baseline: pi's own docs state the last assistant usage
- * before/at a compaction reflects the PRE-compaction context size. The usage
- * carried on the compaction entry itself is the summary-generation call's
- * usage (pre-compaction scale, a different LLM call), so it is deliberately
- * NOT used as a baseline.
+ * 只有压缩之后响应的助手 usage 才是有效的压缩后基线：pi 自己的文档指出，压缩前/压缩时的
+ * 最后一条助手 usage 反映的是压缩*前*的上下文大小。压缩条目自身携带的 usage 是摘要生成
+ * 调用的 usage（压缩前的量级，且是另一次 LLM 调用），因此刻意不用作基线。
  */
 export function realContextTokensAfterCompaction(entries: Entry[], compactionIdx: number): number | undefined {
 	for (let i = compactionIdx + 1; i < entries.length; i++) {
@@ -170,11 +166,9 @@ export function realContextTokensAfterCompaction(entries: Entry[], compactionIdx
 }
 
 /**
- * Real context tokens at the time observation coverage ended: last valid
- * assistant usage at/before the covered entry. Returns undefined when no valid
- * usage exists (e.g. an error/abort storm) — callers must fall back to the
- * raw estimate rather than measuring from zero, which would otherwise read the
- * full context as "growth" and re-fire stages every turn.
+ * 观察覆盖结束时的真实上下文 token：被覆盖条目处或之前的最后一条有效助手 usage。
+ * 没有有效 usage 时返回 undefined（例如错误/中止风暴）——调用方必须回退到原始估算，
+ * 而不是从零开始计量，否则会把整个上下文读成“增长”并每轮重复触发各阶段。
  */
 export function realContextTokensAtCoverage(entries: Entry[], coverageIdx: number): number | undefined {
 	for (let i = coverageIdx; i >= 0; i--) {
@@ -185,15 +179,13 @@ export function realContextTokensAtCoverage(entries: Entry[], coverageIdx: numbe
 }
 
 /**
- * Real context growth since the most recent anchor (a compaction, or the given
- * coverage marker), measured from provider-reported usage.
+ * 自最近锚点（一次压缩，或给定的覆盖标记）以来的真实上下文增长，按 provider 上报的
+ * usage 计量。
  *
- * Returns undefined when the baseline cannot be measured reliably — no usage
- * at/after the anchor, or the current context is SMALLER than the baseline
- * (accounting basis changed, e.g. a mid-session model/provider switch that
- * counts usage differently). Callers must fall back to the raw estimate in
- * that case; clamping a stale baseline to 0 would starve the stage forever,
- * and measuring from zero would over-fire it.
+ * 基线无法可靠度量时返回 undefined——锚点处或之后没有 usage，或当前上下文比基线更小
+ * （计量基准变了，例如会话中途切换模型/provider 导致 usage 统计方式不同）。此时调用方
+ * 必须回退到原始估算；把过期基线截断为 0 会让该阶段永远得不到触发，而从零计量会让它
+ * 过度触发。
  */
 export function realTokensSinceAnchor(
 	entries: Entry[],

@@ -13,8 +13,8 @@ describe("session-ledger V3 summary rendering", () => {
 
 		const summary = renderSummary([ref], []);
 
-		expect(summary).toContain("These are condensed memories from earlier in this session.");
-		expect(summary).toContain("use the recall tool");
+		expect(summary).toContain("这些是本次会话早些时候的压缩记忆。");
+		expect(summary).toContain("调用 recall 工具");
 	});
 
 	it("renders V3 reflections with ids", () => {
@@ -22,7 +22,7 @@ describe("session-ledger V3 summary rendering", () => {
 
 		const summary = renderSummary([ref], []);
 
-		expect(summary).toContain("## Reflections\n[eeeeeeeeeeee] User prefers source-backed memory.");
+		expect(summary).toContain("## 反思\n[eeeeeeeeeeee] User prefers source-backed memory.");
 	});
 
 	it("renders V3 observations with ids, timestamps, relevance, and content", () => {
@@ -35,7 +35,7 @@ describe("session-ledger V3 summary rendering", () => {
 		const summary = renderSummary([], [obs]);
 
 		expect(summary).toContain(
-			"## Observations\n[aaaaaaaaaaaa] 2026-05-02 10:30 [high] User confirmed recall should use exact source entry ids.",
+			"## 观察\n[aaaaaaaaaaaa] 2026-05-02 10:30 [high] User confirmed recall should use exact source entry ids.",
 		);
 	});
 

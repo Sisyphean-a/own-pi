@@ -1,13 +1,13 @@
 import type { Observation, Reflection } from "./types.js";
 
-const CONTEXT_USAGE_INSTRUCTIONS = `These are condensed memories from earlier in this session.
+const CONTEXT_USAGE_INSTRUCTIONS = `这些是本次会话早些时候的压缩记忆。
 
-- Reflections: stable, long-lived facts about the user, project, decisions, and constraints. New reflection lines may include ids in brackets.
-- Observations: timestamped events from the conversation history, in chronological order. Observation lines include ids in brackets.
+- 反思：关于用户、项目、决定和约束的稳定长期事实。新的反思行可能带有方括号 id。
+- 观察：来自对话历史的带时间戳事件，按时间顺序排列。观察行带有方括号 id。
 
-Treat these as past records. When entries conflict, the most recent observation reflects the latest known state. Work that prior observations describe as completed should not be redone unless the user explicitly asks to revisit it.
+把它们当作过往记录。条目冲突时，最近的观察反映最新已知状态。先前观察标记为已完成的工作不要重做，除非用户明确要求重新处理。
 
-When exact source context is needed for precision or traceability, use the recall tool with the relevant observation or reflection id. This is especially useful when a reflection materially affects a decision or is too compressed to continue confidently. Do not use recall as broad search or inject raw source unless it is needed.`;
+需要精确或可追溯的源上下文时，用相关观察或反思 id 调用 recall 工具。当某条反思实质影响决定，或压缩过度而无法有把握地继续时，尤其有用。不要用 recall 做宽泛搜索，也不要在不需要时注入原始源内容。`;
 
 export function observationToSummaryLine(observation: Observation): string {
 	return `[${observation.id}] ${observation.timestamp} [${observation.relevance}] ${observation.content}`;
@@ -22,10 +22,10 @@ export function renderSummary(reflections: Reflection[], observations: Observati
 
 	const parts: string[] = [CONTEXT_USAGE_INSTRUCTIONS];
 	if (reflections.length > 0) {
-		parts.push(`## Reflections\n${reflections.map(reflectionToSummaryLine).join("\n")}`);
+		parts.push(`## 反思\n${reflections.map(reflectionToSummaryLine).join("\n")}`);
 	}
 	if (observations.length > 0) {
-		parts.push(`## Observations\n${observations.map(observationToSummaryLine).join("\n")}`);
+		parts.push(`## 观察\n${observations.map(observationToSummaryLine).join("\n")}`);
 	}
 	return parts.join("\n\n");
 }

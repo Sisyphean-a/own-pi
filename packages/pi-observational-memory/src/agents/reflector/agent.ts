@@ -45,7 +45,7 @@ const RecordReflectionsSchema = Type.Object({
 type RecordReflectionsArgs = Static<typeof RecordReflectionsSchema>;
 
 function joinOrEmpty(items: string[]): string {
-	return items.length ? items.join("\n") : "(none yet)";
+	return items.length ? items.join("\n") : "（暂无）";
 }
 
 export function observationToReflectorLine(
@@ -127,8 +127,8 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 
 	const recordReflections: AgentTool<typeof RecordReflectionsSchema> = {
 		name: "record_reflections",
-		label: "Record reflections",
-		description: "Record new durable reflections with supporting observation ids.",
+		label: "记录反思",
+		description: "记录新的持久反思及其支撑观察 id。",
 		parameters: RecordReflectionsSchema,
 		execute: async (_id, params: RecordReflectionsArgs) => {
 			toolCallCount++;
@@ -160,13 +160,13 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 			duplicateReflectionCount += duplicates;
 			rejectedReflectionCount += rejected;
 			return {
-				content: [{ type: "text", text: `Recorded ${added} reflection${added === 1 ? "" : "s"}; ${duplicates} duplicate${duplicates === 1 ? "" : "s"}; ${rejected} rejected. Total this run: ${accumulated.size}.` }],
+				content: [{ type: "text", text: `已记录 ${added} 条反思；重复 ${duplicates} 条；被拒 ${rejected} 条。本次运行累计 ${accumulated.size} 条。` }],
 				details: { added, duplicates, rejected, total: accumulated.size },
 			};
 		},
 	};
 
-	const userText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\nCURRENT OBSERVATIONS:\n${joinOrEmpty(observations.map((observation) => observationToReflectorLine(observation, coverageTierForObservation(observation, coverageById))))}\n\nCrystallize any missing durable facts or patterns into new reflections. If nothing is stable enough, do not call the tool.`;
+	const userText = `当前反思：\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\n当前观察：\n${joinOrEmpty(observations.map((observation) => observationToReflectorLine(observation, coverageTierForObservation(observation, coverageById))))}\n\n请把缺失的持久事实或模式沉淀成新的反思。如果没有足够稳定的内容，就不要调用工具。`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
 	const context: AgentContext = { systemPrompt: REFLECTOR_SYSTEM, messages: [], tools: [recordReflections as AgentTool<any>] };
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
@@ -188,7 +188,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 	const loop = args.agentLoop ?? agentLoop;
 	const stream = loop(prompts, context, config, signal, streamSimple);
 	for await (const event of stream) {
-		// Tool execution collects records.
+		// 工具执行时收集记录。
 		logAgentStreamError("reflector", event);
 	}
 	await stream.result();

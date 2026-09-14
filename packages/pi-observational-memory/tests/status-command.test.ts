@@ -64,11 +64,11 @@ describe("V3 /om:status", () => {
 	it("renders concise no-memory status without V2 committed/pending language", async () => {
 		const output = await setup({ entries: [] }).run();
 
-		expect(output).toContain("── Memory ──");
-		expect(output).toContain("Observations: 0 recorded / 0 dropped / 0 active / 0 visible");
-		expect(output).toContain("Reflections:  0 recorded / 0 visible");
-		expect(output).toContain("Next observation:");
-		expect(output).toContain("Next compaction:");
+		expect(output).toContain("── 记忆 ──");
+		expect(output).toContain("观察：已记录 0 / 已精简 0 / 活跃 0 / 可见 0");
+		expect(output).toContain("反思：已记录 0 / 可见 0");
+		expect(output).toContain("下次观察：");
+		expect(output).toContain("下次压缩：");
 		expect(output).not.toContain("Visible:");
 		expect(output).not.toContain("Drift:");
 		expect(output).not.toContain("committed");
@@ -91,11 +91,11 @@ describe("V3 /om:status", () => {
 
 		const output = await setup({ entries }).run();
 
-		expect(output).toContain("Observations: 2 recorded / 1 dropped / 1 active / 1 visible +1 -1");
-		expect(output).toContain("Reflections:  1 recorded / 0 visible +1");
-		expect(output).toContain("Visible observation pool: ~5 / 40 tokens (13%)");
+		expect(output).toContain("观察：已记录 2 / 已精简 1 / 活跃 1 / 可见 1 +1 -1");
+		expect(output).toContain("反思：已记录 1 / 可见 0 +1");
+		expect(output).toContain("可见观察池：~5 / 40 token（13%）");
 		// Active pool counts the full rendered line (id + timestamp + relevance + content).
-		expect(output).toContain("Active observation pool: ~19 / 20 target tokens (95%)");
+		expect(output).toContain("活跃观察池：~19 / 20 目标 token（95%）");
 		expect(output).not.toContain("Visible:");
 		expect(output).not.toContain("Drift:");
 		expect(output).not.toContain("full truth");
@@ -116,16 +116,16 @@ describe("V3 /om:status", () => {
 
 		const output = await setup({ entries }).run();
 
-		expect(output).toContain("Next observation:");
-		expect(output).toContain("/ 10 tokens");
-		expect(output).toContain("Next reflection:");
-		expect(output).toContain("/ 20 tokens");
-		expect(output).toContain("Next compaction:");
-		expect(output).toContain("/ 30 estimated source tokens");
-		expect(output).toContain("Visible observation pool: ~5 / 40 tokens (13%)");
+		expect(output).toContain("下次观察：");
+		expect(output).toContain("/ 10 token");
+		expect(output).toContain("下次反思：");
+		expect(output).toContain("/ 20 token");
+		expect(output).toContain("下次压缩：");
+		expect(output).toContain("/ 30 估算源 token");
+		expect(output).toContain("可见观察池：~5 / 40 token（13%）");
 		// Active pool counts the full rendered line, unlike the visible pool's stored tokenCount.
-		expect(output).toContain("Active observation pool: ~19 / 20 target tokens (95%)");
-		expect(output).toContain("Reflection pool:         ~3 tokens");
+		expect(output).toContain("活跃观察池：~19 / 20 目标 token（95%）");
+		expect(output).toContain("反思池：~3 token");
 		expect(output).not.toContain("Observation pool:");
 		expect(output).not.toContain("Full fold pool:");
 		expect(output).not.toContain("visible observation tokens");
@@ -145,7 +145,7 @@ describe("V3 /om:status", () => {
 			contextUsage: { tokens: 135636, contextWindow: 200000 },
 		}).run();
 
-		expect(output).toContain("Next compaction:  ~3 / 30 estimated source tokens");
+		expect(output).toContain("下次压缩：~3 / 30 估算源 token");
 	});
 
 	it("shows over-target active observation pool in the Activity section", async () => {
@@ -158,7 +158,7 @@ describe("V3 /om:status", () => {
 
 		const output = await setup({ entries }).run();
 
-		expect(output).toContain("Active observation pool: ~25 / 20 target tokens (125%)");
+		expect(output).toContain("活跃观察池：~25 / 20 目标 token（125%）");
 	});
 
 	it("shows passive mode, consolidation in flight, compaction in flight, and stage-specific last errors", async () => {
@@ -176,22 +176,22 @@ describe("V3 /om:status", () => {
 			},
 		}).run();
 
-		expect(output).toContain("Passive: automatic memory workers and auto-compaction disabled");
-		expect(output).toContain("Consolidation: running (reflector)");
+		expect(output).toContain("被动模式：自动记忆 worker 与自动压缩已禁用");
+		expect(output).toContain("记忆整理：运行中（反思）");
 		expect(output).not.toContain("Observer: running");
 		expect(output).not.toContain("Reflect/drop: running");
-		expect(output).toContain("Auto-compaction: running");
-		expect(output).toContain("Compaction hook: running");
-		expect(output).toContain("Observer: observer failed");
-		expect(output).toContain("Reflector: reflect failed");
-		expect(output).toContain("Dropper: drop failed");
+		expect(output).toContain("自动压缩：运行中");
+		expect(output).toContain("压缩钩子：运行中");
+		expect(output).toContain("观察器：observer failed");
+		expect(output).toContain("反思器：reflect failed");
+		expect(output).toContain("精简器：drop failed");
 	});
 
 	it("shows consolidation in flight without phase when phase is unavailable", async () => {
 		const output = await setup({ entries: [], runtime: { consolidationInFlight: true } }).run();
 
-		expect(output).toContain("Consolidation: running");
-		expect(output).not.toContain("Consolidation: running (");
+		expect(output).toContain("记忆整理：运行中");
+		expect(output).not.toContain("记忆整理：运行中（");
 	});
 
 	describe("ratio mode", () => {
@@ -214,7 +214,7 @@ describe("V3 /om:status", () => {
 				contextUsage: { tokens: null, contextWindow: 1_000_000 },
 			}).run();
 
-			expect(output).toContain("Next compaction:  ~0 / 500,000 estimated source tokens (0%)");
+			expect(output).toContain("下次压缩：~0 / 500,000 估算源 token（0%）");
 		});
 
 		it("uses model contextWindow in ratio mode", async () => {
@@ -236,7 +236,7 @@ describe("V3 /om:status", () => {
 				contextUsage: { tokens: null, contextWindow: 200_000 },
 			}).run();
 
-			expect(output).toContain("Next compaction:  ~0 / 50,000 estimated source tokens (0%)");
+			expect(output).toContain("下次压缩：~0 / 50,000 估算源 token（0%）");
 		});
 
 		it("falls back to calibrated threshold when model is unavailable in ratio mode", async () => {
@@ -257,7 +257,7 @@ describe("V3 /om:status", () => {
 				model: undefined,
 			}).run();
 
-			expect(output).toContain("Next compaction:  ~0 / 30 estimated source tokens (0%)");
+			expect(output).toContain("下次压缩：~0 / 30 估算源 token（0%）");
 		});
 
 		it("falls back to calibrated threshold when contextWindow is zero in ratio mode", async () => {
@@ -278,7 +278,7 @@ describe("V3 /om:status", () => {
 				model: { contextWindow: 0 },
 			}).run();
 
-			expect(output).toContain("Next compaction:  ~0 / 30 estimated source tokens (0%)");
+			expect(output).toContain("下次压缩：~0 / 30 估算源 token（0%）");
 		});
 	});
 });

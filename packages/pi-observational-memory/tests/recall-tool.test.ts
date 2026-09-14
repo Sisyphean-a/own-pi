@@ -43,8 +43,8 @@ describe("V3 recall tool", () => {
 
 		expect(RECALL_OBSERVATION_TOOL_NAME).toBe("recall");
 		expect(recallObservationTool.name).toBe("recall");
-		expect(recallObservationTool.label).toBe("Recall memory evidence");
-		expect(formatRecallCallForTui("aaaaaaaaaaaa")).toBe("recall aaaaaaaaaaaa");
+		expect(recallObservationTool.label).toBe("召回记忆证据");
+		expect(formatRecallCallForTui("aaaaaaaaaaaa")).toBe("召回 aaaaaaaaaaaa");
 		expect(pi.registerTool).toHaveBeenCalledWith(recallObservationTool);
 	});
 
@@ -59,7 +59,7 @@ describe("V3 recall tool", () => {
 		expect(result.details?.status).toBe("ok");
 		expect(result.details?.matches[0].observation.status).toBe("active");
 		expect(text).toContain("I like tea.");
-		expect(formatRecallRenderedResultForTui(result as any, false)).toContain("✓ observation");
+		expect(formatRecallRenderedResultForTui(result as any, false)).toContain("✓ 观察");
 	});
 
 	it("renders dropped observations as recallable but dropped", async () => {
@@ -74,8 +74,8 @@ describe("V3 recall tool", () => {
 		const tui = formatRecallRenderedResultForTui(result as any, false);
 
 		expect(result.details?.matches[0].observation.status).toBe("dropped");
-		expect(text).toContain("dropped from active memory but remains recallable");
-		expect(tui).toContain("[dropped]");
+		expect(text).toContain("已从活跃记忆精简，但仍可召回");
+		expect(tui).toContain("已精简");
 	});
 
 	it("renders reflection recall with supporting observations and sources", async () => {
@@ -92,10 +92,10 @@ describe("V3 recall tool", () => {
 		expect(result.details?.status).toBe("ok");
 		expect(result.details?.reflections).toHaveLength(1);
 		expect(result.details?.observations).toHaveLength(1);
-		expect(text).toContain("Reflections:");
+		expect(text).toContain("反思：");
 		expect(text).toContain("[eeeeeeeeeeee] User likes tea.");
-		expect(text).toContain("Observations:");
-		expect(text).toContain("Sources:");
+		expect(text).toContain("观察：");
+		expect(text).toContain("源内容：");
 		expect(text).toContain("I like tea.");
 	});
 
@@ -107,14 +107,14 @@ describe("V3 recall tool", () => {
 
 		expect(result.details?.status).toBe("partial");
 		expect(result.details?.missingSourceEntryIds).toEqual(["missing-raw"]);
-		expect(text).toContain("missing: missing-raw");
+		expect(text).toContain("缺失：missing-raw");
 	});
 
 	it("reports invalid ids without reading the branch", async () => {
 		const { result, text, getBranch } = await execute("not-valid", []);
 
 		expect(result.details?.status).toBe("invalid_id");
-		expect(text).toContain("Memory id must be 12 lowercase hex characters");
+		expect(text).toContain("记忆 id 必须是 12 位小写十六进制字符");
 		expect(getBranch).not.toHaveBeenCalled();
 	});
 
@@ -124,6 +124,6 @@ describe("V3 recall tool", () => {
 		const { result, text } = await execute("aaaaaaaaaaaa", entries);
 
 		expect(result.details?.status).toBe("not_found");
-		expect(text).toContain("No observation or reflection with id aaaaaaaaaaaa was found");
+		expect(text).toContain("当前分支上找不到 id 为 aaaaaaaaaaaa 的观察或反思");
 	});
 });

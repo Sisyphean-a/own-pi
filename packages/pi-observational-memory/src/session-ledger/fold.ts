@@ -11,22 +11,22 @@ import {
 } from "./types.js";
 
 export type FoldLedgerOptions = {
-	/** Fold entries from branch root through this entry id, inclusive. Omit to fold through branch tip. */
+	/** 从分支根折叠到该条目 id（含）。省略则折叠到分支末端。 */
 	upToEntryId?: string;
 };
 
 export type FoldedLedger = {
-	/** All first-valid observation records encountered through the fold boundary, including dropped observations. */
+	/** 折叠边界内遇到的全部首次有效观察记录，包含已精简的观察。 */
 	observations: Observation[];
-	/** Observation records not tombstoned by a folded drop entry. */
+	/** 未被折叠的 drop 条目做成墓志铭的观察记录。 */
 	activeObservations: Observation[];
-	/** Tombstoned observation ids, including ids that may not have a corresponding folded observation. */
+	/** 已做成墓志铭的观察 id，包含折叠时尚无对应观察的 id。 */
 	droppedObservationIds: Set<string>;
-	/** All first-valid reflection records encountered through the fold boundary. */
+	/** 折叠边界内遇到的全部首次有效反思记录。 */
 	reflections: Reflection[];
-	/** All first-valid observation records by id, including dropped observations. */
+	/** 按 id 索引的全部首次有效观察记录，包含已精简的观察。 */
 	observationsById: Map<string, Observation>;
-	/** All first-valid reflection records by id. */
+	/** 按 id 索引的全部首次有效反思记录。 */
 	reflectionsById: Map<string, Reflection>;
 };
 
@@ -41,11 +41,10 @@ function isCustomEntry(entry: Entry, customType: string): boolean {
 }
 
 /**
- * Fold valid V3 memory ledger entries from the branch root through the target entry.
+ * 从分支根到目标条目折叠有效的 V3 记忆 ledger 条目。
  *
- * Unknown custom entries, old V2 entries, invalid V3-shaped data, and compaction details are ignored.
- * Observations and reflections use first-valid-record-wins semantics. Drops are tombstones and are
- * retained even when the dropped id is unknown at the time of folding.
+ * 未知自定义条目、旧 V2 条目、形状非法的 V3 数据和压缩详情均被忽略。
+ * 观察与反思采用“首次有效记录优先”的语义。drop 是墓志铭，即使被精简的 id 在折叠时未知也保留。
  */
 export function foldLedger(entries: Entry[], options: FoldLedgerOptions = {}): FoldedLedger {
 	const observationsById = new Map<string, Observation>();

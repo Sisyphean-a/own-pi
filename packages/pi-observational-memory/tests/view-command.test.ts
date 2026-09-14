@@ -15,8 +15,8 @@ import {
 	type TestEntry,
 } from "./fixtures/session.js";
 
-const COPY_SUCCESS = "Copied /om:view output to clipboard.";
-const COPY_FAILURE = "Warning: failed to copy /om:view output to clipboard.";
+const COPY_SUCCESS = "已复制 /om:view 输出到剪贴板。";
+const COPY_FAILURE = "警告：复制 /om:view 输出到剪贴板失败。";
 
 function setup(entries: TestEntry[], clipboardResult = true) {
 	let handler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
@@ -60,11 +60,11 @@ describe("V3 /om:view", () => {
 	it("renders no-memory visible output as content-only sections and copies it", async () => {
 		const { output, clipboardText, copyToClipboard } = await setup([]).run();
 		const expected = [
-			"── Reflections ──",
-			"No visible reflections.",
+			"── 反思 ──",
+			"暂无可见反思。",
 			"",
-			"── Observations ──",
-			"No visible observations.",
+			"── 观察 ──",
+			"暂无可见观察。",
 		].join("\n");
 
 		expect(copyToClipboard).toHaveBeenCalledTimes(1);
@@ -87,9 +87,9 @@ describe("V3 /om:view", () => {
 		const { output, clipboardText, copyToClipboard } = await setup(entries).run();
 
 		expect(copyToClipboard).toHaveBeenCalledTimes(1);
-		expect(clipboardText).toContain("── Reflections ──");
+		expect(clipboardText).toContain("── 反思 ──");
 		expect(clipboardText).toContain("[eeeeeeeeeeee] Reflection eeeeeeeeeeee");
-		expect(clipboardText).toContain("── Observations ──");
+		expect(clipboardText).toContain("── 观察 ──");
 		expect(clipboardText).toContain("[aaaaaaaaaaaa]");
 		expect(clipboardText).not.toContain("bbbbbbbbbbbb");
 		expect(clipboardText).not.toContain(COPY_SUCCESS);
@@ -113,9 +113,9 @@ describe("V3 /om:view", () => {
 		const { output, clipboardText, copyToClipboard } = await setup(entries).run(["full"]);
 
 		expect(copyToClipboard).toHaveBeenCalledTimes(1);
-		expect(clipboardText).toContain("── Reflections ──");
+		expect(clipboardText).toContain("── 反思 ──");
 		expect(clipboardText).toContain("[eeeeeeeeeeee] Reflection eeeeeeeeeeee");
-		expect(clipboardText).toContain("── Observations ──");
+		expect(clipboardText).toContain("── 观察 ──");
 		expect(clipboardText).toContain("[bbbbbbbbbbbb]");
 		expect(clipboardText).toContain("Kept observation content");
 		expect(clipboardText).not.toContain("[aaaaaaaaaaaa]");
@@ -129,11 +129,11 @@ describe("V3 /om:view", () => {
 	it("full view renders recorded empty states and copies them", async () => {
 		const { output, clipboardText } = await setup([]).run(["full"]);
 		const expected = [
-			"── Reflections ──",
-			"No recorded reflections.",
+			"── 反思 ──",
+			"暂无已记录反思。",
 			"",
-			"── Observations ──",
-			"No recorded observations.",
+			"── 观察 ──",
+			"暂无已记录观察。",
 		].join("\n");
 
 		expect(clipboardText).toBe(expected);
@@ -144,16 +144,16 @@ describe("V3 /om:view", () => {
 	it("keeps rendering the memory view when clipboard copy fails", async () => {
 		const { output, clipboardText, copyToClipboard } = await setup([], false).run();
 		const expected = [
-			"── Reflections ──",
-			"No visible reflections.",
+			"── 反思 ──",
+			"暂无可见反思。",
 			"",
-			"── Observations ──",
-			"No visible observations.",
+			"── 观察 ──",
+			"暂无可见观察。",
 		].join("\n");
 
 		expect(copyToClipboard).toHaveBeenCalledTimes(1);
 		expect(clipboardText).toBe(expected);
-		expect(clipboardText).not.toContain("failed to copy");
+		expect(clipboardText).not.toContain("复制到剪贴板失败");
 		expect(output).toBe(`${expected}\n\n${COPY_FAILURE}`);
 	});
 
@@ -162,6 +162,6 @@ describe("V3 /om:view", () => {
 
 		expect(copyToClipboard).not.toHaveBeenCalled();
 		expect(clipboardText).toBeUndefined();
-		expect(output).toBe("Usage: /om:view [full]");
+		expect(output).toBe("用法：/om:view [full]");
 	});
 });

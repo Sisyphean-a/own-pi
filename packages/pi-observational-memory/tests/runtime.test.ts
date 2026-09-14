@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { Runtime } from "../src/runtime.js";
+import { isStaleSessionError, Runtime } from "../src/runtime.js";
 
 function modelRegistry(args: { found?: unknown; auth?: unknown } = {}) {
 	return {
@@ -33,7 +33,7 @@ describe("Runtime V3 behavior", () => {
 
 		expect(result).toMatchObject({ ok: true, model: sessionModel });
 		expect(notify).toHaveBeenCalledWith(
-			"Observational memory: configured model anthropic/missing not found, using session model",
+			"观察式记忆：配置的模型 anthropic/missing 不存在，改用当前会话模型",
 			"warning",
 		);
 	});
@@ -42,13 +42,13 @@ describe("Runtime V3 behavior", () => {
 		const runtime = new Runtime();
 		await expect(runtime.resolveModel({ model: undefined, modelRegistry: modelRegistry(), hasUI: false })).resolves.toEqual({
 			ok: false,
-			reason: "no model available (session has no model and no observational-memory model configured)",
+			reason: "没有可用模型（当前会话没有模型，也未配置观察式记忆模型）",
 		});
 
 		const registry = modelRegistry({ auth: { ok: false } });
 		await expect(runtime.resolveModel({ model: { provider: "anthropic" }, modelRegistry: registry, hasUI: false })).resolves.toEqual({
 			ok: false,
-			reason: 'no API key or auth headers for provider "anthropic"',
+			reason: 'provider "anthropic" 没有 API key 或认证头',
 		});
 	});
 
@@ -92,7 +92,7 @@ describe("Runtime V3 behavior", () => {
 			const registry = modelRegistry({ auth });
 			await expect(runtime.resolveModel({ model, modelRegistry: registry, hasUI: false })).resolves.toEqual({
 				ok: false,
-				reason: 'no API key or auth headers for provider "xai"',
+				reason: 'provider "xai" 没有 API key 或认证头',
 			});
 		}
 	});
@@ -110,7 +110,7 @@ describe("Runtime V3 behavior", () => {
 		expect(registry.isUsingOAuth).toHaveBeenCalledWith(model);
 		expect(result).toEqual({
 			ok: false,
-			reason: 'authentication failed for provider "openai-codex" — OAuth credentials may have expired; run \'/login openai-codex\' to re-authenticate',
+			reason: 'provider "openai-codex" 认证失败——OAuth 凭据可能已过期；请运行 \'/login openai-codex\' 重新登录',
 		});
 	});
 
@@ -147,9 +147,9 @@ describe("Runtime V3 behavior", () => {
 		expect(runtime.lastObserverError).toBe("observe failed");
 		expect(runtime.lastReflectorError).toBe("reflect failed");
 		expect(runtime.lastDropperError).toBe("drop failed");
-		expect(notify).toHaveBeenCalledWith("Observational memory: observer failed: observe failed", "warning");
-		expect(notify).toHaveBeenCalledWith("Observational memory: reflector failed: reflect failed", "warning");
-		expect(notify).toHaveBeenCalledWith("Observational memory: dropper failed: drop failed", "warning");
+		expect(notify).toHaveBeenCalledWith("观察式记忆：观察阶段失败：observe failed", "warning");
+		expect(notify).toHaveBeenCalledWith("观察式记忆：反思阶段失败：reflect failed", "warning");
+		expect(notify).toHaveBeenCalledWith("观察式记忆：精简阶段失败：drop failed", "warning");
 	});
 
 	it("keeps compaction flags independent", () => {
@@ -183,5 +183,46 @@ describe("Runtime V3 behavior", () => {
 			env: { CLOUDFLARE_ACCOUNT_ID: "abc123" },
 			baseUrl: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1"
 		});
+	});
+});
+
+describe("session lifecycle", () => {
+	it("invalidates in-flight background work when the session ends", () => {
+		const runtime = new Runtime();
+		const epoch = runtime.sessionEpoch;
+		expect(runtime.isSessionCurrent(epoch)).toBe(true);
+
+		runtime.consolidationInFlight = true;
+		runtime.consolidationPhase = "reflector";
+		runtime.compactInFlight = true;
+		runtime.compactHookInFlight = true;
+
+		runtime.endSession();
+
+		expect(runtime.isSessionCurrent(epoch)).toBe(false);
+		expect(runtime.consolidationInFlight).toBe(false);
+		expect(runtime.consolidationPhase).toBeUndefined();
+		expect(runtime.compactInFlight).toBe(false);
+		expect(runtime.compactHookInFlight).toBe(false);
+	});
+
+	it("recognizes Pi's stale-ctx error as a benign cancellation", () => {
+		expect(isStaleSessionError(new Error("This extension ctx is stale after session replacement or reload."))).toBe(true);
+		expect(isStaleSessionError(new Error("boom"))).toBe(false);
+		expect(isStaleSessionError("ctx is stale")).toBe(true);
+	});
+
+	it("records a stale-ctx stage failure without notifying a warning", () => {
+		const runtime = new Runtime();
+		const notify = vi.fn();
+
+		runtime.recordConsolidationStageError(
+			{ hasUI: true, ui: { notify } },
+			"reflector",
+			new Error("This extension ctx is stale after session replacement or reload."),
+		);
+
+		expect(runtime.lastReflectorError).toContain("stale");
+		expect(notify).not.toHaveBeenCalled();
 	});
 });
