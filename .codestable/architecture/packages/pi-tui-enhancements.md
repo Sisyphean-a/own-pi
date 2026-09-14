@@ -15,7 +15,7 @@
 ## 架构规则
 
 - `extensions/index.ts` 是包级组合根，只负责让 `src/display/index.ts` 和 `src/panel/index.ts` 独立动态激活；一侧的 peer 或运行时 seam 失败不能阻止另一侧加载。
-- `src/display/` 只拥有消息、工具和 footer 的显示补丁与生命周期；`src/panel/` 只拥有面板、技能、组合和编辑器快捷键。
+- `src/display/` 只拥有消息、工具和 footer 的显示补丁与生命周期；`src/panel/` 只拥有面板、技能、组合和编辑器快捷键。工具显示策略集中在 `src/display/tool-policy.ts`，渲染补丁只消费该策略。
 - `src/provider-usage.ts` 是唯一的 Codex/OpenCode Go usage 所有者：请求、认证、响应解析、面板详细格式、footer 紧凑格式和安全的轮询清理都集中在这里。
 - 面板选择与显示补丁不共享可变状态；两者只通过 Pi 提供的模型、UI 和生命周期接口协作。
 - prototype patch 使用 `Symbol.for` 标记；重复加载时复用或替换已知补丁，避免同一进程重复包裹方法。usage 轮询在会话替换、reload、网络错误和非目标 provider 下必须安全停止。
@@ -28,6 +28,7 @@
 - 面板组合根：`packages/pi-tui-enhancements/src/panel/index.ts`
 - 思考和用户消息：`packages/pi-tui-enhancements/src/display/message-display.ts`
 - 工具渲染：`packages/pi-tui-enhancements/src/display/tool-rendering.ts`
+- 工具显示策略（内置识别、紧凑范围、分组边界、折叠行数上限）：`packages/pi-tui-enhancements/src/display/tool-policy.ts`
 - 紧凑 footer：`packages/pi-tui-enhancements/src/display/compact-footer.ts`
 - 面板编排与副作用：`packages/pi-tui-enhancements/src/panel/quick-panel.ts`
 - 技能发现与展开：`packages/pi-tui-enhancements/src/panel/skills.ts`

@@ -4,7 +4,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { Container, Text } from "@earendil-works/pi-tui";
-import { isBuiltInTool, shouldCompact } from "./tool-policy.ts";
+import { canJoinToolGroup, getCollapsedContentLineLimit, isBuiltInTool, shouldCompact } from "./tool-policy.ts";
 
 type Theme = {
   bold(text: string): string;
@@ -41,7 +41,7 @@ type ToolDefinitionShape = {
 
 type ToolComponent = {
   builtInToolDefinition?: unknown;
-  isPartial?: boolean;
+  expanded?: unknown;
   toolDefinition?: ToolDefinitionShape & { renderShell?: unknown };
   toolName: string;
 };
@@ -398,10 +398,6 @@ function isMcpTool(component: ToolComponent): boolean {
   return label === "MCP" || label.startsWith("MCP:");
 }
 
-function canJoinToolGroup(component: ToolComponent): boolean {
-  return component.toolName !== "write" && component.toolName !== "edit";
-}
-
 function isAdjacentToToolGroup(component: ToolComponent): boolean {
   const previous = (component as RenderAwareToolComponent)[TOOL_PREVIOUS];
   return Boolean(previous && canJoinToolGroup(previous) && canJoinToolGroup(component));
@@ -501,17 +497,13 @@ export function installToolRenderers(): void {
     return shouldCompact(this) && isMcpTool(this) ? "default" : originalRenderShell.call(this);
   };
 
+  // Effect: 折叠态把可分组工具行裁到一行正文；展开态保留 Pi 的完整输出。
   prototype.render = function renderLeanToolExecution(this: ToolComponent, width: number): string[] {
     const joinsGroup = canJoinToolGroup(this);
-    const maxContentLines = this.toolName === "edit" && this.isPartial === false
-      ? undefined
-      : joinsGroup
-        ? 2
-        : undefined;
     return compactToolFrame(
       originalRender.call(this, width),
       joinsGroup && isAdjacentToToolGroup(this),
-      maxContentLines,
+      getCollapsedContentLineLimit(this),
     );
   };
 
