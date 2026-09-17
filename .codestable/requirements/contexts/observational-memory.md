@@ -26,6 +26,7 @@ code-paths:
 - 会话替换（new/resume/fork）、重载或退出时，Pi 先触发 `session_shutdown` 再让旧 ctx/pi 失效；扩展必须先用会话代次作废在途后台任务，之后不得再触碰旧 ctx/pi；stale-ctx 错误按正常取消处理，不作为失败提示用户。
 - 压缩摘要只使用已写入 ledger 的记忆，不等待运行中的 worker；没有可渲染记忆时放弃接管，交给 Pi 原生摘要器。
 - `coversUpToId` 是进度水位而不是来源证明；来源关系只由观察的 `sourceEntryIds` 与反思的 `supportingObservationIds` 表达。
+- 覆盖进度的原始 token 计量是增量水位：只累计覆盖点之后新增的源条目，覆盖标记推进时才从新标记重新累计；真实上下文增量仍以 provider 上报的 usage 为基准。阶段到期判断不得要求逐轮重算整本账本。
 - 记忆按当前分支折叠重建，不迁移 V2 设置或条目。
 
 ## 非目标

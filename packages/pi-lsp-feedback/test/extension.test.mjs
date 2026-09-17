@@ -583,3 +583,97 @@ test("warns about invalid project overrides at session start", async () => {
 
   await handlers.get("session_shutdown")({}, ctx);
 });
+
+test("returns within the sync budget when the language server is slow", async (t) => {
+  const previousDelays = {
+    initialize: process.env.FAKE_INITIALIZE_DELAY_MS,
+    budget: process.env.PI_LSP_SYNC_BUDGET_MS,
+  };
+  // 冷启动明显慢于同步预算，逼出「超出预算后转后台收尾」的路径。
+  process.env.FAKE_INITIALIZE_DELAY_MS = "900";
+  process.env.PI_LSP_SYNC_BUDGET_MS = "120";
+  t.after(() => {
+    if (previousDelays.initialize === undefined) delete process.env.FAKE_INITIALIZE_DELAY_MS;
+    else process.env.FAKE_INITIALIZE_DELAY_MS = previousDelays.initialize;
+    if (previousDelays.budget === undefined) delete process.env.PI_LSP_SYNC_BUDGET_MS;
+    else process.env.PI_LSP_SYNC_BUDGET_MS = previousDelays.budget;
+  });
+
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-slow-server-"));
+  const filePath = path.join(workspace, "src", "sample.ts");
+  await mkdir(path.join(workspace, ".pi"), { recursive: true });
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await Promise.all([
+    writeFile(path.join(workspace, "package.json"), "{}\n"),
+    writeFile(filePath, "broken\n"),
+    mkdir(path.join(workspace, "node_modules", "@types", "node"), { recursive: true }),
+    writeFile(
+      path.join(workspace, ".pi", "lsp-feedback.json"),
+      JSON.stringify({
+        servers: {
+          typescript: {
+            command: process.execPath,
+            args: [fakeServer],
+            rootMarkers: ["package.json"],
+          },
+        },
+      }),
+    ),
+  ]);
+
+  const handlers = new Map();
+  const messages = [];
+  const pi = {
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
+    registerCommand() {},
+    sendMessage(message, options) {
+      messages.push({ message, options });
+    },
+  };
+  const ctx = {
+    cwd: workspace,
+    hasUI: false,
+    signal: undefined,
+    isProjectTrusted: () => true,
+    ui: { setStatus() {}, notify() {} },
+  };
+
+  lspFeedbackExtension(pi);
+  await handlers.get("session_start")({}, ctx);
+
+  // Guarantee: 检查慢于预算时工具调用立即返回，而不是等语言服务器初始化完成。
+  const startedAt = Date.now();
+  await handlers.get("tool_result")(
+    {
+      toolName: "write",
+      toolCallId: "edit-1",
+      input: { path: filePath },
+      details: {},
+      isError: false,
+    },
+    ctx,
+  );
+  const elapsed = Date.now() - startedAt;
+  assert.ok(elapsed < 600, `同步等待应受预算限制，实际 ${elapsed}ms`);
+
+  // 后台检查尚未完成，本轮 turn_end 不得报告诊断。
+  handlers.get("turn_end")(turnEnd("edit-1"), ctx);
+  assert.deepEqual(messages, []);
+
+  // 后台收尾完成后，诊断在下一轮 turn_end 由同一 FeedbackTracker 反馈。
+  const deadline = Date.now() + 6000;
+  while (messages.length === 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    handlers.get("turn_end")(turnEnd("edit-1"), ctx);
+  }
+  assert.equal(messages.length, 1);
+  assert.match(messages[0].message.content, /FAKE100/);
+  assert.deepEqual(messages[0].options, {
+    deliverAs: "steer",
+    triggerTurn: true,
+  });
+
+  await handlers.get("session_shutdown")({}, ctx);
+});

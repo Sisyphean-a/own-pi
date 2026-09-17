@@ -19,6 +19,7 @@
 - `extensions/index.ts` 是包级组合根，只负责让 `src/display/index.ts`、`src/panel/index.ts` 和 `src/context/index.ts` 独立动态激活；一侧的 peer 或运行时 seam 失败不能阻止其他侧加载。
 - `src/display/` 只拥有消息、工具和 footer 的显示补丁与生命周期；`src/panel/` 拥有面板、技能展开、临时技能包、组合和编辑器快捷键；`src/context/` 只拥有 `/context` 弹窗、标签页与 token 分类。工具显示策略集中在 `src/display/tool-policy.ts`，渲染补丁只消费该策略。
 - `src/context/frame.ts` 是上下文弹窗唯一的边框与宽度所有者：所有行先按显示宽度裁剪再补齐，窄终端逐级降级页脚与统计布局；`src/context/format.ts` 不引入 Pi 运行时依赖，token 估算器与压缩预留量由入口注入。
+- `src/context/scrollable-tab.ts` 拥有上下文内容页的折行与滚动：视觉行按块惰性建立并缓存，只在显式失效或内宽变化时重建；滚动、搜索高亮与翻页复用缓存，搜索命中用集合按行判断。footer 的会话 token 统计由 `src/display/compact-footer.ts` 按条目增量累计，只在条目数量或前缀身份变化时整体重算。
 - `src/provider-usage.ts` 是唯一的 Codex/OpenCode Go usage 所有者：请求、认证、响应解析、面板详细格式、footer 紧凑格式和安全的轮询清理都集中在这里。
 - 面板选择、临时技能包、上下文查看与显示补丁不共享可变状态；三者只通过 Pi 提供的模型、UI 和生命周期接口协作。临时技能包的选择通过当前会话 custom entry 保存，不写全局或项目 `settings.json`。
 - prototype patch 使用 `Symbol.for` 标记；重复加载时复用或替换已知补丁，避免同一进程重复包裹方法。usage 轮询在会话替换、reload、网络错误和非目标 provider 下必须安全停止。

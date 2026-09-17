@@ -1,5 +1,6 @@
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
 import { debugLog } from "./debug-log.js";
+import { JournalTokenProgress, type Entry, type StageProgress } from "./session-ledger/index.js";
 
 export type ResolveResult =
 	| { ok: true; model: unknown; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string>; baseUrl?: string }
@@ -133,11 +134,26 @@ export class Runtime {
 		coverageId: string | undefined;
 		tokensAtEmpty: number;
 	} | undefined;
+	/**
+	 * 覆盖时钟的增量缓存：`turn_end` 每个回合都要判断阶段是否到期，逐轮重算整本账本会
+	 * 随会话长度线性变慢。缓存跨会话保留，账本对象被替换时会自行重建。
+	 */
+	readonly tokenProgress = new JournalTokenProgress();
 
 	ensureConfig(cwd: string): void {
 		if (this.configLoaded) return;
 		this.config = loadConfig(cwd);
 		this.configLoaded = true;
+	}
+
+	/** 观察阶段距上次覆盖的 token 进度（真实上报优先，缺失时回退原始估算）。 */
+	observationProgress(entries: Entry[], currentTokens: number | undefined): StageProgress {
+		return this.tokenProgress.observationProgress(entries, currentTokens);
+	}
+
+	/** 反思阶段距上次覆盖的 token 进度（真实上报优先，缺失时回退原始估算）。 */
+	reflectionProgress(entries: Entry[], currentTokens: number | undefined): StageProgress {
+		return this.tokenProgress.reflectionProgress(entries, currentTokens);
 	}
 
 	/** 会话替换、重载或退出：作废在途后台任务，并释放会被下一个会话复用的运行标志。 */

@@ -21,9 +21,9 @@ import {
 	latestCoverageIndex,
 	latestCoverageMarkerId,
 	observationToSummaryLine,
-	realTokensSinceAnchor,
 	rawTokensSinceObservationCoverage,
 	rawTokensSinceReflectionCoverage,
+	realTokensSinceAnchor,
 	reflectionToSummaryLine,
 	type Entry,
 	type Observation,
@@ -104,25 +104,34 @@ function realContextTokens(runtime: Runtime, ctx: ConsolidationCtx): number | un
 }
 
 function stageDue(
-	entries: Entry[],
 	runtime: Runtime,
+	entries: Entry[],
 	currentTokens: number | undefined,
-	customType: V3MemoryCustomType,
-	rawEstimateFn: (entries: Entry[]) => number,
+	kind: "observations" | "reflections",
 	threshold: number,
 ): boolean {
-	if (currentTokens !== undefined) {
-		const real = realTokensSinceAnchor(entries, customType, currentTokens);
-		if (real !== undefined) return real >= threshold;
-	}
+	// Rule: 用 Runtime 的增量缓存算覆盖进度；测试替身或旧宿主没有该能力时，
+	// 回退到等价的一次性重算，行为不变、只是每轮代价更高。
+	const progress = typeof runtime.observationProgress === "function"
+		? (kind === "observations"
+			? runtime.observationProgress(entries, currentTokens)
+			: runtime.reflectionProgress(entries, currentTokens))
+		: undefined;
+	const customType = kind === "observations" ? OM_OBSERVATIONS_RECORDED : OM_REFLECTIONS_RECORDED;
+	const real = progress?.realTokens
+		?? (currentTokens !== undefined ? realTokensSinceAnchor(entries, customType, currentTokens) : undefined);
+	const raw = progress?.rawTokens
+		?? (kind === "observations"
+			? rawTokensSinceObservationCoverage(entries)
+			: rawTokensSinceReflectionCoverage(entries));
 	// 真实增量无法度量（没有 usage 基线，或计量基准变了），或宿主 pi 不支持 getContextUsage：
 	// 回退到原始估算，它在覆盖后自我限制，既不会过度触发也不会饥饿。
-	return rawEstimateFn(entries) >= threshold;
+	return (real ?? raw) >= threshold;
 }
 
 function anyStageDue(entries: Entry[], runtime: Runtime, currentTokens: number | undefined): boolean {
-	return stageDue(entries, runtime, currentTokens, OM_OBSERVATIONS_RECORDED, rawTokensSinceObservationCoverage, runtime.config.observeAfterTokens)
-		|| stageDue(entries, runtime, currentTokens, OM_REFLECTIONS_RECORDED, rawTokensSinceReflectionCoverage, runtime.config.reflectAfterTokens);
+	return stageDue(runtime, entries, currentTokens, "observations", runtime.config.observeAfterTokens)
+		|| stageDue(runtime, entries, currentTokens, "reflections", runtime.config.reflectAfterTokens);
 }
 
 function shouldNotifyWorker(runtime: Runtime, ctx: ConsolidationCtx): boolean {
@@ -192,7 +201,8 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: LiveC
 	if (runtime.consolidationInFlight) return;
 
 	const entries = ctx.sessionManager.getBranch() as Entry[];
-	if (!anyStageDue(entries, runtime, rawContextTokens(ctx))) return;
+	const currentTokens = rawContextTokens(ctx);
+	if (!anyStageDue(entries, runtime, currentTokens)) return;
 
 	const runId = `consolidation-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 	const consolidationCtx: ConsolidationCtx = {
@@ -261,8 +271,11 @@ async function runObserverStage(
 	if (!sessionActive(runtime, ctx)) return "abort";
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const currentTokens = realContextTokens(runtime, ctx);
-	const real = currentTokens !== undefined ? realTokensSinceAnchor(entries, OM_OBSERVATIONS_RECORDED, currentTokens) : undefined;
-	const tokens = real !== undefined ? real : rawTokensSinceObservationCoverage(entries); // fallback: no usage baseline / basis change
+	// 用增量缓存做准入判断与日志，避免为一次阶段决策重算整本账本；
+	// 真正发给观察器的分块仍在下面按预算序列化。
+	const tokens = typeof runtime.observationProgress === "function"
+		? runtime.observationProgress(entries, currentTokens).rawTokens
+		: rawTokensSinceObservationCoverage(entries);
 	if (tokens < runtime.config.observeAfterTokens) return "continue";
 
 	const sessionMetadata = debugSessionMetadata(ctx);
@@ -396,8 +409,9 @@ async function runReflectorStage(
 	if (!sessionActive(runtime, ctx)) return { outcome: "abort", sameRunReflections: [] };
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const currentTokens = realContextTokens(runtime, ctx);
-	const real = currentTokens !== undefined ? realTokensSinceAnchor(entries, OM_REFLECTIONS_RECORDED, currentTokens) : undefined;
-	const reflectionTokens = real !== undefined ? real : rawTokensSinceReflectionCoverage(entries); // fallback: no usage baseline / basis change
+	const reflectionTokens = typeof runtime.reflectionProgress === "function"
+		? runtime.reflectionProgress(entries, currentTokens).rawTokens
+		: rawTokensSinceReflectionCoverage(entries);
 	if (reflectionTokens < runtime.config.reflectAfterTokens) return { outcome: "continue", sameRunReflections: [] };
 
 	const observationCoverageId = latestCoverageMarkerId(entries, OM_OBSERVATIONS_RECORDED);

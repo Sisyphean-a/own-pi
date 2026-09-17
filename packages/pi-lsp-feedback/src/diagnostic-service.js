@@ -27,10 +27,21 @@ export class DiagnosticService {
     this.managedInstallFailures = new Map();
     this.allowManagedInstall = allowManagedInstall;
     this.managedInstaller = managedInstaller;
+    /**
+     * `close()` 之后本实例不再可用。
+     *
+     * Rule: 关闭期间必须继续持有客户端引用，直到它真正终止；否则迟到的检查会通过
+     * `getClient` 新建一个无人持有的语言服务器，留下孤儿进程。会话由 `startSession`
+     * 重建 DiagnosticService 实例，因此关闭后拒绝新建客户端不会影响后续会话。
+     */
+    this.closed = false;
   }
 
   async checkFile(filePath, signal) {
     const absolutePath = path.resolve(this.workspaceRoot, filePath);
+    if (this.closed) {
+      return result(absolutePath, "unavailable", { reason: "diagnostic service is closed" });
+    }
     const server = serverForFile(this.servers, absolutePath);
     if (!server) {
       return result(absolutePath, "unsupported", { reason: "no configured LSP for this file type" });
@@ -113,9 +124,11 @@ export class DiagnosticService {
   }
 
   async close() {
+    this.closed = true;
+    // Guarantee: 保持 clients 引用直到每个客户端真正终止，避免关闭期间重启语言服务器。
     const clients = [...this.clients.values()];
-    this.clients.clear();
     await Promise.allSettled(clients.map((client) => client.close()));
+    this.clients.clear();
   }
 
   snapshot() {
@@ -127,6 +140,7 @@ export class DiagnosticService {
   }
 
   async getClient(server, root, signal) {
+    if (this.closed) throw new Error("diagnostic service is closed");
     const key = `${server.id}:${root}`;
     const existing = this.clients.get(key);
     if (existing?.alive) return existing;
@@ -138,6 +152,13 @@ export class DiagnosticService {
     const initialization = initializationOptions(server, root, this.workspaceRoot);
     const typescriptBridge = typescriptBridgeOptions(server, root, this.workspaceRoot);
     const attempts = [];
+    // Rule: 启动是异步的，close() 可能在启动期间发生；返回前必须复查，否则会留下
+    // 无人持有的语言服务器进程（启动慢的 tsserver/Volar 尤其容易命中）。
+    const adopt = async (client) => {
+      if (!this.closed) return client;
+      await client.close().catch(() => undefined);
+      throw new Error("diagnostic service is closed");
+    };
     const launch = async () => {
       for (const commandSpec of server.commands) {
         for (const command of commandCandidates(root, this.workspaceRoot, commandSpec.command)) {
@@ -151,8 +172,9 @@ export class DiagnosticService {
               typescriptBridge,
               signal,
             });
-            this.clients.set(key, client);
-            return client;
+            const adopted = await adopt(client);
+            this.clients.set(key, adopted);
+            return adopted;
           } catch (error) {
             attempts.push(error instanceof Error ? error.message : String(error));
           }

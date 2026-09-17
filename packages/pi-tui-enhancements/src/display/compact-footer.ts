@@ -35,6 +35,22 @@ type UsageTotals = {
   latestCacheHitRate?: number;
 };
 
+/**
+ * footer 的 usage 增量缓存。
+ *
+ * Rule: 会话条目只在末尾追加，因此已累计的 usage 永不失效；只有条目数量变化或前缀身份改变
+ * （reload、分支切换、压缩重写）才整体重算。footer 会被 Thinking 动画按 125ms 重绘，逐帧
+ * 全量求和会让每帧成本随会话长度增长。
+ */
+type UsageMemo = UsageTotals & {
+  count: number;
+  first: unknown;
+};
+
+function emptyUsageMemo(): UsageMemo {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, count: 0, first: undefined };
+}
+
 type StatPart = {
   text: string;
   tone: "thinkingLow" | "thinkingMedium" | "accent" | "warning" | "error";
@@ -56,32 +72,55 @@ function addUsage(totals: UsageTotals, value: unknown): void {
   totals.cacheWrite += finiteNumber(usage.cacheWrite);
 }
 
-function collectUsage(entries: readonly unknown[]): UsageTotals {
-  const totals: UsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+/** 把一条会话条目累加进 totals；返回它是否贡献了 usage。 */
+function addEntryUsage(totals: UsageTotals, value: unknown): boolean {
+  const entry = asRecord(value);
+  const message = asRecord(entry.message);
+  const role = message.role;
+  const usage = entry.type === "message" ? message.usage : entry.usage;
+  const contributes =
+    (entry.type === "message" && (role === "assistant" || role === "toolResult")) ||
+    entry.type === "branch_summary" ||
+    entry.type === "compaction";
 
-  for (const value of entries) {
-    const entry = asRecord(value);
-    const message = asRecord(entry.message);
-    const role = message.role;
-    const usage = entry.type === "message" ? message.usage : entry.usage;
-    const contributes =
-      (entry.type === "message" && (role === "assistant" || role === "toolResult")) ||
-      entry.type === "branch_summary" ||
-      entry.type === "compaction";
+  if (!contributes || !usage) return false;
+  addUsage(totals, usage);
 
-    if (!contributes || !usage) continue;
-    addUsage(totals, usage);
+  if (entry.type === "message" && role === "assistant") {
+    const current = asRecord(usage);
+    const input = finiteNumber(current.input);
+    const cacheRead = finiteNumber(current.cacheRead);
+    const cacheWrite = finiteNumber(current.cacheWrite);
+    const promptTokens = input + cacheRead + cacheWrite;
+    // Effect: promptTokens 为 0 时清除字段而不是留 undefined，保持与全量重算逐字段同构。
+    if (promptTokens > 0) totals.latestCacheHitRate = (cacheRead / promptTokens) * 100;
+    else delete totals.latestCacheHitRate;
+  }
+  return true;
+}
 
-    if (entry.type === "message" && role === "assistant") {
-      const current = asRecord(usage);
-      const input = finiteNumber(current.input);
-      const cacheRead = finiteNumber(current.cacheRead);
-      const cacheWrite = finiteNumber(current.cacheWrite);
-      const promptTokens = input + cacheRead + cacheWrite;
-      totals.latestCacheHitRate = promptTokens > 0 ? (cacheRead / promptTokens) * 100 : undefined;
-    }
+export function collectUsage(entries: readonly unknown[], memo?: UsageMemo): UsageTotals {
+  const stablePrefix = memo !== undefined && entries.length >= memo.count && entries[0] === memo.first;
+  const totals: UsageTotals = stablePrefix
+    ? { input: memo.input, output: memo.output, cacheRead: memo.cacheRead, cacheWrite: memo.cacheWrite }
+    : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  if (stablePrefix && memo.latestCacheHitRate !== undefined) {
+    totals.latestCacheHitRate = memo.latestCacheHitRate;
   }
 
+  for (let i = stablePrefix ? memo!.count : 0; i < entries.length; i++) {
+    addEntryUsage(totals, entries[i]);
+  }
+
+  if (memo) {
+    memo.input = totals.input;
+    memo.output = totals.output;
+    memo.cacheRead = totals.cacheRead;
+    memo.cacheWrite = totals.cacheWrite;
+    memo.latestCacheHitRate = totals.latestCacheHitRate;
+    memo.count = entries.length;
+    memo.first = entries[0];
+  }
   return totals;
 }
 
@@ -113,9 +152,9 @@ function identityText(ctx: ExtensionContext, footerData: FooterDataLike): string
   return identity;
 }
 
-function statParts(ctx: ExtensionContext): StatPart[] {
+function statParts(ctx: ExtensionContext, usageMemo: UsageMemo): StatPart[] {
   const entries = ctx.sessionManager.getEntries() as readonly unknown[];
-  const usage = collectUsage(entries);
+  const usage = collectUsage(entries, usageMemo);
   const parts: StatPart[] = [];
 
   if (usage.input) parts.push({ text: `↑${formatTokens(usage.input)}`, tone: "thinkingLow" });
@@ -241,6 +280,8 @@ export function createCompactFooter(
 ) {
   const unsubscribeBranch = footerData.onBranchChange(() => tui.requestRender());
   const unsubscribeThinking = thinkingIndicator?.onChange(() => tui.requestRender()) ?? (() => {});
+  // 每帧重绘复用同一份增量缓存，只有新条目才需要求和。
+  const usageMemo = emptyUsageMemo();
 
   return {
     dispose() {
@@ -252,7 +293,7 @@ export function createCompactFooter(
       if (width <= 0) return [];
 
       const identity = identityText(ctx, footerData);
-      const stats = styleStats(statParts(ctx), theme);
+      const stats = styleStats(statParts(ctx, usageMemo), theme);
       const identityStyled = theme.fg("dim", identity);
       const separator = theme.fg("dim", " | ");
       const trailingSeparator = theme.fg("dim", " |");
