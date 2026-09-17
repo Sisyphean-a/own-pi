@@ -23,6 +23,33 @@ pi install ./packages/pi-tui-enhancements
 
 模型未配置认证或不支持组合指定的思考等级时，组合会显示为不可用并拒绝切换。
 
+## 临时技能包
+
+不常用的技能不要放进自动发现的 `skills/`，可以按包放在它旁边：
+
+```text
+~/.pi/agent/
+├── skills/                         # 常驻、自动加载
+└── skill-packs/
+    └── research/
+        ├── browser/SKILL.md
+        └── sources/SKILL.md
+```
+
+项目专用技能包放在 `<project>/.pi/skill-packs/`。在 Pi 中执行 `/skill-packs`，即可按包切换启用状态；启用一个普通包会一次加载该包内的全部技能，其他包仍不会进入提示词或 `/skill` 命令列表。
+
+复杂路由包可以在包根放置 `skill-pack.json`，只向 Pi 暴露入口目录：
+
+```json
+{
+  "skillPaths": ["skills"]
+}
+```
+
+这样包内的 `skills/SKILL.md` 可以作为总控入口，其他技能文件仍保留在磁盘上，由总控技能按任务路由后再读取，不会全部进入 Pi 上下文。路径必须位于包目录内部。
+
+选择只保存在当前会话记录中，不修改 `settings.json`：新会话默认不启用，恢复原会话时会恢复该会话的选择。关闭面板后 Pi 会自动 reload 当前会话。
+
 ## 上下文查看
 
 - `/context` 打开带标签页的弹窗，展示当前会话的完整 LLM 上下文；

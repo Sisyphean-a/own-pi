@@ -26,6 +26,11 @@ function notify(ctx: ExtensionContext, message: string, level: "info" | "warning
 }
 
 export default async function quickPanel(pi: ExtensionAPI): Promise<void> {
+  const skillPacks = await loadOptional("技能包", () => import("./skill-packs.ts"));
+  if (skillPacks?.default) {
+    await skillPacks.default(pi);
+  }
+
   const skills = await loadOptional("技能展开", () => import("./skills.ts"));
   if (skills && typeof pi.on === "function") {
     pi.on("input", async (event) => {

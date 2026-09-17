@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "TUI experience enhancements for pi: compact display and quick panel",
+  "description": "TUI experience enhancements for pi: compact display, quick panel, and temporary skill packs",
   "keywords": [
     "pi-package",
     "pi-extension",
     "tui",
     "quick-panel",
+    "skill-packs",
     "tool-rendering",
     "model-picker"
   ],
