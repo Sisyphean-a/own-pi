@@ -19,7 +19,7 @@ pi install ./packages/pi-tui-enhancements
 - 选择技能会在编辑器当前位置插入 `/skill:<name>`；
 - 输入中的已知 `/skill:<name>` 会展开为技能正文，技能 frontmatter 不会发送给模型；
 - 组合配置位于全局 `~/.pi/agent/quick-panel.json`，受信任项目可用 `.pi/quick-panel.json` 覆盖同名组合；
-- 当前模型为 `openai-codex` 时显示 5 小时和周限额，当前模型为 `opencode-go` 时显示 5 小时、周和月限额及重置时间。
+- 当前模型为 `openai-codex` 时显示 5 小时和周限额，当前模型为 `opencode-go` 时显示 5 小时、周和月限额及重置时间；provider 名称匹配 `commandcode`/`cmdc` 时按 Command Code 查询官方额度，显示 5 小时、周和套餐月限额及重置时间，套餐未知时省略月限额。
 
 模型未配置认证或不支持组合指定的思考等级时，组合会显示为不可用并拒绝切换。
 

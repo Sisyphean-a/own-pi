@@ -37,7 +37,7 @@ code-paths:
 - footer 的会话 token 统计按会话条目增量累计，只有条目数量变化或前缀身份改变（reload、分支切换、压缩重写）才整体重算；Thinking 动画重绘不得触发全量求和。
 - 上下文弹窗的每一行必须按显示宽度裁剪再补齐，中文、长路径和 ANSI 颜色不得撑破边框或触发换行；窄终端按优先级去掉网格、百分比列和页脚提示，不裁断数值；网格与色块不依赖 Nerd Font 图标。
 - 上下文分类按字符估算后整体缩放到 provider 上报的总量，分类之和与总量一致；读取技能文件的工具调用计入技能而不是工具。
-- 当前模型为 `openai-codex` 且使用官方 OAuth 时，provider usage 显示 5 小时和周窗口；`opencode-go` 使用官方 API key 显示 5 小时、周和月窗口。面板显示重置时间，footer 显示紧凑剩余百分比；非目标 provider、认证失败、响应不完整或网络失败不阻塞 TUI。
+- 当前模型为 `openai-codex` 且使用官方 OAuth 时，provider usage 显示 5 小时和周窗口；`opencode-go` 使用官方 API key 显示 5 小时、周和月窗口；Command Code 按 provider 名称特征（`commandcode`、`command-code`、`cmdc`）识别，用官方 API key 查询官方 credits 与订阅套餐，显示 5 小时、周和套餐月窗口，套餐未知时只省略月窗口。面板显示重置时间，footer 显示紧凑剩余百分比；非目标 provider、认证失败、响应不完整或网络失败不阻塞 TUI。
 - 面板、上下文查看和显示三个功能域独立动态激活；缺少 Pi peer、TUI seam 或单侧内部模块时，只隐藏受影响功能，不阻断其他侧或 Pi 启动。
 - 包不重复分发 Pi 核心运行时依赖；核心包由 Pi 提供并通过可选 peer dependency 声明。
 

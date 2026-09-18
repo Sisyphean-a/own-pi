@@ -3,16 +3,21 @@ import { test } from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   CODEX_PROVIDER_ID,
+  COMMANDCODE_PROVIDER_ID,
   OPENCODE_GO_PROVIDER_ID,
   TUI_PROVIDER_USAGE_STATUS_ID,
   createProviderUsageController,
   fetchCodexUsage,
+  fetchCommandCodeUsage,
   fetchOpenCodeGoUsage,
   fetchProviderUsage,
   formatCodexUsage,
+  formatCommandCodeUsage,
   formatOpenCodeGoUsage,
   formatProviderUsage,
+  isCommandCodeProvider,
   type CodexUsage,
+  type CommandCodeUsage,
   type OpenCodeGoUsage,
 } from "../src/provider-usage.ts";
 
@@ -220,6 +225,156 @@ test("rejects incomplete OpenCode Go usage windows", async (t) => {
   assert.equal(await fetchOpenCodeGoUsage(makeContext({ provider: OPENCODE_GO_PROVIDER_ID })), undefined);
 });
 
+test("formats Command Code usage with five-hour, weekly, and monthly resets", () => {
+  const usage: CommandCodeUsage = {
+    fiveHour: {
+      remainingPercent: 97,
+      resetAt: localTimestamp(2026, 8, 26, 19, 23),
+    },
+    weekly: {
+      remainingPercent: 87,
+      resetAt: localTimestamp(2026, 8, 26),
+    },
+    monthly: {
+      remainingPercent: 93,
+      resetAt: localTimestamp(2026, 9, 18),
+    },
+  };
+
+  assert.equal(
+    formatCommandCodeUsage(usage),
+    "commandcode [ 97%  19:23 ] [ 87%  08-26 ] [ 93%  09-18 ]",
+  );
+  assert.equal(
+    formatProviderUsage({ provider: COMMANDCODE_PROVIDER_ID, usage }),
+    "commandcode [ 97%  19:23 ] [ 87%  08-26 ] [ 93%  09-18 ]",
+  );
+});
+
+test("recognizes Command Code provider aliases", () => {
+  for (const provider of ["commandcode", "command-code", "command_code", "cmdc", "CMDC"]) {
+    assert.equal(isCommandCodeProvider(provider), true, provider);
+  }
+  for (const provider of ["anthropic", "openai-codex", "opencode-go", undefined, 42]) {
+    assert.equal(isCommandCodeProvider(provider), false, String(provider));
+  }
+
+  const usage: CommandCodeUsage = { fiveHour: { remainingPercent: 97, resetAt: localTimestamp(2026, 8, 26, 19, 23) } };
+  assert.equal(
+    formatProviderUsage({ provider: COMMANDCODE_PROVIDER_ID, usage }),
+    "commandcode [ 97%  19:23 ]",
+  );
+});
+
+test("fetches Command Code usage from the official credits and subscriptions endpoints", async (t) => {
+  const previous = globalThis.fetch;
+  const fiveHourReset = localTimestamp(2026, 8, 26, 19, 23) * 1000;
+  const weeklyReset = localTimestamp(2026, 8, 26) * 1000;
+  const periodEnd = new Date(localTimestamp(2026, 9, 18, 2, 40) * 1000).toISOString();
+  const requestUrls: string[] = [];
+  const requestHeaders: Array<Headers | undefined> = [];
+  let requestRedirect: string | undefined;
+  globalThis.fetch = (async (input, init) => {
+    requestUrls.push(String(input));
+    requestHeaders.push(new Headers(init?.headers));
+    requestRedirect = init?.redirect;
+    if (requestUrls.at(-1)?.endsWith("/credits")) {
+      return new Response(JSON.stringify({
+        credits: { monthlyCredits: 65.4, purchasedCredits: 0, freeCredits: 0 },
+        windowLimits: {
+          limited: true,
+          exceeded: null,
+          fiveHour: { used: 0.4, cap: 14, exceeded: false, resetAt: fiveHourReset },
+          weekly: { used: 4.7, cap: 35, exceeded: false, resetAt: weeklyReset },
+        },
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      success: true,
+      data: { status: "active", planId: "individual-goat", currentPeriodEnd: periodEnd },
+    }), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = previous;
+  });
+
+  const context = makeContext({ provider: COMMANDCODE_PROVIDER_ID, apiKey: "cmdc-api-key" });
+  const usage = await fetchCommandCodeUsage(context);
+
+  assert.deepEqual(requestUrls, [
+    "https://api.commandcode.ai/alpha/billing/credits",
+    "https://api.commandcode.ai/alpha/billing/subscriptions",
+  ]);
+  for (const headers of requestHeaders) {
+    assert.equal(headers?.get("authorization"), "Bearer cmdc-api-key");
+  }
+  assert.equal(requestRedirect, "error");
+  assert.deepEqual(usage, {
+    fiveHour: { remainingPercent: 97, resetAt: fiveHourReset / 1000 },
+    weekly: { remainingPercent: 87, resetAt: weeklyReset / 1000 },
+    monthly: { remainingPercent: 93, resetAt: Date.parse(periodEnd) / 1000 },
+  });
+
+  const routed = await fetchProviderUsage(makeContext({ provider: "cmdc" }));
+  assert.deepEqual(routed, { provider: COMMANDCODE_PROVIDER_ID, usage });
+  assert.equal(
+    formatProviderUsage(routed!),
+    "commandcode [ 97%  19:23 ] [ 87%  08-26 ] [ 93%  09-18 ]",
+  );
+});
+
+test("keeps Command Code windows when the subscription lookup fails", async (t) => {
+  const previous = globalThis.fetch;
+  let requestCount = 0;
+  globalThis.fetch = (async () => {
+    requestCount++;
+    if (requestCount > 1) return new Response("nope", { status: 500 });
+    return new Response(JSON.stringify({
+      credits: { monthlyCredits: 65.4, purchasedCredits: 0, freeCredits: 0 },
+      windowLimits: {
+        fiveHour: { used: 0.4, cap: 14, resetAt: localTimestamp(2026, 8, 26, 19, 23) * 1000 },
+        weekly: { used: 4.7, cap: 35, resetAt: localTimestamp(2026, 8, 26) * 1000 },
+      },
+    }), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = previous;
+  });
+
+  const usage = await fetchCommandCodeUsage(makeContext({ provider: COMMANDCODE_PROVIDER_ID }));
+  assert.deepEqual(usage, {
+    fiveHour: { remainingPercent: 97, resetAt: localTimestamp(2026, 8, 26, 19, 23) },
+    weekly: { remainingPercent: 87, resetAt: localTimestamp(2026, 8, 26) },
+    monthly: undefined,
+  });
+  assert.equal(
+    formatProviderUsage({ provider: COMMANDCODE_PROVIDER_ID, usage: usage! }),
+    "commandcode [ 97%  19:23 ] [ 87%  08-26 ]",
+  );
+});
+
+test("rejects Command Code responses without the required five-hour and weekly windows", async (t) => {
+  const previous = globalThis.fetch;
+  let requestUrl = "";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    requestUrl = String(input);
+    if (requestUrl.endsWith("/credits")) return new Response("nope", { status: 500 });
+    throw new Error("unexpected subscription request");
+  }) as unknown as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = previous;
+  });
+
+  assert.equal(await fetchCommandCodeUsage(makeContext({ provider: COMMANDCODE_PROVIDER_ID })), undefined);
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    windowLimits: {
+      fiveHour: { used: 0.4, cap: 14, resetAt: localTimestamp(2026, 8, 26, 19, 23) * 1000 },
+    },
+  }), { status: 200 })) as typeof fetch;
+  assert.equal(await fetchCommandCodeUsage(makeContext({ provider: COMMANDCODE_PROVIDER_ID })), undefined);
+});
+
 test("fetches official OAuth usage with only the required Codex identity headers", async (t) => {
   const previous = globalThis.fetch;
   let requestCount = 0;
@@ -364,6 +519,40 @@ test("publishes all three OpenCode Go percentages in the compact footer", async 
   assert.deepEqual(fake.statusCalls(), [{
     id: TUI_PROVIDER_USAGE_STATUS_ID,
     value: "opencode-go [100%|94%|64%]",
+  }]);
+  controller.clear(fake.ctx);
+});
+
+test("publishes all three Command Code percentages in the compact footer", async (t) => {
+  let requestUrl = "";
+  let requestHeaders: Headers | undefined;
+  const periodEnd = new Date(localTimestamp(2026, 9, 18, 2, 40) * 1000).toISOString();
+  installFetch(t, async (input, init) => {
+    requestUrl = String(input);
+    requestHeaders = new Headers(init?.headers);
+    if (requestUrl.endsWith("/credits")) {
+      return new Response(JSON.stringify({
+        credits: { monthlyCredits: 65.4 },
+        windowLimits: {
+          fiveHour: { used: 0.4, cap: 14, resetAt: localTimestamp(2026, 8, 26, 19, 23) * 1000 },
+          weekly: { used: 4.7, cap: 35, resetAt: localTimestamp(2026, 8, 26) * 1000 },
+        },
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      data: { status: "active", planId: "individual-goat", currentPeriodEnd: periodEnd },
+    }), { status: 200 });
+  });
+  const fake = makeFakeContext({ provider: "cmdc" });
+  const controller = createProviderUsageController();
+
+  await controller.refresh(fake.ctx);
+
+  assert.equal(requestUrl.endsWith("/subscriptions"), true);
+  assert.equal(requestHeaders?.get("authorization"), "Bearer test-key");
+  assert.deepEqual(fake.statusCalls(), [{
+    id: TUI_PROVIDER_USAGE_STATUS_ID,
+    value: "commandcode [97%|87%|93%]",
   }]);
   controller.clear(fake.ctx);
 });

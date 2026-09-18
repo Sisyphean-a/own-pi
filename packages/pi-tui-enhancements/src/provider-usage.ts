@@ -2,13 +2,34 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export const CODEX_PROVIDER_ID = "openai-codex";
 export const OPENCODE_GO_PROVIDER_ID = "opencode-go";
+export const COMMANDCODE_PROVIDER_ID = "commandcode";
 export const TUI_PROVIDER_USAGE_STATUS_ID = "tui-provider-usage";
 
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const OPENCODE_GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
+const COMMANDCODE_CREDITS_URL = "https://api.commandcode.ai/alpha/billing/credits";
+const COMMANDCODE_SUBSCRIPTIONS_URL = "https://api.commandcode.ai/alpha/billing/subscriptions";
 const CODEX_USAGE_REFRESH_MS = 5 * 60 * 1000;
 const CODEX_USAGE_TIMEOUT_MS = 10_000;
 const CODEX_AUTH_CLAIM = "https://api.openai.com/auth";
+
+// Rule: Command Code provider 可能被命名为 commandcode / command-code / cmdc，
+// 统一按名称特征路由，而不是绑定单个 provider id。
+const COMMANDCODE_PROVIDER_PATTERN = /command[-_ ]?code|\bcmdc\b/i;
+
+// Rule: 月度额度是订阅套餐总额度，官方 CLI 也用同一张硬编码表；
+// 未知套餐不猜测额度，只降级为不展示月度窗口。
+const COMMANDCODE_PLAN_CREDITS: Record<string, number> = {
+  "individual-go": 10,
+  "individual-goat": 70,
+  "individual-pro": 30,
+  "individual-pro-v1": 80,
+  "individual-provider": 15,
+  "individual-max": 150,
+  "individual-ultra": 300,
+  "teams-pro": 40,
+};
+const COMMANDCODE_PLAN_KEYS = Object.keys(COMMANDCODE_PLAN_CREDITS).sort((a, b) => b.length - a.length);
 
 type JsonObject = Record<string, unknown>;
 
@@ -30,9 +51,16 @@ export type OpenCodeGoUsage = {
   monthly?: CodexUsageWindow;
 };
 
+export type CommandCodeUsage = {
+  fiveHour?: CodexUsageWindow;
+  weekly?: CodexUsageWindow;
+  monthly?: CodexUsageWindow;
+};
+
 export type ProviderUsage =
   | { provider: typeof CODEX_PROVIDER_ID; usage: CodexUsage }
-  | { provider: typeof OPENCODE_GO_PROVIDER_ID; usage: OpenCodeGoUsage };
+  | { provider: typeof OPENCODE_GO_PROVIDER_ID; usage: OpenCodeGoUsage }
+  | { provider: typeof COMMANDCODE_PROVIDER_ID; usage: CommandCodeUsage };
 
 export type ProviderUsageController = {
   clear(ctx: ExtensionContext): void;
@@ -111,6 +139,78 @@ function parseCodexUsage(payload: unknown, options: ProviderUsageFetchOptions): 
   return { fiveHour, weekly };
 }
 
+export function isCommandCodeProvider(provider: unknown): boolean {
+  return typeof provider === "string" && COMMANDCODE_PROVIDER_PATTERN.test(provider.trim());
+}
+
+function getCommandCodePlanTotal(planId: unknown): number | undefined {
+  if (typeof planId !== "string" || planId.length === 0) return undefined;
+  const normalized = planId.toLowerCase().replace(/_/g, "-");
+  const key = COMMANDCODE_PLAN_KEYS.find((candidate) => normalized.startsWith(candidate));
+  return key === undefined ? undefined : COMMANDCODE_PLAN_CREDITS[key];
+}
+
+// Command Code 的 used/cap 是额度数值而不是百分比，resetAt 为毫秒时间戳。
+function getCommandCodeWindow(value: unknown, requireResetAt: boolean): CodexUsageWindow | undefined {
+  const window = asRecord(value);
+  const used = window.used;
+  const cap = window.cap;
+  if (typeof used !== "number" || !Number.isFinite(used)) return undefined;
+  if (typeof cap !== "number" || !Number.isFinite(cap) || cap <= 0) return undefined;
+  const remainingPercent = Math.round(100 - Math.min(100, Math.max(0, used / cap * 100)));
+  const resetAtMs = window.resetAt;
+  if (typeof resetAtMs !== "number" || !Number.isFinite(resetAtMs) || resetAtMs <= 0) {
+    return requireResetAt ? undefined : { remainingPercent };
+  }
+  const resetAt = resetAtMs / 1000;
+  if (!isValidResetAt(resetAt)) return requireResetAt ? undefined : { remainingPercent };
+  return { remainingPercent, resetAt };
+}
+
+function getCommandCodeMonthlyWindow(options: {
+  credits: JsonObject;
+  planId: unknown;
+  periodEnd: unknown;
+  requireResetAt: boolean;
+}): CodexUsageWindow | undefined {
+  const cap = getCommandCodePlanTotal(options.planId);
+  const remaining = options.credits.monthlyCredits;
+  if (cap === undefined || cap <= 0) return undefined;
+  if (typeof remaining !== "number" || !Number.isFinite(remaining)) return undefined;
+  const remainingPercent = Math.round(Math.min(100, Math.max(0, remaining / cap * 100)));
+  if (typeof options.periodEnd !== "string" || options.periodEnd.length === 0) {
+    return options.requireResetAt ? undefined : { remainingPercent };
+  }
+  const resetAt = Date.parse(options.periodEnd) / 1000;
+  if (!Number.isFinite(resetAt) || resetAt <= 0 || !isValidResetAt(resetAt)) {
+    return options.requireResetAt ? undefined : { remainingPercent };
+  }
+  return { remainingPercent, resetAt };
+}
+
+function parseCommandCodeUsage(
+  creditsPayload: unknown,
+  subscriptionPayload: unknown,
+  options: ProviderUsageFetchOptions,
+): CommandCodeUsage | undefined {
+  const envelope = asRecord(creditsPayload);
+  const limits = asRecord(envelope.windowLimits);
+  const subscription = asRecord(asRecord(subscriptionPayload).data);
+  const requireResetAt = options.requireResetAt !== false;
+  const fiveHour = getCommandCodeWindow(limits.fiveHour, requireResetAt);
+  const weekly = getCommandCodeWindow(limits.weekly, requireResetAt);
+  // Guarantee: 月度窗口依赖套餐表，缺失时不影响 5 小时/周窗口的展示。
+  const monthly = getCommandCodeMonthlyWindow({
+    credits: asRecord(envelope.credits),
+    planId: subscription.planId,
+    periodEnd: subscription.currentPeriodEnd,
+    requireResetAt,
+  });
+  if (!options.allowPartial && (!fiveHour || !weekly)) return undefined;
+  if (!fiveHour && !weekly && !monthly) return undefined;
+  return { fiveHour, weekly, monthly };
+}
+
 function getOpenCodeGoWindow(value: unknown, requireResetAt: boolean): CodexUsageWindow | undefined {
   const window = asRecord(value);
   const percent = window.percent;
@@ -183,10 +283,19 @@ export function formatOpenCodeGoUsage(usage: OpenCodeGoUsage): string {
   return windows.length > 0 ? `opencode-go ${windows.join(" ")}` : "";
 }
 
+export function formatCommandCodeUsage(usage: CommandCodeUsage): string {
+  const windows = [
+    formatWindow(usage.fiveHour, "time"),
+    formatWindow(usage.weekly, "date"),
+    formatWindow(usage.monthly, "date"),
+  ].filter((window): window is string => window !== undefined);
+  return windows.length > 0 ? `commandcode ${windows.join(" ")}` : "";
+}
+
 export function formatProviderUsage(usage: ProviderUsage): string {
-  return usage.provider === CODEX_PROVIDER_ID
-    ? formatCodexUsage(usage.usage)
-    : formatOpenCodeGoUsage(usage.usage);
+  if (usage.provider === CODEX_PROVIDER_ID) return formatCodexUsage(usage.usage);
+  if (usage.provider === OPENCODE_GO_PROVIDER_ID) return formatOpenCodeGoUsage(usage.usage);
+  return formatCommandCodeUsage(usage.usage);
 }
 
 function compactPercent(window: CodexUsageWindow | undefined): string | undefined {
@@ -202,7 +311,9 @@ export function formatCompactProviderUsage(usage: ProviderUsage): string {
       compactPercent(usage.usage.monthly),
     ];
   const values = windows.filter((window): window is string => window !== undefined);
-  const label = usage.provider === CODEX_PROVIDER_ID ? "codex" : "opencode-go";
+  const label = usage.provider === CODEX_PROVIDER_ID
+    ? "codex"
+    : usage.provider === OPENCODE_GO_PROVIDER_ID ? "opencode-go" : "commandcode";
   return `${label} [${values.join("|")}]`;
 }
 
@@ -286,6 +397,51 @@ export async function fetchOpenCodeGoUsage(
   }
 }
 
+// Flow: 先用官方 credits 接口取 5 小时/周窗口，再 best-effort 取订阅套餐
+// 推断月度额度；订阅失败时仍返回已拿到的窗口。
+export async function fetchCommandCodeUsage(
+  ctx: ExtensionContext,
+  signal?: AbortSignal,
+  options?: ProviderUsageFetchOptions,
+): Promise<CommandCodeUsage | undefined> {
+  if (signal?.aborted) return undefined;
+
+  const model = ctx.model;
+  if (!model || !isCommandCodeProvider(model.provider)) return undefined;
+
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok || typeof auth.apiKey !== "string" || auth.apiKey.length === 0) return undefined;
+  if (signal?.aborted) return undefined;
+
+  const controller = new AbortController();
+  const abort = (): void => controller.abort();
+  const timeout = setTimeout(abort, CODEX_USAGE_TIMEOUT_MS);
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    const headers = { Authorization: `Bearer ${auth.apiKey}` };
+    const creditsResponse = await fetch(COMMANDCODE_CREDITS_URL, {
+      headers,
+      signal: controller.signal,
+      redirect: "error",
+    });
+    if (!creditsResponse.ok) return undefined;
+    const creditsPayload = await creditsResponse.json();
+
+    const subscriptionResponse = await fetch(COMMANDCODE_SUBSCRIPTIONS_URL, {
+      headers,
+      signal: controller.signal,
+      redirect: "error",
+    }).catch(() => undefined);
+    const subscriptionPayload = subscriptionResponse?.ok
+      ? await subscriptionResponse.json().catch(() => undefined)
+      : undefined;
+    return parseCommandCodeUsage(creditsPayload, subscriptionPayload, getFetchOptions(options));
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
 export async function fetchProviderUsage(
   ctx: ExtensionContext,
   signal?: AbortSignal,
@@ -298,6 +454,10 @@ export async function fetchProviderUsage(
   if (ctx.model?.provider === OPENCODE_GO_PROVIDER_ID) {
     const usage = await fetchOpenCodeGoUsage(ctx, signal, options);
     return usage ? { provider: OPENCODE_GO_PROVIDER_ID, usage } : undefined;
+  }
+  if (isCommandCodeProvider(ctx.model?.provider)) {
+    const usage = await fetchCommandCodeUsage(ctx, signal, options);
+    return usage ? { provider: COMMANDCODE_PROVIDER_ID, usage } : undefined;
   }
   return undefined;
 }
@@ -324,7 +484,7 @@ export function createProviderUsageController(): ProviderUsageController {
   };
 
   const isUsageProvider = (provider: unknown): provider is ProviderUsage["provider"] =>
-    provider === CODEX_PROVIDER_ID || provider === OPENCODE_GO_PROVIDER_ID;
+    provider === CODEX_PROVIDER_ID || provider === OPENCODE_GO_PROVIDER_ID || isCommandCodeProvider(provider);
 
   const scheduleRefresh = (ctx: ExtensionContext, request: number): void => {
     try {
