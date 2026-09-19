@@ -3,6 +3,7 @@ node_modules/
 
 # Test and package artifacts
 coverage/
+dist/
 *.tgz
 
 # Package-manager logs
