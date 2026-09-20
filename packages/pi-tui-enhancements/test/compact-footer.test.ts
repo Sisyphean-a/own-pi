@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createThinkingIndicator } from "../src/display/index.ts";
+import { createThinkingIndicator, restoreWorkingIndicator } from "../src/display/index.ts";
 import { createCompactFooter } from "../src/display/compact-footer.ts";
 
 const widthUtils = {
@@ -163,6 +163,20 @@ test("shows active thinking between statistics and the model", () => {
 
   assert.match(lines[0], /69\.5%\/272k \| ✻ Thinking…\s+\(openai-codex\) gpt-5\.6-sol • high$/);
   assert.equal(lines[1], "MCP: 3 servers enabled");
+});
+
+test("keeps pi's native working indicator visible when compact footer installs", () => {
+  let visible: boolean | undefined;
+  restoreWorkingIndicator({
+    hasUI: true,
+    ui: {
+      setWorkingVisible(value: boolean) {
+        visible = value;
+      },
+    },
+  } as never);
+
+  assert.equal(visible, true);
 });
 
 test("advances the thinking glyph every 125ms and loops after eight frames", () => {

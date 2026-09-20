@@ -16,8 +16,8 @@ const packagesRoot = join(projectRoot, "packages");
 const defaultOutput = join(projectRoot, "dist", "own-pi-extensions.zip");
 const targets = [
   "pi-optimization",
-  "pi-advisor",
   "pi-observational-memory",
+  "pi-tui-enhancements",
 ];
 
 function usage() {
@@ -125,7 +125,10 @@ function createZip(stagingRoot, outputPath) {
       "-NoProfile",
       "-NonInteractive",
       "-Command",
+      // 规避宿主环境污染的 PSModulePath：按当前 PowerShell 的 PSHOME 导入匹配版本的归档模块。
       "$ErrorActionPreference = 'Stop'; " +
+        "$archiveModule = Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Archive/Microsoft.PowerShell.Archive.psd1'; " +
+        "Import-Module -Name $archiveModule -Force -ErrorAction Stop; " +
         "$items = Get-ChildItem -LiteralPath $env:OWN_PI_PACK_SOURCE; " +
         "Compress-Archive -Path $items.FullName -DestinationPath $env:OWN_PI_PACK_DEST -Force",
     ];

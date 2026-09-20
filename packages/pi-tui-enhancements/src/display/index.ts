@@ -38,6 +38,12 @@ function hasUiMethod<T extends keyof ExtensionContext["ui"]>(ctx: ExtensionConte
   }
 }
 
+export function restoreWorkingIndicator(ctx: ExtensionContext): void {
+  if (hasUiMethod(ctx, "setWorkingVisible")) {
+    runOptional("内置工作指示器", () => ctx.ui.setWorkingVisible(true));
+  }
+}
+
 async function refreshUsage(controller: { refresh(ctx: ExtensionContext): Promise<void> }, ctx: ExtensionContext): Promise<void> {
   try {
     await controller.refresh(ctx);
@@ -168,9 +174,7 @@ export default async function displayEnhancements(pi: ExtensionAPI): Promise<voi
                   thinkingIndicator,
                 ));
             });
-            if (footerInstalled && hasUiMethod(ctx, "setWorkingVisible")) {
-              runOptional("内置工作指示器", () => ctx.ui.setWorkingVisible(false));
-            }
+            if (footerInstalled) restoreWorkingIndicator(ctx);
           }
         }
       } catch (error) {
