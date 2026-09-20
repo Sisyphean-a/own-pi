@@ -21,12 +21,6 @@ type WidthUtils = {
   truncateToWidth(text: string, width: number, ellipsis?: string): string;
 };
 
-type ThinkingIndicatorLike = {
-  isActive(): boolean;
-  getFrameIndex(): number;
-  onChange(callback: () => void): () => void;
-};
-
 type UsageTotals = {
   input: number;
   output: number;
@@ -39,8 +33,8 @@ type UsageTotals = {
  * footer 的 usage 增量缓存。
  *
  * Rule: 会话条目只在末尾追加，因此已累计的 usage 永不失效；只有条目数量变化或前缀身份改变
- * （reload、分支切换、压缩重写）才整体重算。footer 会被 Thinking 动画按 125ms 重绘，逐帧
- * 全量求和会让每帧成本随会话长度增长。
+ * （reload、分支切换、压缩重写）才整体重算。footer 每次重绘都调用 render，逐帧全量求和会让
+ * 每帧成本随会话长度增长。
  */
 type UsageMemo = UsageTotals & {
   count: number;
@@ -229,34 +223,6 @@ function alignRight(
   return widthUtils.truncateToWidth(renderedLeft + padding + renderedRight, width);
 }
 
-const THINKING_FRAMES = [
-  { glyph: "✻", tone: "thinkingLow" },
-  { glyph: "✢", tone: "thinkingMedium" },
-  { glyph: "✶", tone: "thinkingHigh" },
-  { glyph: "✷", tone: "thinkingXhigh" },
-  { glyph: "✸", tone: "thinkingXhigh" },
-  { glyph: "✷", tone: "thinkingHigh" },
-  { glyph: "✶", tone: "thinkingMedium" },
-  { glyph: "✢", tone: "thinkingLow" },
-] as const;
-
-function thinkingFrame(frameIndex: number) {
-  if (!Number.isFinite(frameIndex)) return THINKING_FRAMES[0];
-  const normalized = Math.trunc(frameIndex) % THINKING_FRAMES.length;
-  return THINKING_FRAMES[normalized < 0 ? normalized + THINKING_FRAMES.length : normalized];
-}
-
-function thinkingLeftCandidates(base: string, active: boolean, frameIndex: number, theme: ThemeLike): string[] {
-  if (!active) return [base];
-  const frame = thinkingFrame(frameIndex);
-  const glyph = theme.fg(frame.tone, frame.glyph);
-  // Guarantee: each frame occupies one glyph cell and keeps the footer from reflowing.
-  return [
-    base + ` ${glyph}${theme.fg("accent", " Thinking…")}`,
-    base + ` ${glyph}`,
-  ];
-}
-
 function fittingSummary(
   leftCandidates: string[],
   rightCandidates: string[],
@@ -276,17 +242,14 @@ export function createCompactFooter(
   theme: ThemeLike,
   footerData: FooterDataLike,
   widthUtils: WidthUtils,
-  thinkingIndicator?: ThinkingIndicatorLike,
 ) {
   const unsubscribeBranch = footerData.onBranchChange(() => tui.requestRender());
-  const unsubscribeThinking = thinkingIndicator?.onChange(() => tui.requestRender()) ?? (() => {});
   // 每帧重绘复用同一份增量缓存，只有新条目才需要求和。
   const usageMemo = emptyUsageMemo();
 
   return {
     dispose() {
       unsubscribeBranch();
-      unsubscribeThinking();
     },
     invalidate() {},
     render(width: number): string[] {
@@ -296,31 +259,18 @@ export function createCompactFooter(
       const stats = styleStats(statParts(ctx, usageMemo), theme);
       const identityStyled = theme.fg("dim", identity);
       const separator = theme.fg("dim", " | ");
-      const trailingSeparator = theme.fg("dim", " |");
-      const thinkingActive = thinkingIndicator?.isActive() ?? false;
-      const thinkingFrameIndex = thinkingIndicator?.getFrameIndex() ?? 0;
-      const combinedLeft = identityStyled + separator + stats + trailingSeparator;
+      const combinedLeft = identityStyled + separator + stats;
       const candidates = rightCandidates(ctx, footerData);
-      const oneLine = fittingSummary(
-        thinkingLeftCandidates(combinedLeft, thinkingActive, thinkingFrameIndex, theme),
-        candidates,
-        width,
-        widthUtils.visibleWidth,
-      );
+      const oneLine = fittingSummary([combinedLeft], candidates, width, widthUtils.visibleWidth);
       const lines: string[] = [];
 
       if (oneLine) {
         lines.push(alignRight(oneLine.left, oneLine.right, width, theme, widthUtils));
       } else {
         lines.push(widthUtils.truncateToWidth(identityStyled, width, theme.fg("dim", "...")));
-        const statsGroupCandidates = thinkingLeftCandidates(
-          stats + trailingSeparator,
-          thinkingActive,
-          thinkingFrameIndex,
-          theme,
-        );
-        const secondLine = fittingSummary(statsGroupCandidates, candidates, width, widthUtils.visibleWidth);
-        const secondLineLeft = secondLine?.left ?? statsGroupCandidates.at(-1) ?? stats;
+        const summaryLeft = stats;
+        const secondLine = fittingSummary([summaryLeft], candidates, width, widthUtils.visibleWidth);
+        const secondLineLeft = secondLine?.left ?? summaryLeft;
         const secondLineRight = secondLine?.right ?? candidates.at(-1) ?? "no-model";
         lines.push(alignRight(secondLineLeft, secondLineRight, width, theme, widthUtils));
       }

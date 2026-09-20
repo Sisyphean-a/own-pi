@@ -3,7 +3,7 @@ import {
   ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import { Container, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, sliceByColumn, Text, visibleWidth } from "@earendil-works/pi-tui";
 import {
   canJoinToolGroup,
   compactToolFrame,
@@ -101,6 +101,26 @@ type ToolRendererPatch = {
 };
 type ContainerPatch = { originalRender: ContainerPrototype["render"] };
 
+// Rule: 折叠调用行只能占一行，超出宽度时截断命令本体并保留默认后缀，
+// 让命令规模与输出规模在窄终端里也能看见。
+// Failure: 裁剪必须用 sliceByColumn 而非 truncateToWidth。truncateToWidth 会在
+// 截断处插入 \x1b[0m，而工具行背景由 Pi 的 Box 铺在整行外层，行内一个完整 reset
+// 就会让省略号、行数后缀和尾部空白掉回应用底色，形成半行深色块。
+export function formatCompactCallLine(text: string, suffix: string, width: number): string[] {
+  if (width <= 0) return [];
+  const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
+  const suffixWidth = visibleWidth(suffix);
+  if (suffixWidth >= width) {
+    return [sliceByColumn(suffix, 0, width, true)];
+  }
+  const budget = width - suffixWidth;
+  if (visibleWidth(firstLine) <= budget) {
+    return [firstLine + suffix];
+  }
+  const clipped = budget > 1 ? sliceByColumn(firstLine, 0, budget - 1, true) : "";
+  return [`${clipped}…${suffix}`];
+}
+
 class CompactCallText {
   suffix = "";
   text: string;
@@ -118,14 +138,7 @@ class CompactCallText {
   }
 
   render(width: number): string[] {
-    if (width <= 0) return [];
-    const firstLine = this.text.split(/\r?\n/, 1)[0] ?? "";
-    const suffixWidth = visibleWidth(this.suffix);
-    if (suffixWidth >= width) {
-      return [truncateToWidth(this.suffix, width, "")];
-    }
-    const prefix = truncateToWidth(firstLine, width - suffixWidth, "…");
-    return [prefix + this.suffix];
+    return formatCompactCallLine(this.text, this.suffix, width);
   }
 
   invalidate(): void {}

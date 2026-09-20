@@ -13,6 +13,8 @@ import {
   isCommandInputActive,
   shouldCompact,
 } from "../src/display/tool-policy.ts";
+import { formatCompactCallLine } from "../src/display/tool-rendering.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 test("recognizes Pi's current built-in renderer shape and preserves native edit rendering", () => {
   const edit = {
@@ -75,4 +77,22 @@ test("keeps collapsed tool height stable when streamed text ends with a newline"
   assert.deepEqual(trailingStreamLine, completeLine);
   assert.deepEqual(nextLineStarted, completeLine);
   assert.equal(completeLine.length, 4);
+});
+
+test("keeps the tool row background intact when a collapsed command is truncated", () => {
+  const command = "\x1b[38;2;138;190;183mrg -n 还款处理中与还款失败 packages docs -3 && echo done\x1b[39m";
+  const suffix = "\x1b[38;2;128;128;128m (2 lines)\x1b[39m";
+
+  const [short] = formatCompactCallLine(command, suffix, 40);
+  assert.equal(short.includes("\x1b[0m"), false, "行内不能出现完整 SGR reset，否则会打断工具行背景");
+  assert.ok(visibleWidth(short) <= 40);
+  assert.ok(short.endsWith(suffix));
+  assert.ok(short.includes("…"));
+
+  const [fits] = formatCompactCallLine(command, suffix, 200);
+  assert.equal(fits, command + suffix);
+
+  const [tiny] = formatCompactCallLine(command, suffix, 12);
+  assert.equal(tiny.includes("\x1b[0m"), false);
+  assert.ok(visibleWidth(tiny) <= 12);
 });

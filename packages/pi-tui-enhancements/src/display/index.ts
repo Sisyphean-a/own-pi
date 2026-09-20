@@ -60,55 +60,6 @@ function clearUsage(controller: { clear(ctx: ExtensionContext): void }, ctx: Ext
   }
 }
 
-type IntervalClock = {
-  setInterval(callback: () => void, delayMs: number): ReturnType<typeof setInterval>;
-  clearInterval(timer: ReturnType<typeof setInterval>): void;
-};
-
-const THINKING_FRAME_INTERVAL_MS = 125;
-const THINKING_FRAME_COUNT = 8;
-
-export function createThinkingIndicator(clock: IntervalClock = {
-  setInterval: (callback, delayMs) => setInterval(callback, delayMs),
-  clearInterval: (timer) => clearInterval(timer),
-}) {
-  let active = false;
-  let frameIndex = 0;
-  let timer: ReturnType<typeof setInterval> | undefined;
-  const listeners = new Set<() => void>();
-
-  const notify = () => {
-    for (const listener of listeners) listener();
-  };
-  const stopTimer = () => {
-    if (timer === undefined) return;
-    clock.clearInterval(timer);
-    timer = undefined;
-  };
-
-  return {
-    isActive: () => active,
-    getFrameIndex: () => frameIndex,
-    onChange(callback: () => void) {
-      listeners.add(callback);
-      return () => listeners.delete(callback);
-    },
-    setActive(next: boolean) {
-      if (active === next) return;
-      active = next;
-      frameIndex = 0;
-      stopTimer();
-      if (active) {
-        timer = clock.setInterval(() => {
-          frameIndex = (frameIndex + 1) % THINKING_FRAME_COUNT;
-          notify();
-        }, THINKING_FRAME_INTERVAL_MS);
-      }
-      notify();
-    },
-  };
-}
-
 export default async function displayEnhancements(pi: ExtensionAPI): Promise<void> {
   const [messageDisplay, toolRendering, usageModule, compactFooter] = await Promise.all([
     loadOptional("消息/思考显示", () => import("./message-display.ts")),
@@ -141,7 +92,6 @@ export default async function displayEnhancements(pi: ExtensionAPI): Promise<voi
   }
 
   let usageController: { clear(ctx: ExtensionContext): void; refresh(ctx: ExtensionContext): Promise<void> } | undefined;
-  const thinkingIndicator = createThinkingIndicator();
 
   // The controller constructor is local and should not be allowed to affect
   // display registration. Keep this small boundary explicit for old runtimes.
@@ -171,7 +121,6 @@ export default async function displayEnhancements(pi: ExtensionAPI): Promise<voi
                   theme,
                   footerData,
                   compactFooter.widthUtils,
-                  thinkingIndicator,
                 ));
             });
             if (footerInstalled) restoreWorkingIndicator(ctx);
@@ -195,12 +144,7 @@ export default async function displayEnhancements(pi: ExtensionAPI): Promise<voi
       });
     }
 
-    pi.on("turn_start", () => thinkingIndicator.setActive(true));
-    pi.on("tool_execution_start", () => thinkingIndicator.setActive(false));
-    pi.on("turn_end", () => thinkingIndicator.setActive(false));
-    pi.on("agent_settled", () => thinkingIndicator.setActive(false));
     pi.on("session_shutdown", (_event, ctx) => {
-      thinkingIndicator.setActive(false);
       if (usageController) clearUsage(usageController, ctx);
     });
 
