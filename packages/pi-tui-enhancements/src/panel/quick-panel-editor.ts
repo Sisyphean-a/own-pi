@@ -16,7 +16,7 @@ export class QuickPanelEditor extends CustomEditor {
     keybindings: KeybindingsManager,
     private readonly openPanel: () => void,
   ) {
-    super(tui, theme, keybindings, { embedWorkingStatus: true });
+    super(tui, theme, keybindings);
   }
 
   handleInput(data: string): void {

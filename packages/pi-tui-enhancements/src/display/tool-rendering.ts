@@ -3,8 +3,17 @@ import {
   ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import { Container, Text } from "@earendil-works/pi-tui";
-import { canJoinToolGroup, getCollapsedContentLineLimit, isBuiltInTool, shouldCompact } from "./tool-policy.ts";
+import { Container, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+  canJoinToolGroup,
+  compactToolFrame,
+  countTextLines,
+  firstLinePreview,
+  formatCommandMetrics,
+  getCollapsedContentLineLimit,
+  isBuiltInTool,
+  shouldCompact,
+} from "./tool-policy.ts";
 
 type Theme = {
   bold(text: string): string;
@@ -14,15 +23,22 @@ type Theme = {
 type ToolContent = { type?: string; text?: string };
 type ToolResult = { content?: ToolContent[]; details?: Record<string, unknown> };
 type ToolResultOptions = { expanded: boolean; isPartial: boolean };
-type CallComponent = { setText(text: string): void };
+type CallComponent = {
+  setText(text: string): void;
+  setSuffix?(suffix: string): void;
+};
 type ToolRenderState = {
   leanCallComponent?: CallComponent;
   leanCallText?: string;
   leanCallSuffix?: string;
+  leanCommandLines?: number;
+  leanOutputLines?: number;
+  leanErrorText?: string;
 };
 type ToolRenderContext = {
   args?: unknown;
   cwd?: string;
+  expanded?: boolean;
   isError?: boolean;
   state?: ToolRenderState;
 };
@@ -72,12 +88,39 @@ const OSC133_PATTERN = /\x1b\]133;[ABC](?:\x07|\x1b\\)/g;
 
 type Patched<T> = T & Record<PropertyKey, unknown>;
 type ToolRendererPatch = {
-  originalCallRenderer: ToolCallRenderer;
-  originalResultRenderer: ToolResultRenderer;
+  originalCallRenderer: ToolExecutionPrototype["getCallRenderer"];
+  originalResultRenderer: ToolExecutionPrototype["getResultRenderer"];
   originalRenderShell: ToolExecutionPrototype["getRenderShell"];
   originalRender: ToolExecutionPrototype["render"];
 };
 type ContainerPatch = { originalRender: ContainerPrototype["render"] };
+
+class CompactCallText {
+  suffix = "";
+
+  constructor(public text: string) {}
+
+  setText(text: string): void {
+    this.text = text;
+  }
+
+  setSuffix(suffix: string): void {
+    this.suffix = suffix;
+  }
+
+  render(width: number): string[] {
+    if (width <= 0) return [];
+    const firstLine = this.text.split(/\r?\n/, 1)[0] ?? "";
+    const suffixWidth = visibleWidth(this.suffix);
+    if (suffixWidth >= width) {
+      return [truncateToWidth(this.suffix, width, "")];
+    }
+    const prefix = truncateToWidth(firstLine, width - suffixWidth, "…");
+    return [prefix + this.suffix];
+  }
+
+  invalidate(): void {}
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -85,18 +128,13 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function getText(result: ToolResult): string {
+function getRawText(result: ToolResult): string {
   return (result.content ?? [])
     .filter((block): block is ToolContent & { type: "text"; text: string } =>
       block.type === "text" && typeof block.text === "string",
     )
     .map((block) => block.text)
-    .join("\n")
-    .trim();
-}
-
-function countLines(text: string): number {
-  return text ? text.split(/\r?\n/).length : 0;
+    .join("\n");
 }
 
 function formatToolName(toolName: string): string {
@@ -206,13 +244,31 @@ function getTextArgument(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function formatShellCall(
+  toolName: "bash" | "powershell",
+  args: Record<string, unknown>,
+  theme: Theme,
+  expanded = false,
+): Text | CompactCallText {
+  const command = typeof args.command === "string" ? args.command : "";
+  const preview = expanded ? command : firstLinePreview(command).text;
+  const prompt = toolName === "powershell" ? "PS>" : "$";
+  const timeout = typeof args.timeout === "number" && args.timeout > 0
+    ? theme.fg("muted", ` (timeout ${args.timeout}s)`)
+    : "";
+  const text = theme.fg("toolTitle", theme.bold(`${prompt} `)) +
+    theme.fg("accent", preview || "…") +
+    timeout;
+  return expanded ? new Text(text, 0, 0) : new CompactCallText(text);
+}
+
 function formatCustomCall(
   toolName: string,
   toolDefinition: ToolDefinitionShape | undefined,
   args: Record<string, unknown>,
   theme: Theme,
   cwd?: string,
-): Text {
+): Text | CompactCallText {
   const title = formatToolTitle(toolName, toolDefinition);
   const primaryKey = pickPrimaryKey(toolDefinition, args);
   const primaryValue = primaryKey ? getTextArgument(args[primaryKey]) : undefined;
@@ -221,10 +277,9 @@ function formatCustomCall(
       return formatPathCall(title, primaryValue, theme, cwd);
     }
     const suffix = primaryKey === "language" && typeof args.code === "string" ? " code" : "";
-    return new Text(
-      theme.fg("toolTitle", theme.bold(`${title} `)) + theme.fg("accent", primaryValue + suffix),
-      0,
-      0,
+    const preview = firstLinePreview(primaryValue).text;
+    return new CompactCallText(
+      theme.fg("toolTitle", theme.bold(`${title} `)) + theme.fg("accent", preview + suffix),
     );
   }
 
@@ -245,10 +300,8 @@ function formatCustomCall(
       ? `${args.language} code`
       : undefined);
   if (summary) {
-    return new Text(
-      theme.fg("toolTitle", theme.bold(`${title} `)) + theme.fg("accent", summary),
-      0,
-      0,
+    return new CompactCallText(
+      theme.fg("toolTitle", theme.bold(`${title} `)) + theme.fg("accent", firstLinePreview(summary).text),
     );
   }
 
@@ -267,15 +320,47 @@ function formatCall(
   args: unknown,
   theme: Theme,
   context?: ToolRenderContext,
-): Text {
+): Text | CompactCallText {
   const record = asRecord(args);
   if (toolName === "read") {
     return formatReadCall(record, theme, context?.cwd);
   }
+  if (toolName === "bash" || toolName === "powershell") {
+    return formatShellCall(toolName, record, theme, context?.expanded === true);
+  }
   return formatCustomCall(toolName, toolDefinition, record, theme, context?.cwd);
 }
 
-function rememberCallComponent(component: unknown, context?: ToolRenderContext): unknown {
+function setCallText(component: CallComponent, text: string, suffix: string): void {
+  if (component.setSuffix) {
+    component.setText(text);
+    component.setSuffix(suffix);
+    return;
+  }
+  component.setText(text + suffix);
+}
+
+function refreshCallComponent(state: ToolRenderState, theme: Theme): void {
+  if (!state.leanCallComponent || state.leanCallText === undefined) return;
+
+  if (state.leanCommandLines !== undefined) {
+    const metrics = theme.fg("muted", ` ${formatCommandMetrics(state.leanCommandLines, state.leanOutputLines)}`);
+    const error = state.leanErrorText
+      ? theme.fg("error", ` (error: ${state.leanErrorText})`)
+      : "";
+    setCallText(state.leanCallComponent, state.leanCallText, metrics + error);
+    return;
+  }
+
+  setCallText(state.leanCallComponent, state.leanCallText, state.leanCallSuffix ?? "");
+}
+
+function rememberCallComponent(
+  component: unknown,
+  args: unknown,
+  theme: Theme,
+  context?: ToolRenderContext,
+): unknown {
   const state = context?.state;
   const componentRecord = asRecord(component);
   const text = componentRecord.text;
@@ -284,27 +369,49 @@ function rememberCallComponent(component: unknown, context?: ToolRenderContext):
     return component;
   }
 
+  const command = asRecord(args).command;
+  state.leanCommandLines = typeof command === "string" && command.length > 0
+    ? countTextLines(command)
+    : undefined;
   state.leanCallComponent = component as CallComponent;
   state.leanCallText = text;
-  if (state.leanCallSuffix) {
-    state.leanCallComponent.setText(text + state.leanCallSuffix);
-  }
+  refreshCallComponent(state, theme);
   return component;
 }
 
-function updateCallSuffix(context: ToolRenderContext | undefined, suffix: string): void {
+function updateCallSuffix(context: ToolRenderContext | undefined, suffix: string, theme: Theme): void {
   const state = context?.state;
-  if (!state) {
-    return;
-  }
+  if (!state) return;
   state.leanCallSuffix = suffix;
-  if (state.leanCallComponent && state.leanCallText !== undefined) {
-    state.leanCallComponent.setText(state.leanCallText + suffix);
-  }
+  refreshCallComponent(state, theme);
+}
+
+function updateCommandResult(
+  context: ToolRenderContext | undefined,
+  theme: Theme,
+  outputLines: number | undefined,
+  errorText?: string,
+): void {
+  const state = context?.state;
+  if (!state || state.leanCommandLines === undefined) return;
+  state.leanOutputLines = outputLines;
+  state.leanErrorText = errorText;
+  refreshCallComponent(state, theme);
 }
 
 function formatLineCountSuffix(lines: number, theme: Theme): string {
   return theme.fg("muted", ` (${lines} ${lines === 1 ? "line" : "lines"})`);
+}
+
+function resultOutputLineCount(result: ToolResult): number {
+  const truncation = asRecord(result.details?.truncation);
+  if (typeof truncation.totalLines === "number" && truncation.totalLines >= 0) {
+    return Math.floor(truncation.totalLines);
+  }
+  if (typeof truncation.outputLines === "number" && truncation.outputLines >= 0) {
+    return Math.floor(truncation.outputLines);
+  }
+  return countTextLines(getRawText(result));
 }
 
 function emptyResult(): Text {
@@ -322,21 +429,33 @@ function compactResult(
   theme: Theme,
   context?: ToolRenderContext,
 ): Text {
-  const output = getText(result);
-  if (options.isPartial) {
-    updateCallSuffix(context, "");
-    return emptyResult();
-  }
-  if (context?.isError) {
-    updateCallSuffix(context, theme.fg("error", ` (error: ${firstLine(output)})`));
-    return emptyResult();
+  const rawOutput = getRawText(result);
+  const output = rawOutput.trim();
+  const commandCall = context?.state?.leanCommandLines !== undefined;
+  if (commandCall) {
+    const outputLines = options.isPartial && rawOutput.length === 0
+      ? undefined
+      : resultOutputLineCount(result);
+    updateCommandResult(
+      context,
+      theme,
+      outputLines,
+      context?.isError ? firstLine(output) : undefined,
+    );
+    if (context?.isError) return emptyResult();
+  } else {
+    if (options.isPartial) {
+      updateCallSuffix(context, "", theme);
+      return emptyResult();
+    }
+    if (context?.isError) {
+      updateCallSuffix(context, theme.fg("error", ` (error: ${firstLine(output)})`), theme);
+      return emptyResult();
+    }
+    updateCallSuffix(context, formatLineCountSuffix(resultOutputLineCount(result), theme), theme);
   }
 
-  const truncation = asRecord(result.details?.truncation);
-  const outputLines = typeof truncation.outputLines === "number" && truncation.outputLines >= 0
-    ? Math.floor(truncation.outputLines)
-    : countLines(output);
-  updateCallSuffix(context, formatLineCountSuffix(outputLines, theme));
+  if (options.isPartial) return emptyResult();
 
   if (options.expanded) {
     return new Text(
@@ -359,8 +478,8 @@ function compactEditResult(
   }
 
   const diff = typeof result.details?.diff === "string" ? result.details.diff : undefined;
-  const lines = diff ? countLines(diff) : 0;
-  updateCallSuffix(context, formatLineCountSuffix(lines, theme));
+  const lines = diff ? countTextLines(diff) : 0;
+  updateCallSuffix(context, formatLineCountSuffix(lines, theme), theme);
   if (options.expanded && diff) {
     return new Text(renderDiff(diff), 0, 0);
   }
@@ -380,8 +499,8 @@ function compactWriteResult(
   const content = typeof asRecord(context?.args).content === "string"
     ? asRecord(context?.args).content as string
     : "";
-  const lines = countLines(content);
-  updateCallSuffix(context, formatLineCountSuffix(lines, theme));
+  const lines = countTextLines(content);
+  updateCallSuffix(context, formatLineCountSuffix(lines, theme), theme);
   if (options.expanded && content) {
     const numberedAdditions = content
       .split(/\r?\n/)
@@ -466,14 +585,16 @@ export function installToolRenderers(): void {
     if (!shouldCompact(this)) {
       return originalCallRenderer.call(this);
     }
-    if (isBuiltInTool(this) && this.toolName !== "read") {
+    if (isBuiltInTool(this) && this.toolName !== "read" && this.toolName !== "bash" && this.toolName !== "powershell") {
       const renderer = originalCallRenderer.call(this);
       return renderer
-        ? (args, theme, context) => rememberCallComponent(renderer(args, theme, context), context)
+        ? (args, theme, context) => rememberCallComponent(renderer(args, theme, context), args, theme, context)
         : undefined;
     }
     return (args, theme, context) => rememberCallComponent(
       formatCall(this.toolName, this.toolDefinition, args, theme, context),
+      args,
+      theme,
       context,
     );
   };
@@ -517,34 +638,5 @@ export function installToolRenderers(): void {
 
 function stripControlSequences(line: string): string {
   return line.replace(OSC133_PATTERN, "").replace(ANSI_PATTERN, "");
-}
-
-function compactToolFrame(
-  lines: string[],
-  removeLeadingSpacer = false,
-  maxContentLines?: number,
-): string[] {
-  if (lines.length === 0) {
-    return lines;
-  }
-
-  let start = 0;
-  let end = lines.length;
-  while (start < end && stripControlSequences(lines[start]).trim().length === 0) {
-    start++;
-  }
-  while (end > start && stripControlSequences(lines[end - 1]).trim().length === 0) {
-    end--;
-  }
-
-  const content = maxContentLines === undefined
-    ? lines.slice(start, end)
-    : lines.slice(start, end).slice(0, maxContentLines);
-  if (content.length === 0) {
-    return [];
-  }
-  const leadingSpacers = !removeLeadingSpacer ? lines.slice(0, start) : [];
-  const trailingSpacers = lines.slice(end);
-  return [...leadingSpacers, ...content, ...trailingSpacers];
 }
 
