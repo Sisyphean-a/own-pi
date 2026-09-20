@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteProvider } from "@earendil-works/pi-tui";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -47,21 +48,34 @@ export default async function quickPanel(pi: ExtensionAPI): Promise<void> {
   }
 
   const panel = await loadOptional("快捷面板", async () => {
-    const [quickPanelModule, editorModule] = await Promise.all([
+    const [quickPanelModule, editorModule, commandPaletteModule] = await Promise.all([
       import("./quick-panel.ts"),
       import("./quick-panel-editor.ts"),
+      import("./command-palette.ts"),
     ]);
     return {
       showQuickPanel: quickPanelModule.showQuickPanel,
       QuickPanelEditor: editorModule.QuickPanelEditor,
+      showCommandPalette: commandPaletteModule.showCommandPalette,
     };
   });
   if (!panel) return;
+
+  let commandProvider: AutocompleteProvider | undefined;
 
   if (typeof pi.on === "function") {
     pi.on("session_start", (_event, ctx) => {
       try {
         if (ctx.mode !== "tui" || typeof ctx.ui?.setEditorComponent !== "function") return;
+
+        commandProvider = undefined;
+        if (typeof ctx.ui.addAutocompleteProvider === "function") {
+          ctx.ui.addAutocompleteProvider((current) => {
+            commandProvider = current;
+            return current;
+          });
+        }
+
         ctx.ui.setEditorComponent((tui, theme, keybindings) => new panel.QuickPanelEditor(
           tui,
           theme,
@@ -69,6 +83,11 @@ export default async function quickPanel(pi: ExtensionAPI): Promise<void> {
           () => {
             void panel.showQuickPanel(pi, ctx).catch((error: unknown) => {
               notify(ctx, `无法打开快捷面板：${errorMessage(error)}`, "error");
+            });
+          },
+          () => {
+            void panel.showCommandPalette(pi, ctx, commandProvider, () => tui.requestRender()).catch((error: unknown) => {
+              notify(ctx, `无法打开命令面板：${errorMessage(error)}`, "error");
             });
           },
         ));

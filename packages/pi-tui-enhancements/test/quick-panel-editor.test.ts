@@ -12,15 +12,56 @@ class InspectableEditor extends QuickPanelEditor {
   }
 }
 
-function createEditor(): InspectableEditor {
+function createEditor(
+  openPanel: () => void = () => {},
+  openCommandPalette: () => void = () => {},
+): InspectableEditor {
   const tui = { requestRender() {} } as unknown as EditorArgs[0];
   const theme = {
     borderColor: (text: string) => text,
     textColor: (text: string) => text,
   } as unknown as EditorArgs[1];
-  const keybindings = {} as EditorArgs[2];
-  return new InspectableEditor(tui, theme, keybindings, () => {});
+  const keybindings = { matches: () => false } as unknown as EditorArgs[2];
+  return new InspectableEditor(tui, theme, keybindings, openPanel, openCommandPalette);
 }
+
+test("opens the command palette for the legacy Ctrl+_ encoding of Ctrl+/", () => {
+  let opened = 0;
+  const editor = createEditor(() => {}, () => {
+    opened += 1;
+  });
+
+  editor.handleInput("\x1f");
+  editor.handleInput(String.fromCharCode(27) + "[47;5u");
+  editor.handleInput(String.fromCharCode(27) + "[63;5u");
+
+  assert.equal(opened, 3);
+});
+
+test("opens the custom command palette instead of native autocomplete for the first slash", () => {
+  let opened = 0;
+  const editor = createEditor(() => {}, () => {
+    opened += 1;
+  });
+
+  editor.handleInput("/");
+
+  assert.equal(opened, 1);
+  assert.equal(editor.getText(), "");
+});
+
+test("keeps slash input after the editor already contains text", () => {
+  let opened = 0;
+  const editor = createEditor(() => {}, () => {
+    opened += 1;
+  });
+  editor.setText("draft");
+
+  editor.handleInput("/");
+
+  assert.equal(opened, 0);
+  assert.equal(editor.getText(), "draft/");
+});
 
 test("draws the working status inside the input box top border", () => {
   const editor = createEditor();

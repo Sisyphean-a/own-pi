@@ -222,6 +222,11 @@ export class QuickPanel {
       return;
     }
 
+    if (matchesKey(data, Key.tab)) {
+      this.completeFilter();
+      return;
+    }
+
     this.filterInput.handleInput(data);
     this.filters[this.tab] = this.filterInput.getValue();
     this.filterItems();
@@ -264,7 +269,7 @@ export class QuickPanel {
   private helpText(): string {
     return this.tab === "combos" && this.items.combos.length === 0
       ? "暂无组合 · 配置 quick-panel.json 后重新打开"
-      : "←→ 切换 Tab · 输入筛选 · ↑↓ 选择 · Enter 确认 · Esc 取消";
+      : "←→ 切换页 · 输入筛选 · Tab 补全 · ↑↓ 选择 · Enter 确认 · Esc 取消";
   }
 
   private renderHelp(width: number): string {
@@ -282,19 +287,33 @@ export class QuickPanel {
   }
 
   private filterItems(): void {
+    const items = this.filteredItems();
+    this.listContainer.removeChild(this.selectList);
+    this.selectList = this.createSelectList(items);
+    this.listContainer.addChild(this.selectList);
+  }
+
+  private completeFilter(): void {
+    const completion = this.filteredItems()[0];
+    if (!completion) return;
+
+    this.filterInput.setValue("");
+    this.filterInput.handleInput(completion.label || completion.value);
+    this.filters[this.tab] = this.filterInput.getValue();
+    this.filterItems();
+    this.tui.requestRender();
+  }
+
+  private filteredItems(): SelectItem[] {
     const query = this.filters[this.tab].trim().toLocaleLowerCase();
     const source = this.items[this.tab];
-    const items = query
+    return query
       ? source.filter((item) =>
           item.value.toLocaleLowerCase().includes(query) ||
           item.label.toLocaleLowerCase().includes(query) ||
           item.description?.toLocaleLowerCase().includes(query),
         )
       : source;
-
-    this.listContainer.removeChild(this.selectList);
-    this.selectList = this.createSelectList(items);
-    this.listContainer.addChild(this.selectList);
   }
 
   private createSelectList(items: SelectItem[]): SelectList {

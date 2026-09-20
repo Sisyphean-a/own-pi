@@ -14,7 +14,7 @@ pi install ./packages/pi-tui-enhancements
 
 ## 快捷面板
 
-- `Ctrl+L` 或 `/quick-panel` 打开面板；
+- 输入框为空时输入首字符 `/`，或使用 `Ctrl+/`，会打开命令面板；选择后把 `/命令 ` 插入当前输入框；`Ctrl+L` 或 `/quick-panel` 仍打开快捷面板；
 - 集中选择技能、模型、思考等级和模型组合；
 - 选择技能会在编辑器当前位置插入 `/skill:<name>`；
 - 输入中的已知 `/skill:<name>` 会展开为技能正文，技能 frontmatter 不会发送给模型；
