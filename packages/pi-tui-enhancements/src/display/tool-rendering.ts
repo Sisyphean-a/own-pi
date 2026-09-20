@@ -9,9 +9,11 @@ import {
   compactToolFrame,
   countTextLines,
   firstLinePreview,
-  formatCommandMetrics,
+  formatCommandInputMetric,
+  formatOutputMetric,
   getCollapsedContentLineLimit,
   isBuiltInTool,
+  isCommandInputActive,
   shouldCompact,
 } from "./tool-policy.ts";
 
@@ -32,14 +34,18 @@ type ToolRenderState = {
   leanCallText?: string;
   leanCallSuffix?: string;
   leanCommandLines?: number;
+  leanCommandInputActive?: boolean;
   leanOutputLines?: number;
   leanErrorText?: string;
 };
 type ToolRenderContext = {
   args?: unknown;
+  argsComplete?: boolean;
   cwd?: string;
+  executionStarted?: boolean;
   expanded?: boolean;
   isError?: boolean;
+  isPartial?: boolean;
   state?: ToolRenderState;
 };
 type ToolCallRenderer = (args: unknown, theme: Theme, context?: ToolRenderContext) => unknown;
@@ -97,8 +103,11 @@ type ContainerPatch = { originalRender: ContainerPrototype["render"] };
 
 class CompactCallText {
   suffix = "";
+  text: string;
 
-  constructor(public text: string) {}
+  constructor(text: string) {
+    this.text = text;
+  }
 
   setText(text: string): void {
     this.text = text;
@@ -344,7 +353,10 @@ function refreshCallComponent(state: ToolRenderState, theme: Theme): void {
   if (!state.leanCallComponent || state.leanCallText === undefined) return;
 
   if (state.leanCommandLines !== undefined) {
-    const metrics = theme.fg("muted", ` ${formatCommandMetrics(state.leanCommandLines, state.leanOutputLines)}`);
+    const metric = state.leanCommandInputActive
+      ? formatCommandInputMetric(state.leanCommandLines)
+      : formatOutputMetric(state.leanOutputLines);
+    const metrics = metric ? theme.fg("muted", ` ${metric}`) : "";
     const error = state.leanErrorText
       ? theme.fg("error", ` (error: ${state.leanErrorText})`)
       : "";
@@ -373,6 +385,8 @@ function rememberCallComponent(
   state.leanCommandLines = typeof command === "string" && command.length > 0
     ? countTextLines(command)
     : undefined;
+  state.leanCommandInputActive = state.leanCommandLines !== undefined &&
+    isCommandInputActive(context ?? {});
   state.leanCallComponent = component as CallComponent;
   state.leanCallText = text;
   refreshCallComponent(state, theme);

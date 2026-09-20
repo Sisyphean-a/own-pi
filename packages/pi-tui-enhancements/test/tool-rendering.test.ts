@@ -6,9 +6,11 @@ import {
   compactToolFrame,
   countTextLines,
   firstLinePreview,
-  formatCommandMetrics,
+  formatCommandInputMetric,
+  formatOutputMetric,
   getCollapsedContentLineLimit,
   isBuiltInTool,
+  isCommandInputActive,
   shouldCompact,
 } from "../src/display/tool-policy.ts";
 
@@ -48,14 +50,21 @@ test("keeps edit and write out of tool groups", () => {
   assert.equal(canJoinToolGroup({ toolName: "write" }), false);
 });
 
-test("summarizes multiline commands with the first line and separate command/output counts", () => {
+test("shows only the active command or output line metric", () => {
   assert.deepEqual(firstLinePreview("echo one\necho two\n"), {
     text: "echo one …",
     lineCount: 2,
   });
   assert.equal(countTextLines("first\nsecond\n"), 2);
-  assert.equal(formatCommandMetrics(2), "(cmd 2 lines · out …)");
-  assert.equal(formatCommandMetrics(2, 7), "(cmd 2 lines · out 7 lines)");
+  assert.equal(formatCommandInputMetric(1), "");
+  assert.equal(formatCommandInputMetric(2), "(2 lines)");
+  assert.equal(formatOutputMetric(), "(out …)");
+  assert.equal(formatOutputMetric(1), "(out 1 line)");
+  assert.equal(formatOutputMetric(7), "(out 7 lines)");
+  assert.equal(isCommandInputActive({}), true);
+  assert.equal(isCommandInputActive({ argsComplete: true }), false);
+  assert.equal(isCommandInputActive({ executionStarted: true }), false);
+  assert.equal(isCommandInputActive({ isPartial: false }), false);
 });
 
 test("keeps collapsed tool height stable when streamed text ends with a newline", () => {

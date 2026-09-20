@@ -57,9 +57,24 @@ export function firstLinePreview(text: string): { text: string; lineCount: numbe
   };
 }
 
-export function formatCommandMetrics(commandLines: number, outputLines?: number): string {
-  const lineLabel = (count: number) => `${count} ${count === 1 ? "line" : "lines"}`;
-  return `(cmd ${lineLabel(commandLines)} · out ${outputLines === undefined ? "…" : lineLabel(outputLines)})`;
+function formatLineLabel(count: number): string {
+  return `${count} ${count === 1 ? "line" : "lines"}`;
+}
+
+export function formatCommandInputMetric(commandLines: number): string {
+  return commandLines > 1 ? `(${formatLineLabel(commandLines)})` : "";
+}
+
+export function formatOutputMetric(outputLines?: number): string {
+  return `(out ${outputLines === undefined ? "…" : formatLineLabel(outputLines)})`;
+}
+
+export function isCommandInputActive(status: {
+  argsComplete?: boolean;
+  executionStarted?: boolean;
+  isPartial?: boolean;
+}): boolean {
+  return status.argsComplete !== true && status.executionStarted !== true && status.isPartial !== false;
 }
 
 function isBlankDisplayLine(line: string): boolean {
