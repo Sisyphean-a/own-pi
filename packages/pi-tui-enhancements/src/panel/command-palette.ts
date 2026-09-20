@@ -15,8 +15,42 @@ import {
 
 export type CommandPalettePi = Pick<ExtensionAPI, "getCommands">;
 
+// 这些命令不需要用户先在编辑器里补参数；交给 Pi 原生提交路径即可直接执行，
+// 其中会打开选择器的命令仍由 Pi 自己负责创建原生 UI。
+const directCommandNames = new Set([
+  "settings",
+  "model",
+  "tree",
+  "thinking",
+  "scoped-models",
+  "export",
+  "share",
+  "copy",
+  "session",
+  "changelog",
+  "hotkeys",
+  "fork",
+  "clone",
+  "trust",
+  "login",
+  "logout",
+  "new",
+  "compact",
+  "resume",
+  "reload",
+  "quit",
+]);
+
+function commandName(value: string): string {
+  return value.trim().replace(/^\/+/, "");
+}
+
+export function shouldExecuteCommand(value: string): boolean {
+  return directCommandNames.has(commandName(value));
+}
+
 export function commandInsertion(value: string): string {
-  const name = value.trim().replace(/^\/+/, "");
+  const name = commandName(value);
   return name.length > 0 ? `/${name} ` : "";
 }
 
@@ -283,6 +317,7 @@ export async function showCommandPalette(
   ctx: ExtensionContext,
   provider?: AutocompleteProvider,
   requestRender?: () => void,
+  executeCommand?: (command: string) => boolean,
 ): Promise<void> {
   if (ctx.mode !== "tui") {
     ctx.ui.notify("命令面板仅支持交互式终端", "error");
@@ -311,7 +346,10 @@ export async function showCommandPalette(
   );
 
   if (command) {
-    ctx.ui.pasteToEditor(commandInsertion(command));
+    const executed = shouldExecuteCommand(command) && executeCommand?.(command) === true;
+    if (!executed) {
+      ctx.ui.pasteToEditor(commandInsertion(command));
+    }
     requestRender?.();
   }
 }

@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
+import { bindThinkingState, createThinkingState } from "./thinking-state.ts";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -62,8 +63,10 @@ export default async function quickPanel(pi: ExtensionAPI): Promise<void> {
   if (!panel) return;
 
   let commandProvider: AutocompleteProvider | undefined;
+  const thinkingState = createThinkingState();
 
   if (typeof pi.on === "function") {
+    bindThinkingState(pi, thinkingState);
     pi.on("session_start", (_event, ctx) => {
       try {
         if (ctx.mode !== "tui" || typeof ctx.ui?.setEditorComponent !== "function") return;
@@ -85,11 +88,22 @@ export default async function quickPanel(pi: ExtensionAPI): Promise<void> {
               notify(ctx, `无法打开快捷面板：${errorMessage(error)}`, "error");
             });
           },
-          () => {
-            void panel.showCommandPalette(pi, ctx, commandProvider, () => tui.requestRender()).catch((error: unknown) => {
+          (editor) => {
+            void panel.showCommandPalette(
+              pi,
+              ctx,
+              commandProvider,
+              () => tui.requestRender(),
+              (command) => {
+                if (editor.getText().trim().length > 0) return false;
+                editor.submitCommand(command);
+                return true;
+              },
+            ).catch((error: unknown) => {
               notify(ctx, `无法打开命令面板：${errorMessage(error)}`, "error");
             });
           },
+          { thinking: thinkingState },
         ));
       } catch (error) {
         console.error(`[pi-tui-enhancements/panel] 编辑器接入失败，已隐藏快捷面板：${errorMessage(error)}`);
