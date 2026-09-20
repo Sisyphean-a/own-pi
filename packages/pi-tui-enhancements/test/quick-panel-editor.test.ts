@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { QuickPanelEditor, type QuickPanelEditorExtras } from "../src/panel/quick-panel-editor.ts";
-import { bindThinkingState, createThinkingState, type ThinkingState } from "../src/panel/thinking-state.ts";
+import { QuickPanelEditor } from "../src/panel/quick-panel-editor.ts";
 
 type EditorArgs = ConstructorParameters<typeof QuickPanelEditor>;
 
@@ -16,7 +15,6 @@ class InspectableEditor extends QuickPanelEditor {
 function createEditor(
   openPanel: () => void = () => {},
   openCommandPalette: (editor: QuickPanelEditor) => void = () => {},
-  extras: QuickPanelEditorExtras = {},
 ): InspectableEditor {
   const tui = { requestRender() {} } as unknown as EditorArgs[0];
   const theme = {
@@ -24,7 +22,7 @@ function createEditor(
     textColor: (text: string) => text,
   } as unknown as EditorArgs[1];
   const keybindings = { matches: () => false } as unknown as EditorArgs[2];
-  return new InspectableEditor(tui, theme, keybindings, openPanel, openCommandPalette, extras);
+  return new InspectableEditor(tui, theme, keybindings, openPanel, openCommandPalette);
 }
 
 function workingIndicator(): Parameters<InspectableEditor["setWorkingStatusIndicator"]>[0] {
@@ -96,100 +94,10 @@ test("draws the working status inside the input box top border", () => {
 
   const border = editor.exposeTopBorder(60);
   assert.ok(border.includes("Working…"), `上边框应包含工作状态：${border}`);
+  // 状态文本后面直接接边框横线：不再有额外的思考图标。
+  assert.match(border, /⠋ Working… ─/);
+  assert.doesNotMatch(border, /[✻✢✶✷✸]/);
 
   editor.setWorkingStatusIndicator(undefined);
   assert.equal(editor.exposeTopBorder(60).includes("Working…"), false);
-});
-
-test("shows the animated thinking glyph only while the model is generating", () => {
-  const thinking = createThinkingState();
-  const editor = createEditor(() => {}, () => {}, { thinking });
-  editor.setWorkingStatusIndicator(workingIndicator());
-
-  const originalNow = Date.now;
-  try {
-    Date.now = () => 0;
-    // 跑工具（thinking 未激活）时只剩 Working…，没有图标。
-    assert.equal(editor.exposeTopBorder(60).includes("✻"), false);
-
-    thinking.setActive(true);
-    assert.match(editor.exposeTopBorder(60), /⠋ Working… ✻/);
-    Date.now = () => 125;
-    assert.match(editor.exposeTopBorder(60), /⠋ Working… ✢/);
-
-    // 同一帧同一时刻下，思考结束立刻恢复为纯状态文本。
-    thinking.setActive(false);
-    assert.doesNotMatch(editor.exposeTopBorder(60), /[✻✢✶✷✸]/);
-  } finally {
-    Date.now = originalNow;
-  }
-
-  // 没有注入状态时视为不在思考，不显示图标。
-  const plain = createEditor();
-  plain.setWorkingStatusIndicator(workingIndicator());
-  assert.equal(plain.exposeTopBorder(60).includes("✻"), false);
-});
-
-test("colors the thinking glyph with the editor border color of the current thinking level", () => {
-  const thinking = createThinkingState();
-  thinking.setActive(true);
-  const tui = { requestRender() {} } as unknown as EditorArgs[0];
-  const theme = {
-    borderColor: (text: string) => `<level>${text}</level>`,
-    textColor: (text: string) => text,
-  } as unknown as EditorArgs[1];
-  const editor = new InspectableEditor(tui, theme, {} as unknown as EditorArgs[2], () => {}, () => {}, { thinking });
-  editor.setWorkingStatusIndicator(workingIndicator());
-
-  const originalNow = Date.now;
-  try {
-    Date.now = () => 0;
-    // 图标用当前思考等级色（= Pi 更新 editor.borderColor 的那份）；状态文本保持自己的颜色。
-    assert.match(editor.exposeTopBorder(60), /⠋ Working… <level>✻<\/level>/);
-
-    // Pi 在 thinking_level_changed 时原地改这个字段，颜色随之变化。
-    editor.borderColor = (text: string) => `<xhigh>${text}</xhigh>`;
-    assert.match(editor.exposeTopBorder(60), /<xhigh>✻<\/xhigh>/);
-  } finally {
-    Date.now = originalNow;
-  }
-});
-
-test("keeps the glyph from overflowing narrow borders", () => {
-  const thinking = createThinkingState();
-  thinking.setActive(true);
-  const editor = createEditor(() => {}, () => {}, { thinking });
-  editor.setWorkingStatusIndicator(workingIndicator());
-
-  for (const width of [40, 20, 12]) {
-    const border = editor.exposeTopBorder(width).replace(/\x1b\[[0-9;]*m/g, "");
-    assert.equal([...border].length, width, `宽度 ${width} 的上边框应正好占满 ${width} 列：${border}`);
-  }
-});
-
-test("maps turn events to the thinking state", () => {
-  const handlers = new Map<string, () => void>();
-  const state: ThinkingState = createThinkingState();
-  bindThinkingState({
-    on(event, handler) {
-      handlers.set(event, handler);
-    },
-  }, state);
-
-  assert.deepEqual([...handlers.keys()].sort(), [
-    "agent_settled",
-    "session_shutdown",
-    "tool_execution_start",
-    "turn_end",
-    "turn_start",
-  ]);
-
-  handlers.get("turn_start")?.();
-  assert.equal(state.isActive(), true);
-  for (const event of ["tool_execution_start", "turn_end", "agent_settled", "session_shutdown"]) {
-    handlers.get("turn_start")?.();
-    assert.equal(state.isActive(), true);
-    handlers.get(event)?.();
-    assert.equal(state.isActive(), false, `${event} 应结束思考状态`);
-  }
 });
