@@ -326,3 +326,66 @@ test("silences TypeScript checks when @types/node is not available", async (t) =
   assert.equal(outcome.status, "unavailable");
   assert.match(outcome.reason, /@types\/node/);
 });
+
+function withFakeServer() {
+  return resolveServerOverrides({
+    typescript: {
+      command: process.execPath,
+      args: [fakeServer],
+      rootMarkers: ["package.json"],
+    },
+  }).servers;
+}
+
+function delayInitialize(t, delayMs) {
+  const previous = process.env.FAKE_INITIALIZE_DELAY_MS;
+  process.env.FAKE_INITIALIZE_DELAY_MS = String(delayMs);
+  t.after(() => {
+    if (previous === undefined) delete process.env.FAKE_INITIALIZE_DELAY_MS;
+    else process.env.FAKE_INITIALIZE_DELAY_MS = previous;
+  });
+}
+
+test("reuses an in-flight language server launch for concurrent checks", async (t) => {
+  // 冷启动慢于并发窗口，让第二次检查在前一个客户端完成初始化前进入 getClient。
+  delayInitialize(t, 300);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-concurrent-launch-"));
+  const filePath = path.join(workspace, "sample.ts");
+  await Promise.all([
+    writeFile(path.join(workspace, "package.json"), "{}\n"),
+    writeFile(filePath, "broken\n"),
+    mkdir(nodeTypesDir(workspace), WITH_NODE_TYPES),
+  ]);
+
+  const servers = withFakeServer();
+  const server = servers.find((candidate) => candidate.id === "typescript");
+  const service = new DiagnosticService({ workspaceRoot: workspace, servers });
+  t.after(() => service.close());
+
+  const [firstClient, secondClient] = await Promise.all([
+    service.getClient(server, workspace),
+    service.getClient(server, workspace),
+  ]);
+
+  assert.equal(firstClient, secondClient);
+  assert.deepEqual(service.snapshot().liveClients, [`typescript:${workspace}`]);
+});
+
+test("closing during an in-flight launch releases the starting client", async (t) => {
+  delayInitialize(t, 300);
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-close-while-starting-"));
+  const filePath = path.join(workspace, "sample.ts");
+  await Promise.all([
+    writeFile(path.join(workspace, "package.json"), "{}\n"),
+    writeFile(filePath, "broken\n"),
+    mkdir(nodeTypesDir(workspace), WITH_NODE_TYPES),
+  ]);
+
+  const service = new DiagnosticService({ workspaceRoot: workspace, servers: withFakeServer() });
+  const pending = service.checkFile(filePath);
+  await service.close();
+
+  const outcome = await pending;
+  assert.notEqual(outcome.status, "confirmed");
+  assert.deepEqual(service.snapshot().liveClients, []);
+});

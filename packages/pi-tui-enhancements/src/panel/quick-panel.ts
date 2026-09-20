@@ -114,7 +114,7 @@ export async function showQuickPanel(pi: ExtensionAPI, ctx: ExtensionContext): P
           skills,
           models,
           ctx.model,
-          ctx.thinkingLevel,
+          ctx.thinkingLevel ?? "off",
           thinkingLevels,
           combos,
           theme,

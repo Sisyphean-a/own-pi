@@ -35,6 +35,7 @@ export class DiagnosticService {
      * 重建 DiagnosticService 实例，因此关闭后拒绝新建客户端不会影响后续会话。
      */
     this.closed = false;
+    this.pendingClients = new Map();
   }
 
   async checkFile(filePath, signal) {
@@ -129,6 +130,9 @@ export class DiagnosticService {
     const clients = [...this.clients.values()];
     await Promise.allSettled(clients.map((client) => client.close()));
     this.clients.clear();
+    // Guarantee: 进行中的启动在返回前会关闭自己新建的客户端，close() 等它们落定。
+    await Promise.allSettled([...this.pendingClients.values()]);
+    this.pendingClients.clear();
   }
 
   snapshot() {
@@ -149,16 +153,24 @@ export class DiagnosticService {
       await existing.close();
     }
 
+    // Rule: 同一个 workspace 的启动可能并发：同步预算超时后，下一次编辑会在前一个启动完成前
+    // 再次进入这里。复用进行中的启动，否则后一个客户端覆盖前一个，前者再无人关闭。
+    const pending = this.pendingClients.get(key);
+    if (pending) return pending;
+    const launching = this.startClient(server, root, signal, key);
+    this.pendingClients.set(key, launching);
+    try {
+      return await launching;
+    } finally {
+      this.pendingClients.delete(key);
+    }
+  }
+
+  /** 启动并登记一个客户端；所有候选命令都不可用时返回 undefined。 */
+  async startClient(server, root, signal, key) {
     const initialization = initializationOptions(server, root, this.workspaceRoot);
     const typescriptBridge = typescriptBridgeOptions(server, root, this.workspaceRoot);
     const attempts = [];
-    // Rule: 启动是异步的，close() 可能在启动期间发生；返回前必须复查，否则会留下
-    // 无人持有的语言服务器进程（启动慢的 tsserver/Volar 尤其容易命中）。
-    const adopt = async (client) => {
-      if (!this.closed) return client;
-      await client.close().catch(() => undefined);
-      throw new Error("diagnostic service is closed");
-    };
     const launch = async () => {
       for (const commandSpec of server.commands) {
         for (const command of commandCandidates(root, this.workspaceRoot, commandSpec.command)) {
@@ -172,11 +184,18 @@ export class DiagnosticService {
               typescriptBridge,
               signal,
             });
-            const adopted = await adopt(client);
-            this.clients.set(key, adopted);
-            return adopted;
+            // Rule: closed 检查与写入 clients 必须在同一个同步块内完成；
+            // 否则 close() 可能在两者之间跑完整个关闭流程，让这个客户端留在已关闭的 map 里。
+            if (this.closed) {
+              await client.close().catch(() => undefined);
+              throw new Error("diagnostic service is closed");
+            }
+            this.clients.set(key, client);
+            return client;
           } catch (error) {
             attempts.push(error instanceof Error ? error.message : String(error));
+            // 关闭后不再尝试后续候选：每个候选启动后都会立即被关闭。
+            if (this.closed) throw error;
           }
         }
       }

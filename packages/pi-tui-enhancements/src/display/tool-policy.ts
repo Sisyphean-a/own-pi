@@ -66,7 +66,7 @@ export function formatCommandInputMetric(commandLines: number): string {
 }
 
 export function formatOutputMetric(outputLines?: number): string {
-  return `(out ${outputLines === undefined ? "…" : formatLineLabel(outputLines)})`;
+  return outputLines === undefined ? "" : `(${formatLineLabel(outputLines)})`;
 }
 
 export function isCommandInputActive(status: {

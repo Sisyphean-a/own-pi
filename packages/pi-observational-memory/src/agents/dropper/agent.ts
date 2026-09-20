@@ -1,10 +1,11 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
+import type { Message, Model, ModelThinkingLevel, ProviderHeaders } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
+import { createAgentContext } from "../agent-context.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
 import { DROPPER_SYSTEM } from "./prompts.js";
@@ -40,7 +41,7 @@ export type { CoverageSummaryByRelevance, CoverageTransitionSummaryByRelevance, 
 interface RunDropperArgs {
 	model: Model<any>;
 	apiKey?: string;
-	headers?: Record<string, string>;
+	headers?: ProviderHeaders;
 	env?: Record<string, string>;
 	reflections: Reflection[];
 	observations: Observation[];
@@ -235,7 +236,10 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 	const fullnessPercent = Math.round(fullness * 100);
 	const userText = `当前反思：\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\n当前观察：\n${joinOrEmpty(observations.map((observation) => observationToDropperLine(observation, coverageTierForObservation(observation, coverageById))))}\n\n活跃观察池：约 ${observationTokens.toLocaleString()} token；目标：约 ${targetTokens.toLocaleString()} token；相对目标的充满度：约 ${fullnessPercent.toLocaleString()}%；超出目标约 ${tokensOverTarget.toLocaleString()} token。\n本次允许的最大精简数：${maxDropsAllowed.toLocaleString()} 条观察。该上限的设定前提是：每一条候选都被判定为明确安全，才能把活跃池拉向目标。\n这个上限是硬上限，不是目标。若明确安全的观察更少，就少精简或不精简。`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
-	const context: AgentContext = { systemPrompt: DROPPER_SYSTEM, messages: [], tools: [dropObservations as AgentTool<any>] };
+	const context = createAgentContext(
+		DROPPER_SYSTEM,
+		[dropObservations as AgentTool<any>],
+	);
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
 	const thinkingLevel = args.thinkingLevel ?? "low";
 	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;

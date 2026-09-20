@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+
 import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, ObserverStreamError, runObserver } from "../src/agents/observer/agent.js";
 
 function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void, events: any[] = []): any {
@@ -41,7 +43,7 @@ describe("runObserver", () => {
 	it("keeps core observer prompt rules", async () => {
 		let systemPrompt = "";
 		const loop = fakeAgentLoop((_prompts, context) => {
-			systemPrompt = context.systemPrompt;
+			systemPrompt = getCurrentSystemPrompt(context.messages) ?? "";
 		});
 
 		await runObserver({ ...baseArgs, agentLoop: loop });

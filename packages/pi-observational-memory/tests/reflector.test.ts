@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+
 import {
 	normalizeSupportingObservationIds,
 	observationToReflectorLine,
@@ -33,7 +35,7 @@ describe("V3 reflector agent", () => {
 	it("keeps core reflector prompt guidance in V3 terms", async () => {
 		let systemPrompt = "";
 		const loop = fakeAgentLoop((_prompts, context) => {
-			systemPrompt = context.systemPrompt;
+			systemPrompt = getCurrentSystemPrompt(context.messages) ?? "";
 		});
 
 		await runReflector({ ...baseArgs, agentLoop: loop });

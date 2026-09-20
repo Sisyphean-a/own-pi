@@ -13,3 +13,4 @@
 ## 共享机制
 
 - [可选扩展依赖](shared/optional-extension-dependencies.md)：所有扩展对外部插件、可选 peer 和运行时能力的降级契约。
+- [Pi 运行时契约](shared/pi-runtime-contract.md)：扩展的编译与验证基线、低层 agent loop 上下文和 Pi 类型边界。

@@ -154,7 +154,7 @@ test("cancels captured and scheduled tasks", async () => {
   await harness.commands.get("wait")?.("1m -- never send", harness.ctx);
   await harness.commands.get("wait")?.("cancel task-1", harness.ctx);
   harness.advance(60_000);
-  assert.deepEqual(harness.sent, []);
+  assert.equal(harness.sent.length, 0);
 });
 
 test("clears pending tasks on shutdown and ignores late timer callbacks", async () => {
@@ -166,7 +166,7 @@ test("clears pending tasks on shutdown and ignores late timer callbacks", async 
   await harness.handlers.get("session_shutdown")?.({ reason: "new" }, harness.ctx);
   harness.advance(60_000);
   lateCallback?.();
-  assert.deepEqual(harness.sent, []);
+  assert.equal(harness.sent.length, 0);
 });
 
 test("retries after a synchronous Pi rejection without sending early", async () => {
@@ -176,11 +176,11 @@ test("retries after a synchronous Pi rejection without sending early", async () 
   harness.rejectNextSend(new Error("busy"));
 
   harness.advance(60_000);
-  assert.deepEqual(harness.sent, []);
+  assert.equal(harness.sent.length, 0);
   assert.ok(harness.notifications.some((message) => message.includes("30 秒后重试")));
 
   harness.advance(29_999);
-  assert.deepEqual(harness.sent, []);
+  assert.equal(harness.sent.length, 0);
   harness.advance(1);
   assert.deepEqual(harness.sent.map((item) => item.content), ["retry me"]);
 });

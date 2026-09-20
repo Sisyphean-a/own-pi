@@ -1,5 +1,5 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
+import type { Message, Model, ModelThinkingLevel, ProviderHeaders } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
@@ -10,11 +10,12 @@ import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
 import type { Observation, Relevance } from "../../session-ledger/index.js";
 import { observationLineTokenCount } from "../../tokens.js";
+import { createAgentContext } from "../agent-context.js";
 
 interface RunObserverArgs {
 	model: Model<any>;
 	apiKey?: string;
-	headers?: Record<string, string>;
+	headers?: ProviderHeaders;
 	env?: Record<string, string>;
 	priorReflections: string[];
 	priorObservations: string[];
@@ -178,11 +179,10 @@ ${conversation}`;
 		},
 	];
 
-	const context: AgentContext = {
-		systemPrompt: OBSERVER_SYSTEM,
-		messages: [],
-		tools: [recordObservations as AgentTool<any>],
-	};
+	const context = createAgentContext(
+		OBSERVER_SYSTEM,
+		[recordObservations as AgentTool<any>],
+	);
 
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
 	const thinkingLevel = args.thinkingLevel ?? "low";

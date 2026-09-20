@@ -20,7 +20,9 @@
     "src/"
   ],
   "scripts": {
-    "test": "node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
@@ -29,6 +31,11 @@
     "@earendil-works/pi-coding-agent": {
       "optional": true
     }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.86.0",
+    "@types/node": "^22.19.19",
+    "typescript": "^5.9.3"
   },
   "pi": {
     "extensions": [

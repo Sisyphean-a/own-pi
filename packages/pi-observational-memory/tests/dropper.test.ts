@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+
 import {
 	maxDropCountForPool,
 	normalizeDropObservationIds,
@@ -64,7 +66,7 @@ describe("V3 dropper agent", () => {
 	it("keeps core dropper safety guidance in V3 terms", async () => {
 		let systemPrompt = "";
 		const loop = fakeAgentLoop((_prompts, context) => {
-			systemPrompt = context.systemPrompt;
+			systemPrompt = getCurrentSystemPrompt(context.messages) ?? "";
 		});
 
 		await runDropper({ ...baseArgs, agentLoop: loop });

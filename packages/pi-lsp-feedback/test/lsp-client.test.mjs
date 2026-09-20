@@ -198,6 +198,41 @@ test("falls back to Vue parser diagnostics when the TypeScript bridge is unavail
   );
 });
 
+test("closes the TypeScript sidecar when the client closes during its launch", async (t) => {
+  const previousDelay = process.env.FAKE_INITIALIZE_DELAY_MS;
+  // sidecar 启动慢于 close()，让关闭流程读到空的 bridgeClient。
+  process.env.FAKE_INITIALIZE_DELAY_MS = "300";
+  t.after(() => {
+    if (previousDelay === undefined) delete process.env.FAKE_INITIALIZE_DELAY_MS;
+    else process.env.FAKE_INITIALIZE_DELAY_MS = previousDelay;
+  });
+
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-lsp-bridge-close-"));
+  const client = new LspClient({
+    command: process.execPath,
+    args: [fakeServer, "--vue"],
+    root,
+    serverId: "vue",
+    typescriptBridge: {
+      command: process.execPath,
+      args: [fakeServer, "--ts-bridge"],
+      initializationOptions: undefined,
+    },
+  });
+
+  const initializing = client.initialize().then(
+    () => undefined,
+    (error) => error,
+  );
+  await client.close();
+
+  const error = await initializing;
+  assert.ok(error instanceof Error);
+  assert.equal(client.bridgeClient, undefined);
+  assert.equal(client.process, undefined);
+  assert.equal(client.alive, false);
+});
+
 test("accepts a fresh versionless push publication as confirmed", async (t) => {
   const previous = process.env.FAKE_PUSH_ONLY;
   process.env.FAKE_PUSH_ONLY = "1";

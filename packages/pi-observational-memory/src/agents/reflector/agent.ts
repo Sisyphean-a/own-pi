@@ -1,10 +1,11 @@
-import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
+import type { Message, Model, ModelThinkingLevel, ProviderHeaders } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
+import { createAgentContext } from "../agent-context.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { truncateRecordContent } from "../../serialize.js";
@@ -22,7 +23,7 @@ import {
 interface RunReflectorArgs {
 	model: Model<any>;
 	apiKey?: string;
-	headers?: Record<string, string>;
+	headers?: ProviderHeaders;
 	env?: Record<string, string>;
 	reflections: Reflection[];
 	observations: Observation[];
@@ -168,7 +169,10 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 
 	const userText = `当前反思：\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\n当前观察：\n${joinOrEmpty(observations.map((observation) => observationToReflectorLine(observation, coverageTierForObservation(observation, coverageById))))}\n\n请把缺失的持久事实或模式沉淀成新的反思。如果没有足够稳定的内容，就不要调用工具。`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
-	const context: AgentContext = { systemPrompt: REFLECTOR_SYSTEM, messages: [], tools: [recordReflections as AgentTool<any>] };
+	const context = createAgentContext(
+		REFLECTOR_SYSTEM,
+		[recordReflections as AgentTool<any>],
+	);
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
 	const thinkingLevel = args.thinkingLevel ?? "low";
 	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;

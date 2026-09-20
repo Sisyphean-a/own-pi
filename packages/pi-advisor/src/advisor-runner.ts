@@ -1,5 +1,14 @@
-import { agentLoop, type AgentMessage, type AgentTool, type AgentLoopConfig } from "@earendil-works/pi-agent-core";
-import type { Message, Model, TextContent, ThinkingContent, ThinkingLevel } from "@earendil-works/pi-ai";
+import { agentLoop, type AgentContext, type AgentMessage, type AgentTool, type AgentLoopConfig } from "@earendil-works/pi-agent-core";
+import {
+  createInitialSystemMessage,
+  toToolDeclaration,
+  type Message,
+  type Model,
+  type ProviderHeaders,
+  type TextContent,
+  type ThinkingContent,
+  type ThinkingLevel,
+} from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAdvisorTools, summarizeAdvisorToolCall } from "./advisor-tools.ts";
@@ -19,7 +28,7 @@ export interface AdvisorRunResult {
 interface RunAdvisorOptions {
   model: Model<any>;
   apiKey?: string;
-  headers?: Record<string, string>;
+  headers?: ProviderHeaders;
   messages: Message[];
   systemPrompt: string;
   maxTokens: number;
@@ -70,9 +79,12 @@ export async function runAdvisor(options: RunAdvisorOptions): Promise<AdvisorRun
       throw new Error(`Advisor tool-call limit reached (${MAX_ADVISOR_TOOL_CALLS})`);
     }
   }) as AgentTool[];
-  const context = {
-    systemPrompt: options.systemPrompt,
-    messages: [],
+  const systemMessage = createInitialSystemMessage(
+    options.systemPrompt,
+    tools.map(toToolDeclaration),
+  );
+  const context: AgentContext = {
+    messages: systemMessage ? [systemMessage] : [],
     tools,
   };
   const maxTurns = options.maxTurns && options.maxTurns > 0 ? options.maxTurns : MAX_ADVISOR_TURNS;

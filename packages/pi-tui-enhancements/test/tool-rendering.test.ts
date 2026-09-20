@@ -58,9 +58,9 @@ test("shows only the active command or output line metric", () => {
   assert.equal(countTextLines("first\nsecond\n"), 2);
   assert.equal(formatCommandInputMetric(1), "");
   assert.equal(formatCommandInputMetric(2), "(2 lines)");
-  assert.equal(formatOutputMetric(), "(out …)");
-  assert.equal(formatOutputMetric(1), "(out 1 line)");
-  assert.equal(formatOutputMetric(7), "(out 7 lines)");
+  assert.equal(formatOutputMetric(), "");
+  assert.equal(formatOutputMetric(1), "(1 line)");
+  assert.equal(formatOutputMetric(7), "(7 lines)");
   assert.equal(isCommandInputActive({}), true);
   assert.equal(isCommandInputActive({ argsComplete: true }), false);
   assert.equal(isCommandInputActive({ executionStarted: true }), false);

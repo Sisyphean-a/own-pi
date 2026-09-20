@@ -65,13 +65,15 @@ export class LspClient {
     this.nextDocumentVersion = 0;
     this.queue = Promise.resolve();
     this.alive = false;
+    this.closed = false;
   }
 
   async initialize() {
     if (this.initializationSignal?.aborted) throw abortError();
     if (this.typescriptBridgeOptions) {
+      let bridge;
       try {
-        this.bridgeClient = await LspClient.start({
+        bridge = await LspClient.start({
           ...this.typescriptBridgeOptions,
           root: this.root,
           serverId: `${this.serverId}-typescript-bridge`,
@@ -81,7 +83,16 @@ export class LspClient {
         if (error?.name === "AbortError") throw error;
         // Volar remains useful for SFC/parser diagnostics without the optional
         // TypeScript sidecar. Continue with the main language server.
-        this.bridgeClient = undefined;
+        bridge = undefined;
+      }
+      if (bridge) {
+        // Rule: 主客户端可能在 sidecar 启动期间被 close；此时 close() 已经读过空的
+        // bridgeClient，必须在登记前终止 sidecar，否则它会逃逸成孤儿进程。
+        if (this.closed) {
+          await bridge.close().catch(() => undefined);
+          throw new Error(`${this.serverId} closed`);
+        }
+        this.bridgeClient = bridge;
       }
     }
 
@@ -408,6 +419,7 @@ export class LspClient {
   }
 
   async close() {
+    this.closed = true;
     await this.closeTypeScriptBridge();
     const child = this.process;
     if (!child) {

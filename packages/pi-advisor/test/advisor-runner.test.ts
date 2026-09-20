@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { runAdvisor } from "../src/advisor-runner.ts";
 
 function firstText(result: { content: unknown[] }): string {
@@ -19,7 +20,9 @@ test("runs an advisor-selected bash tool inside the internal agent loop", async 
     },
   } as any;
   let toolOutput = "";
-  const fakeAgentLoop = ((prompts: unknown[], context: { tools?: any[] }) => {
+  let systemPrompt = "";
+  const fakeAgentLoop = ((prompts: unknown[], context: { messages: any[]; tools?: any[] }) => {
+    systemPrompt = getCurrentSystemPrompt(context.messages);
     const stream = {
       async *[Symbol.asyncIterator]() {
         const tool = context.tools?.find((candidate) => candidate.name === "bash");
@@ -55,6 +58,7 @@ test("runs an advisor-selected bash tool inside the internal agent loop", async 
   });
 
   assert.equal(calls.length, 1);
+  assert.equal(systemPrompt, "You are an advisor");
   assert.match(result.text, /On track/);
   assert.deepEqual(result.toolUses, [{ name: "bash", summary: "$ diagnose", isError: false }]);
   assert.equal(result.inputTokens, 10);

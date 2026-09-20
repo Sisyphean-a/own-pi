@@ -366,7 +366,7 @@ export class ScrollableTabContent {
     if (this.handleSearchInput(data)) return true;
 
     const visibleLines = this.getVisibleLines();
-    const maxOffset = Math.max(0, this.visualTotal - visibleLines);
+    const maxOffset = Math.max(0, this.visualTotal() - visibleLines);
 
     if (matchesKey(data, Key.down) || data === "j") {
       this.scrollDown(1, maxOffset);
