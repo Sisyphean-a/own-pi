@@ -13,7 +13,12 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { Combo } from "./combos.ts";
+import { frameBottom, frameRow, frameTop } from "../overlay-frame.ts";
 import type { PickerResult, PickerTab, PickerTheme, Skill } from "./types.ts";
+
+/** 面板边框与上下文查看共用同一套行格式，只把边框颜色换成 accent。 */
+const FRAME_WIDTH_UTILS = { visibleWidth, truncateToWidth };
+const FRAME_COLOR = "accent";
 
 type PickerItems = Record<PickerTab, SelectItem[]>;
 type PickerFilters = Record<PickerTab, string>;
@@ -66,7 +71,6 @@ export class QuickPanel {
   private readonly onSelect: (result: PickerResult) => void;
   private readonly onCancel: () => void;
   private readonly onDispose: () => void;
-  private readonly border: (text: string) => string;
   private readonly filters = emptyFilters();
   private selectList: SelectList;
   private tab: PickerTab = "skills";
@@ -134,7 +138,6 @@ export class QuickPanel {
         };
       }),
     };
-    this.border = (text) => this.theme.fg("accent", text);
     this.listTheme = {
       selectedPrefix: (text) => this.theme.fg("accent", text),
       selectedText: (text) => this.theme.fg("accent", text),
@@ -180,14 +183,13 @@ export class QuickPanel {
     this.help.setText(this.renderHelp(Math.max(1, innerWidth - 2)));
     if (width < 4) return this.container.render(width);
 
-    const horizontal = "─".repeat(innerWidth);
-    const content = this.container.render(innerWidth).map((line) => {
-      const clipped = truncateToWidth(line, innerWidth, "");
-      const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
-      return this.border("│") + clipped + padding + this.border("│");
-    });
-
-    return [this.border(`╭${horizontal}╮`), ...content, this.border(`╰${horizontal}╯`)];
+    const content = this.container.render(innerWidth).map((line) =>
+      frameRow(line, innerWidth, this.theme, FRAME_WIDTH_UTILS, FRAME_COLOR));
+    return [
+      frameTop(innerWidth, this.theme, FRAME_COLOR),
+      ...content,
+      frameBottom(innerWidth, this.theme, FRAME_COLOR),
+    ];
   }
 
   invalidate(): void {

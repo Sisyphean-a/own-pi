@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { restoreWorkingIndicator } from "../src/display/index.ts";
+import { restoreWorkingIndicator } from "../src/display/session.ts";
 import { createCompactFooter } from "../src/display/compact-footer.ts";
 
 const widthUtils = {

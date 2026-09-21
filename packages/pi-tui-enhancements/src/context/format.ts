@@ -5,7 +5,7 @@
  */
 
 import type { ContextUsage, SessionContext, SessionEntry, ToolInfo } from "@earendil-works/pi-coding-agent";
-import type { UiTheme } from "./frame.ts";
+import type { UiTheme } from "../overlay-frame.ts";
 
 type AgentMessage = SessionContext["messages"][number];
 type AssistantMessage = Extract<AgentMessage, { role: "assistant" }>;

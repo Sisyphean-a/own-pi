@@ -1,33 +1,21 @@
+/**
+ * pi-tui-enhancements 的包级组合根。
+ *
+ * Rule: 显示、面板和上下文三个功能域独立可选加载；任一侧失败只跳过自己，不影响其他侧或 Pi 启动。
+ */
+
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createFeatureLoader } from "../src/optional-feature.ts";
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-async function activateFeature(
-  name: string,
-  load: () => Promise<{ default?: (pi: ExtensionAPI) => void | Promise<void> }>,
-  pi: ExtensionAPI,
-): Promise<void> {
-  try {
-    const module = await load();
-    const activate = module.default;
-    if (typeof activate !== "function") {
-      console.error(`[pi-tui-enhancements] ${name} 未导出有效入口，已跳过`);
-      return;
-    }
-    await activate(pi);
-  } catch (error) {
-    // Rule: display and panel have independent optional runtime seams; one
-    // feature must not prevent the other from loading.
-    console.error(`[pi-tui-enhancements] ${name} 不可用，已跳过：${errorMessage(error)}`);
-  }
-}
+const loader = createFeatureLoader((name, error) => {
+  const detail = error instanceof Error ? error.message : String(error);
+  console.error(`[pi-tui-enhancements/${name}] 不可用，已跳过：${detail}`);
+});
 
 export default async function piTuiEnhancements(pi: ExtensionAPI): Promise<void> {
   await Promise.all([
-    activateFeature("紧凑显示", () => import("../src/display/index.ts"), pi),
-    activateFeature("快捷面板", () => import("../src/panel/index.ts"), pi),
-    activateFeature("上下文查看", () => import("../src/context/index.ts"), pi),
+    loader.activate("紧凑显示", () => import("../src/display/index.ts"), pi),
+    loader.activate("快捷面板", () => import("../src/panel/index.ts"), pi),
+    loader.activate("上下文查看", () => import("../src/context/index.ts"), pi),
   ]);
 }

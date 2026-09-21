@@ -12,6 +12,20 @@ import {
   truncateToWidth,
   visibleWidth,
 } from "@earendil-works/pi-tui";
+import { frameBottom, frameRow, frameTop } from "../overlay-frame.ts";
+
+/** 命令面板与上下文查看共用边框排版；面板比上下文窄，只保留命令名与描述即可。 */
+const FRAME_WIDTH_UTILS = { visibleWidth, truncateToWidth };
+const FRAME_COLOR = "accent";
+const OVERLAY_OPTIONS = {
+  overlay: true,
+  overlayOptions: {
+    width: "70%" as const,
+    minWidth: 56,
+    maxHeight: "70%" as const,
+    margin: 1,
+  },
+};
 
 export type CommandPalettePi = Pick<ExtensionAPI, "getCommands">;
 
@@ -226,17 +240,12 @@ export class CommandPalette {
     this.help.setText(this.theme.fg("dim", this.helpText()));
     if (width < 4) return this.container.render(width);
 
-    const horizontal = "─".repeat(innerWidth);
-    const content = this.container.render(innerWidth).map((line) => {
-      const clipped = truncateToWidth(line, innerWidth, "");
-      const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
-      return this.theme.fg("accent", "│") + clipped + padding + this.theme.fg("accent", "│");
-    });
-
+    const content = this.container.render(innerWidth).map((line) =>
+      frameRow(line, innerWidth, this.theme, FRAME_WIDTH_UTILS, FRAME_COLOR));
     return [
-      this.theme.fg("accent", `╭${horizontal}╮`),
+      frameTop(innerWidth, this.theme, FRAME_COLOR),
       ...content,
-      this.theme.fg("accent", `╰${horizontal}╯`),
+      frameBottom(innerWidth, this.theme, FRAME_COLOR),
     ];
   }
 
@@ -339,10 +348,7 @@ export async function showCommandPalette(
       (value) => done(value),
       () => done(undefined),
     ),
-    {
-      overlay: true,
-      overlayOptions: { width: "70%", minWidth: 56, maxHeight: "70%", margin: 1 },
-    },
+    OVERLAY_OPTIONS,
   );
 
   if (command) {

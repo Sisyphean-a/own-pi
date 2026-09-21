@@ -6,7 +6,7 @@
 
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { type ContextTokenBreakdown, formatTokens } from "./format.ts";
-import type { UiTheme, WidthUtils } from "./frame.ts";
+import type { UiTheme, WidthUtils } from "../overlay-frame.ts";
 
 const GRID_WIDTH = 10;
 const GRID_HEIGHT = 5;

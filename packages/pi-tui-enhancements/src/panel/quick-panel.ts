@@ -2,6 +2,7 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { fetchProviderUsage, formatProviderUsage } from "../provider-usage.ts";
+import { OVERLAY_OPTIONS } from "../overlay-frame.ts";
 import { loadCombos } from "./combos.ts";
 import { QuickPanel } from "./quick-panel-ui.ts";
 import { createSkillDirective, getSkills } from "./skills.ts";
@@ -132,10 +133,7 @@ export async function showQuickPanel(pi: ExtensionAPI, ctx: ExtensionContext): P
         });
         return panel;
       },
-      {
-        overlay: true,
-        overlayOptions: { width: "80%", minWidth: 64, maxHeight: "70%", margin: 1 },
-      },
+      OVERLAY_OPTIONS,
     );
   } finally {
     closed = true;

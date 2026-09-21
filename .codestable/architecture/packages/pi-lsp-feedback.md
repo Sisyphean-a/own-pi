@@ -13,7 +13,7 @@
 
 ## 架构规则
 
-- `extensions/index.js` 负责 Pi 生命周期集成、诊断服务装配、展示和状态报告；反馈选择与格式化由 `src/feedback.js` 集中负责。每次编辑后的诊断只同步等待固定预算：预算内完成沿用原有的本轮反馈语义，超出预算时由后台任务收尾、在下一轮 `turn_end` 经同一去重与稳定门禁反馈；会话关闭时先等后台检查落定再关服务。
+- `extensions/index.js` 只负责 Pi 生命周期接线与状态命令展示；`src/feedback-session.js` 拥有一次会话的语言服务器客户端、去重器、编辑顺序和后台收尾：每次编辑后的诊断只同步等待固定预算，预算内完成沿用原有的本轮反馈语义，超出预算时由后台任务收尾、在下一轮 `turn_end` 经同一去重与稳定门禁反馈；会话替换先关旧客户端再建新会话，会话关闭时先清空待反馈状态、等后台收尾落定再关服务。反馈选择与格式化仍由 `src/feedback.js` 集中负责。
 - `config.js` 负责受信任项目覆盖的一次读取、校验和合并；未知服务器、未知字段和字段类型错误进入 `issues`，由扩展以警告展示。
 - `DiagnosticService` 接收已解析的服务器清单，负责文件分类、根目录解析、客户端复用和标准化结果；客户端缓存键为 `<server id>:<root>`，同一键的在途启动只保留一个，并发检查复用同一客户端。服务关闭后不再新建客户端，关闭期间已启动中的客户端一旦就绪立即终止；`close()` 等待在途启动落定，避免留下无人持有的语言服务器进程。Vue 客户端可选地启动包内 TypeScript language server sidecar，供 Volar 转发 `tsserver/request`，并将同一快照的 `semanticDiagnosticsSync` 与 SFC 诊断合并；sidecar 启动、预热或请求失败时保留 Vue parser-only 路径。
 - `LspClient` 负责一个 JSON-RPC 服务器进程，并通过请求队列串行化文档检查；它不缓存文档正文，按最近使用顺序最多跟踪 128 个文件 URI，淘汰无等待者的 URI 时发送 `textDocument/didClose` 并清除对应协议状态；被关闭的客户端不登记仍在启动的 TypeScript sidecar，并在 sidecar 就绪时立即终止它；`DiagnosticService` 在检查前后核对文件内容，丢弃检查期间已变化的快照。
@@ -23,7 +23,8 @@
 
 ## 代码锚点
 
-- 激活与 Pi 生命周期集成：`packages/pi-lsp-feedback/extensions/index.js`（`lspFeedbackExtension`、`startSession`）。
+- 激活与 Pi 生命周期接线：`packages/pi-lsp-feedback/extensions/index.js`（`lspFeedbackExtension`）。
+- 反馈会话（客户端、预算、后台收尾与关闭顺序）：`packages/pi-lsp-feedback/src/feedback-session.js`（`FeedbackSession`、`createFeedbackSession`、`isTrackedToolResult`）。
 - 按轮反馈选择、语义去重和格式化：`packages/pi-lsp-feedback/src/feedback.js`（`FeedbackTracker`）。
 - 诊断编排：`packages/pi-lsp-feedback/src/diagnostic-service.js`（`DiagnosticService.checkFile`、`getClient`）。
 - 协议生命周期与确认：`packages/pi-lsp-feedback/src/lsp-client.js`（`LspClient.initialize`、`updateTypeScriptBridge`、`requestVueTypeScriptDiagnostics`、`checkDocumentNow`、`waitForPublication`）。

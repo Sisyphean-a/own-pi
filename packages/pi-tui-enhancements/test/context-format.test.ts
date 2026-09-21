@@ -13,10 +13,11 @@ import {
 import {
   FRAME_CHROME_HEIGHT,
   frameRow,
+  frameTop,
   overlayContentHeight,
   type UiTheme,
   type WidthUtils,
-} from "../src/context/frame.ts";
+} from "../src/overlay-frame.ts";
 
 // Test seam: 用等宽 ASCII 与 2 列宽的中文模拟 Pi 的显示宽度，避免测试依赖真实终端。
 function charWidth(char: string): number {
@@ -187,6 +188,13 @@ test("keeps frame rows inside the exact column budget", () => {
   assert.equal(widthUtils.visibleWidth(long), 22);
   assert.ok(long.startsWith("│"));
   assert.ok(long.endsWith("│"));
+});
+
+test("paints frame chrome with the caller's color and a foreground-only theme", () => {
+  const accentTheme = { fg: (color: string, text: string) => `[${color}]${text}` };
+
+  assert.equal(frameTop(3, accentTheme, "accent"), "[accent]╭───╮");
+  assert.equal(frameRow("x", 3, accentTheme, widthUtils), "[border]│x  [border]│");
 });
 
 test("sizes the overlay content so the frame fits the terminal", () => {

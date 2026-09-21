@@ -1,13 +1,19 @@
 /**
- * 上下文查看弹窗的边框与宽度安全排版。
+ * 共享的弹窗边框与宽度安全排版：上下文查看、快捷面板和命令面板共用同一套行格式。
  *
- * Rule: 每一行先按显示宽度裁剪再补齐空格，中文字符、长路径或 ANSI 颜色都不会撑破边框导致换行错位。
+ * Rule: 每一行先按显示宽度裁剪再补齐空格，中文字符、长路径或 ANSI 颜色都不会撑破边框导致换行错位；
+ * 边框颜色由调用方给出（上下文查看用 border，两个面板用 accent）。
  */
 
 export type UiTheme = {
   bold(text: string): string;
   fg(color: string, text: string): string;
   bg(color: string, text: string): string;
+};
+
+/** 边框排版只需要前景色；两个面板的主题不提供 bold/bg。 */
+export type FrameTheme = {
+  fg(color: string, text: string): string;
 };
 
 export type WidthUtils = {
@@ -37,20 +43,26 @@ export function overlayContentHeight(terminalRows: number): number {
 }
 
 /** Guarantee: 返回值恰好占 innerWidth 列，超出部分被裁剪而不是折行。 */
-export function frameRow(content: string, innerWidth: number, theme: UiTheme, widthUtils: WidthUtils): string {
+export function frameRow(
+  content: string,
+  innerWidth: number,
+  theme: FrameTheme,
+  widthUtils: WidthUtils,
+  color: string = "border",
+): string {
   const clipped = widthUtils.truncateToWidth(content, Math.max(0, innerWidth), "");
   const padding = " ".repeat(Math.max(0, innerWidth - widthUtils.visibleWidth(clipped)));
-  return theme.fg("border", "│") + clipped + padding + theme.fg("border", "│");
+  return theme.fg(color, "│") + clipped + padding + theme.fg(color, "│");
 }
 
-export function frameTop(innerWidth: number, theme: UiTheme): string {
-  return theme.fg("border", `╭${"─".repeat(Math.max(0, innerWidth))}╮`);
+export function frameTop(innerWidth: number, theme: FrameTheme, color: string = "border"): string {
+  return theme.fg(color, `╭${"─".repeat(Math.max(0, innerWidth))}╮`);
 }
 
-export function frameSeparator(innerWidth: number, theme: UiTheme): string {
-  return theme.fg("border", `├${"─".repeat(Math.max(0, innerWidth))}┤`);
+export function frameSeparator(innerWidth: number, theme: FrameTheme, color: string = "border"): string {
+  return theme.fg(color, `├${"─".repeat(Math.max(0, innerWidth))}┤`);
 }
 
-export function frameBottom(innerWidth: number, theme: UiTheme): string {
-  return theme.fg("border", `╰${"─".repeat(Math.max(0, innerWidth))}╯`);
+export function frameBottom(innerWidth: number, theme: FrameTheme, color: string = "border"): string {
+  return theme.fg(color, `╰${"─".repeat(Math.max(0, innerWidth))}╯`);
 }

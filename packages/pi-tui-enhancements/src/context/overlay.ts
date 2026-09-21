@@ -6,7 +6,7 @@
  */
 
 import { Key, matchesKey } from "@earendil-works/pi-tui";
-import { frameBottom, frameRow, frameSeparator, frameTop, type UiTheme, type WidthUtils } from "./frame.ts";
+import { frameBottom, frameRow, frameSeparator, frameTop, type UiTheme, type WidthUtils } from "../overlay-frame.ts";
 
 /**
  * 每个标签页的输入契约：`handleInput` 返回 true 表示按键已被消费，

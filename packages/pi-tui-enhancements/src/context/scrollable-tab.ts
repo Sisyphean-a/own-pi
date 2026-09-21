@@ -10,7 +10,7 @@
 
 import { copyToClipboard as copyTextToClipboard } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, sliceByColumn, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { UiTheme, WidthUtils } from "./frame.ts";
+import type { UiTheme, WidthUtils } from "../overlay-frame.ts";
 
 export interface ScrollableTabOptions {
   rawText: string;

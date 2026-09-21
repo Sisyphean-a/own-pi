@@ -1,71 +1,62 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createFeatureLoader, errorMessage } from "../optional-feature.ts";
+import { createDisplaySession } from "./session.ts";
 
-type ThemeLike = {
-  bold(text: string): string;
-  fg(color: string, text: string): string;
-};
+// Rule: 可选 peer、原型 API 和包内模块随时可能消失；登记过的失败在这里统一转成“隐藏该功能”的日志。
+const loader = createFeatureLoader((name, error) => {
+  console.error(`[pi-tui-enhancements/${name}] 不可用，已隐藏相关功能：${errorMessage(error)}`);
+});
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-async function loadOptional<T>(name: string, load: () => Promise<T>): Promise<T | undefined> {
+function installToolRendering(toolRendering: typeof import("./tool-rendering.ts") | undefined): void {
+  if (!toolRendering) return;
   try {
-    return await load();
+    toolRendering.installContainerParentTracking();
   } catch (error) {
-    // Rule: optional peer packages and prototype APIs may disappear without
-    // preventing Pi or the other independent TUI features from loading.
-    console.error(`[pi-tui-enhancements/display] ${name} 不可用，已隐藏相关功能：${errorMessage(error)}`);
-    return undefined;
+    console.error(`[pi-tui-enhancements/工具容器分组] 不可用，已隐藏相关功能：${errorMessage(error)}`);
+  }
+  try {
+    toolRendering.installToolRenderers();
+  } catch (error) {
+    console.error(`[pi-tui-enhancements/工具紧凑渲染] 不可用，已隐藏相关功能：${errorMessage(error)}`);
   }
 }
 
-function runOptional(name: string, effect: () => void): boolean {
+function installMessageDisplay(messageDisplay: typeof import("./message-display.ts") | undefined): boolean {
+  if (!messageDisplay) return false;
   try {
-    effect();
+    messageDisplay.installCompactUserMessage();
+  } catch (error) {
+    console.error(`[pi-tui-enhancements/用户消息紧凑渲染] 不可用，已隐藏相关功能：${errorMessage(error)}`);
+  }
+  try {
+    messageDisplay.installThinkingCollapse();
     return true;
   } catch (error) {
-    console.error(`[pi-tui-enhancements/display] ${name} 不可用，已隐藏相关功能：${errorMessage(error)}`);
+    console.error(`[pi-tui-enhancements/思考折叠] 不可用，已隐藏相关功能：${errorMessage(error)}`);
     return false;
   }
 }
 
-function hasUiMethod<T extends keyof ExtensionContext["ui"]>(ctx: ExtensionContext, method: T): boolean {
+function createUsageController(
+  usageModule: typeof import("../provider-usage.ts") | undefined,
+): ReturnType<typeof import("../provider-usage.ts").createProviderUsageController> | undefined {
+  if (!usageModule) return undefined;
+  // The controller constructor is local and should not be allowed to affect
+  // display registration. Keep this small boundary explicit for old runtimes.
   try {
-    return Boolean(ctx.hasUI && typeof ctx.ui?.[method] === "function");
-  } catch {
-    return false;
-  }
-}
-
-export function restoreWorkingIndicator(ctx: ExtensionContext): void {
-  if (hasUiMethod(ctx, "setWorkingVisible")) {
-    runOptional("内置工作指示器", () => ctx.ui.setWorkingVisible(true));
-  }
-}
-
-async function refreshUsage(controller: { refresh(ctx: ExtensionContext): Promise<void> }, ctx: ExtensionContext): Promise<void> {
-  try {
-    await controller.refresh(ctx);
+    return usageModule.createProviderUsageController();
   } catch (error) {
-    console.error(`[pi-tui-enhancements/display] usage 刷新失败：${errorMessage(error)}`);
-  }
-}
-
-function clearUsage(controller: { clear(ctx: ExtensionContext): void }, ctx: ExtensionContext): void {
-  try {
-    controller.clear(ctx);
-  } catch (error) {
-    console.error(`[pi-tui-enhancements/display] usage 清理失败：${errorMessage(error)}`);
+    console.error(`[pi-tui-enhancements/provider usage controller] 不可用：${errorMessage(error)}`);
+    return undefined;
   }
 }
 
 export default async function displayEnhancements(pi: ExtensionAPI): Promise<void> {
   const [messageDisplay, toolRendering, usageModule, compactFooter] = await Promise.all([
-    loadOptional("消息/思考显示", () => import("./message-display.ts")),
-    loadOptional("工具显示", () => import("./tool-rendering.ts")),
-    loadOptional("provider usage", () => import("../provider-usage.ts")),
-    loadOptional("紧凑页脚", async () => {
+    loader.import("消息/思考显示", () => import("./message-display.ts")),
+    loader.import("工具显示", () => import("./tool-rendering.ts")),
+    loader.import("provider usage", () => import("../provider-usage.ts")),
+    loader.import("紧凑页脚", async () => {
       const [footer, tui] = await Promise.all([
         import("./compact-footer.ts"),
         import("@earendil-works/pi-tui"),
@@ -80,119 +71,14 @@ export default async function displayEnhancements(pi: ExtensionAPI): Promise<voi
     }),
   ]);
 
-  if (toolRendering) {
-    runOptional("工具容器分组", toolRendering.installContainerParentTracking);
-    runOptional("工具紧凑渲染", toolRendering.installToolRenderers);
-  }
+  installToolRendering(toolRendering);
+  const thinkingAvailable = installMessageDisplay(messageDisplay);
+  const usageController = createUsageController(usageModule);
 
-  let thinkingAvailable = false;
-  if (messageDisplay) {
-    runOptional("用户消息紧凑渲染", messageDisplay.installCompactUserMessage);
-    thinkingAvailable = runOptional("思考折叠", messageDisplay.installThinkingCollapse);
-  }
-
-  let usageController: { clear(ctx: ExtensionContext): void; refresh(ctx: ExtensionContext): Promise<void> } | undefined;
-
-  // The controller constructor is local and should not be allowed to affect
-  // display registration. Keep this small boundary explicit for old runtimes.
-  if (usageModule) {
-    try {
-      usageController = usageModule.createProviderUsageController();
-    } catch (error) {
-      console.error(`[pi-tui-enhancements/display] provider usage controller 不可用：${errorMessage(error)}`);
-      usageController = undefined;
-    }
-  }
-
-  if (typeof pi.on === "function") {
-    pi.on("session_start", (_event, ctx) => {
-      try {
-        if (ctx.hasUI && ctx.ui?.theme) {
-          (globalThis as { __piTuiTheme?: ThemeLike }).__piTuiTheme = ctx.ui.theme as unknown as ThemeLike;
-          if (thinkingAvailable && hasUiMethod(ctx, "setHiddenThinkingLabel")) {
-            ctx.ui.setHiddenThinkingLabel(messageDisplay!.getThinkingLabel(messageDisplay!.getThinkingState().collapsed));
-          }
-          if (compactFooter && hasUiMethod(ctx, "setFooter")) {
-            const footerInstalled = runOptional("紧凑页脚", () => {
-              ctx.ui.setFooter((tui, theme, footerData) =>
-                compactFooter.create(
-                  ctx,
-                  tui,
-                  theme,
-                  footerData,
-                  compactFooter.widthUtils,
-                ));
-            });
-            if (footerInstalled) restoreWorkingIndicator(ctx);
-          }
-        }
-      } catch (error) {
-        console.error(`[pi-tui-enhancements/display] 会话显示初始化失败：${errorMessage(error)}`);
-      }
-      if (usageController) void refreshUsage(usageController, ctx);
-    });
-
-    if (usageController) {
-      pi.on("model_select", (_event, ctx) => {
-        try {
-          // The usage controller selects the provider-specific endpoint and
-          // clears the optional status for unsupported providers.
-          void refreshUsage(usageController!, ctx);
-        } catch (error) {
-          console.error(`[pi-tui-enhancements/display] 模型切换处理失败：${errorMessage(error)}`);
-        }
-      });
-    }
-
-    pi.on("session_shutdown", (_event, ctx) => {
-      if (usageController) clearUsage(usageController, ctx);
-    });
-
-    if (messageDisplay) {
-      pi.on("message_update", (event, ctx) => {
-        try {
-          if (!ctx.hasUI || !ctx.ui?.theme) return;
-          if (messageDisplay.isAssistantMessage(event.message)) {
-            messageDisplay.labelThinking(event.message, ctx.ui.theme as unknown as ThemeLike);
-          }
-        } catch (error) {
-          console.error(`[pi-tui-enhancements/display] 思考内容标记失败：${errorMessage(error)}`);
-        }
-      });
-
-      pi.on("message_end", (event, ctx) => {
-        try {
-          if (!ctx.hasUI || !ctx.ui?.theme) return;
-          if (messageDisplay.isAssistantMessage(event.message)) {
-            messageDisplay.labelThinking(event.message, ctx.ui.theme as unknown as ThemeLike);
-          }
-        } catch (error) {
-          console.error(`[pi-tui-enhancements/display] 思考内容标记失败：${errorMessage(error)}`);
-        }
-      });
-
-      pi.on("context", (event) => {
-        try {
-          event.messages.splice(0, event.messages.length, ...messageDisplay.sanitizeThinking(event.messages));
-        } catch (error) {
-          console.error(`[pi-tui-enhancements/display] 思考内容清理失败：${errorMessage(error)}`);
-        }
-      });
-    }
-  }
-
-  if (!thinkingAvailable || typeof pi.registerShortcut !== "function") return;
-
-  pi.registerShortcut("ctrl+shift+t", {
-    description: "折叠或展开思考内容",
-    handler: (ctx) => {
-      try {
-        if (hasUiMethod(ctx, "setHiddenThinkingLabel")) {
-          messageDisplay!.setThinkingCollapsed(ctx, !messageDisplay!.getThinkingState().collapsed);
-        }
-      } catch (error) {
-        console.error(`[pi-tui-enhancements/display] thinking 快捷键失败：${errorMessage(error)}`);
-      }
-    },
-  });
+  createDisplaySession({
+    messageDisplay,
+    compactFooter,
+    usageController,
+    thinkingAvailable,
+  }).register(pi);
 }

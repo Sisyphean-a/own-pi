@@ -1,20 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
+import { createFeatureLoader, errorMessage } from "../optional-feature.ts";
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-async function loadOptional<T>(name: string, load: () => Promise<T>): Promise<T | undefined> {
-  try {
-    return await load();
-  } catch (error) {
-    // Rule: a missing peer package or incompatible TUI only disables this
-    // optional feature; it must not reject Pi's extension loading.
-    console.error(`[pi-tui-enhancements/panel] ${name} 不可用，已隐藏相关功能：${errorMessage(error)}`);
-    return undefined;
-  }
-}
+const loader = createFeatureLoader((name, error) => {
+  console.error(`[pi-tui-enhancements/${name}] 不可用，已隐藏相关功能：${errorMessage(error)}`);
+});
 
 function notify(ctx: ExtensionContext, message: string, level: "info" | "warning" | "error"): void {
   try {
@@ -27,12 +17,12 @@ function notify(ctx: ExtensionContext, message: string, level: "info" | "warning
 }
 
 export default async function quickPanel(pi: ExtensionAPI): Promise<void> {
-  const skillPacks = await loadOptional("技能包", () => import("./skill-packs.ts"));
+  const skillPacks = await loader.import("技能包", () => import("./skill-packs.ts"));
   if (skillPacks?.default) {
     await skillPacks.default(pi);
   }
 
-  const skills = await loadOptional("技能展开", () => import("./skills.ts"));
+  const skills = await loader.import("技能展开", () => import("./skills.ts"));
   if (skills && typeof pi.on === "function") {
     pi.on("input", async (event) => {
       try {
@@ -41,13 +31,13 @@ export default async function quickPanel(pi: ExtensionAPI): Promise<void> {
           ? { action: "continue" as const }
           : { action: "transform" as const, text: expanded };
       } catch (error) {
-        console.error(`[pi-tui-enhancements/panel] 技能展开失败，保留原输入：${errorMessage(error)}`);
+        console.error(`[pi-tui-enhancements/技能展开] 失败，保留原输入：${errorMessage(error)}`);
         return { action: "continue" as const };
       }
     });
   }
 
-  const panel = await loadOptional("快捷面板", async () => {
+  const panel = await loader.import("快捷面板", async () => {
     const [quickPanelModule, editorModule, commandPaletteModule] = await Promise.all([
       import("./quick-panel.ts"),
       import("./quick-panel-editor.ts"),
@@ -102,7 +92,7 @@ export default async function quickPanel(pi: ExtensionAPI): Promise<void> {
           },
         ));
       } catch (error) {
-        console.error(`[pi-tui-enhancements/panel] 编辑器接入失败，已隐藏快捷面板：${errorMessage(error)}`);
+        console.error(`[pi-tui-enhancements/编辑器接入] 失败，已隐藏快捷面板：${errorMessage(error)}`);
       }
     });
   }

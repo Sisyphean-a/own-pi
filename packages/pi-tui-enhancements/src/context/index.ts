@@ -13,6 +13,7 @@ import {
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { errorMessage } from "../optional-feature.ts";
 import {
   buildNumberedLines,
   buildTokenBreakdown,
@@ -21,14 +22,10 @@ import {
   formatMessagesText,
   formatTokens,
 } from "./format.ts";
-import { OVERLAY_OPTIONS, overlayContentHeight, type UiTheme, type WidthUtils } from "./frame.ts";
+import { OVERLAY_OPTIONS, overlayContentHeight, type UiTheme, type WidthUtils } from "../overlay-frame.ts";
 import { TabbedOverlay } from "./overlay.ts";
 import { ScrollableTabContent } from "./scrollable-tab.ts";
 import { StatsTabContent } from "./stats-tab.ts";
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function numberedTab(
   text: string,

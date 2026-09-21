@@ -27,6 +27,8 @@ type UserMessagePrototype = {
 type AssistantContent = { type?: string; thinking?: unknown };
 export type AssistantMessage = { role?: unknown; content?: AssistantContent[]; api?: unknown };
 type ThinkingDisplayState = { collapsed: boolean };
+type ThinkingLabelTarget = { ui: { setHiddenThinkingLabel(label?: string): void } };
+type ThemeCache = { __piTuiTheme?: Theme };
 type UserMessagePatch = { originalRender: UserMessagePrototype["render"] };
 type ThinkingPatch = {
   originalUpdateContent: AssistantMessagePrototype["updateContent"];
@@ -41,6 +43,19 @@ const THINKING_PATCH = Symbol.for("pi.lean-tool-display.thinking.v3");
 const THINKING_STATE = Symbol.for("pi.lean-tool-display.thinking-state.v1");
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC133_PATTERN = /\x1b\]133;[ABC](?:\x07|\x1b\\)/g;
+
+/**
+ * 会话主题缓存：渲染补丁没有 ctx，只能从进程级缓存取当前主题。
+ *
+ * Rule: 只有本模块读写该缓存；会话开始时由 display 会话写入。
+ */
+export function setDisplayTheme(theme: Theme): void {
+  (globalThis as ThemeCache).__piTuiTheme = theme;
+}
+
+function displayTheme(): Theme | undefined {
+  return (globalThis as ThemeCache).__piTuiTheme;
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -91,7 +106,7 @@ export function installCompactUserMessage(): void {
   const originalRender = previousPatch?.originalRender ?? prototype.render;
 
   prototype.render = function renderCompactUserMessage(this: UserMessageComponent, width: number): string[] {
-    const theme = (globalThis as { __piTuiTheme?: Theme }).__piTuiTheme;
+    const theme = displayTheme();
     if (!theme || width < 12) return originalRender.call(this, width);
 
     const contentWidth = width - 4;
@@ -104,7 +119,7 @@ export function installCompactUserMessage(): void {
   prototype[USER_PATCH] = { originalRender } satisfies UserMessagePatch;
 }
 
-export function getThinkingState(): ThinkingDisplayState {
+function getThinkingState(): ThinkingDisplayState {
   const prototype = AssistantMessageComponent.prototype as unknown as Patched<AssistantMessagePrototype>;
   const existing = prototype[THINKING_STATE] as ThinkingDisplayState | undefined;
   if (existing) return existing;
@@ -114,7 +129,7 @@ export function getThinkingState(): ThinkingDisplayState {
   return state;
 }
 
-export function getThinkingLabel(collapsed: boolean): string {
+function getThinkingLabel(collapsed: boolean): string {
   return collapsed ? "" : "Thinking...";
 }
 
@@ -168,12 +183,16 @@ export function installThinkingCollapse(): void {
   } satisfies ThinkingPatch;
 }
 
-export function setThinkingCollapsed(
-  ctx: { ui: { setHiddenThinkingLabel(label?: string): void } },
-  collapsed: boolean,
-): void {
-  getThinkingState().collapsed = collapsed;
-  ctx.ui.setHiddenThinkingLabel(getThinkingLabel(collapsed));
+/** 把当前折叠状态同步到 Pi 的隐藏思考标签（会话开始或重载后）。 */
+export function syncThinkingLabel(ctx: ThinkingLabelTarget): void {
+  ctx.ui.setHiddenThinkingLabel(getThinkingLabel(getThinkingState().collapsed));
+}
+
+/** 切换思考折叠：状态与动作同属本模块，调用方不用自己取状态再取反。 */
+export function toggleThinking(ctx: ThinkingLabelTarget): void {
+  const state = getThinkingState();
+  state.collapsed = !state.collapsed;
+  ctx.ui.setHiddenThinkingLabel(getThinkingLabel(state.collapsed));
 }
 
 export function isAssistantMessage(value: unknown): value is AssistantMessage {

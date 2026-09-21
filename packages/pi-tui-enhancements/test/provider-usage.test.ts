@@ -16,9 +16,7 @@ import {
   formatOpenCodeGoUsage,
   formatProviderUsage,
   isCommandCodeProvider,
-  type CodexUsage,
-  type CommandCodeUsage,
-  type OpenCodeGoUsage,
+  type ProviderUsageWindows,
 } from "../src/provider-usage.ts";
 
 const ACCOUNT_ID = "account-test-123";
@@ -131,7 +129,7 @@ function installFetch(
 }
 
 test("formats Codex percentages with five-hour time and weekly date resets", () => {
-  const usage: CodexUsage = {
+  const usage: ProviderUsageWindows = {
     fiveHour: {
       remainingPercent: 50,
       resetAt: localTimestamp(2026, 8, 26, 19, 23),
@@ -146,7 +144,7 @@ test("formats Codex percentages with five-hour time and weekly date resets", () 
 });
 
 test("formats OpenCode Go usage with five-hour, weekly, and monthly resets", () => {
-  const usage: OpenCodeGoUsage = {
+  const usage: ProviderUsageWindows = {
     fiveHour: {
       remainingPercent: 100,
       resetAt: localTimestamp(2026, 8, 26, 19, 23),
@@ -226,7 +224,7 @@ test("rejects incomplete OpenCode Go usage windows", async (t) => {
 });
 
 test("formats Command Code usage with five-hour, weekly, and monthly resets", () => {
-  const usage: CommandCodeUsage = {
+  const usage: ProviderUsageWindows = {
     fiveHour: {
       remainingPercent: 97,
       resetAt: localTimestamp(2026, 8, 26, 19, 23),
@@ -259,7 +257,7 @@ test("recognizes Command Code provider aliases", () => {
     assert.equal(isCommandCodeProvider(provider), false, String(provider));
   }
 
-  const usage: CommandCodeUsage = { fiveHour: { remainingPercent: 97, resetAt: localTimestamp(2026, 8, 26, 19, 23) } };
+  const usage: ProviderUsageWindows = { fiveHour: { remainingPercent: 97, resetAt: localTimestamp(2026, 8, 26, 19, 23) } };
   assert.equal(
     formatProviderUsage({ provider: COMMANDCODE_PROVIDER_ID, usage }),
     "commandcode [ 97%  19:23 ]",

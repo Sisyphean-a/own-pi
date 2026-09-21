@@ -14,6 +14,7 @@
 ## 架构规则
 
 - `extensions/index.ts` 只负责五个功能的独立动态加载；一个功能失败不能阻止其他功能注册。
+- `src/optional-feature.ts` 拥有本包的软依赖装载契约：模块导入失败、缺少约定导出或工厂抛错时只记录日志并跳过，不向调用方抛出；它与 `pi-tui-enhancements` 的同名模块是分发独立的逐字副本，不互相依赖。
 - `src/nul-redirect.ts` 拥有 Shell 重定向词法扫描、保守 Here-doc 边界、统计和 `/nulfix` 命令；AI `tool_call` 直接修改输入，手动 `user_bash` 只在可取得 Pi 原生 Bash backend 时接管执行。
 - `src/vision-mcp-auto.ts` 拥有配置读写、模型视觉能力判断、工具发现和 active tools 同步；没有识图 MCP 工具时不修改 Pi 工具集合，并等待后续生命周期事件重试。
 - `src/fullscreen-scroll.ts` 通过 `ctx.ui.setWidget()` 取得 Pi 的稳定 TUI 代理，在检测到 fullscreen TUI 的 `routeWheel` 与 `wheelScrollLines` seam 后临时提高滚轮行数；会话关闭时恢复原方法。
@@ -24,6 +25,7 @@
 ## 代码锚点
 
 - 入口：`packages/pi-optimization/extensions/index.ts`
+- 可选功能装载：`packages/pi-optimization/src/optional-feature.ts`
 - `nul` 重写与执行后端边界：`packages/pi-optimization/src/nul-redirect.ts`
 - 视觉 MCP 同步与配置：`packages/pi-optimization/src/vision-mcp-auto.ts`
 - fullscreen 滚轮适配与配置：`packages/pi-optimization/src/fullscreen-scroll.ts`
