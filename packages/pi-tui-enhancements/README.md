@@ -16,6 +16,9 @@ pi install ./packages/pi-tui-enhancements
 
 - 输入框为空时输入首字符 `/`，或使用 `Ctrl+/`，会打开命令面板；选择后把 `/命令 ` 插入当前输入框；`Ctrl+L` 或 `/quick-panel` 仍打开快捷面板；
 - 集中选择技能、模型、思考等级和模型组合；
+- TUI 会话启动 3 秒后，如果当前模型可用，会在后台把完全不含中文字符的命令/技能描述翻译为简体中文；请求不启用推理，只替换描述，命令名、技能名和实际插入值保持原样；
+- 翻译缓存位于 `~/.pi/agent/tui-description-translations.json`：Pi 补全描述中的 `[u]`、`[t]`、`[u:npm:…]` 等来源标签不参与缓存身份，因此命令面板与 `Ctrl+L` 技能面板可复用同一译文；正文未变化时直接复用，变化后自动重译；模型输出必须符合固定 JSON 结构，格式错误最多重试三次，失败不阻塞面板或 Pi 启动，也不会在终端主动提示；
+- 扩展内部后台任务和可选功能的失败记录在 `~/.pi/agent/pi-tui-enhancements/errors.ndjson`，不会直接写入 stdout/stderr；
 - 选择技能会在编辑器当前位置插入 `/skill:<name>`；
 - 输入中的已知 `/skill:<name>` 会展开为技能正文，技能 frontmatter 不会发送给模型；
 - 组合配置位于全局 `~/.pi/agent/quick-panel.json`，受信任项目可用 `.pi/quick-panel.json` 覆盖同名组合；
@@ -73,10 +76,11 @@ pi install ./packages/pi-tui-enhancements
 
 入口只负责把三个相互独立的功能域动态装配：
 
-- `src/panel/`：技能展开、快捷面板、组合和编辑器快捷键；
+- `src/panel/`：技能展开、快捷面板、组合、编辑器快捷键，以及命令/技能描述的后台翻译与用户级缓存；
 - `src/display/`：思考、用户消息、工具和 footer 显示补丁；
 - `src/context/`：`/context` 上下文查看弹窗、标签页、滚动/搜索和 token 分类；
-- `src/provider-usage.ts`：共享 Codex/OpenCode Go usage 请求、解析、格式化和 footer 轮询。
+- `src/provider-usage.ts`：共享 Codex/OpenCode Go usage 请求、解析、格式化和 footer 轮询；
+- `src/extension-log.ts`：后台任务和软依赖失败的用户级 NDJSON 日志，禁止直接写终端。
 
 Pi 的 `@earendil-works/pi-ai`、`@earendil-works/pi-coding-agent` 和 `@earendil-works/pi-tui` 由运行时提供，作为可选 peer dependency，不会被本包重复打包。
 

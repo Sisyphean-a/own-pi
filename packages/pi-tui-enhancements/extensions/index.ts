@@ -5,11 +5,12 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { logFailure } from "../src/extension-log.ts";
 import { createFeatureLoader } from "../src/optional-feature.ts";
 
 const loader = createFeatureLoader((name, error) => {
   const detail = error instanceof Error ? error.message : String(error);
-  console.error(`[pi-tui-enhancements/${name}] 不可用，已跳过：${detail}`);
+  logFailure(name, `不可用，已跳过：${detail}`);
 });
 
 export default async function piTuiEnhancements(pi: ExtensionAPI): Promise<void> {

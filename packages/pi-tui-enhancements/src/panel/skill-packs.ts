@@ -5,6 +5,7 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Container, SettingsList, Text, type SettingItem } from "@earendil-works/pi-tui";
+import { logFailure } from "../extension-log.ts";
 import {
   discoverSkillPacks,
   filterSkillPackIds,
@@ -83,7 +84,7 @@ export default async function skillPacks(pi: ExtensionAPI): Promise<void> {
       } catch (error) {
         availablePacks = [];
         enabledPackIds = new Set();
-        console.error(`[pi-tui-enhancements/panel] 技能包发现失败：${errorMessage(error)}`);
+        logFailure("panel", `技能包发现失败：${errorMessage(error)}`);
       }
     });
 
@@ -97,12 +98,12 @@ export default async function skillPacks(pi: ExtensionAPI): Promise<void> {
           skillPaths: getEnabledSkillPackPaths(availablePacks, enabledPackIds),
         };
       } catch (error) {
-        console.error(`[pi-tui-enhancements/panel] 技能包资源加载失败：${errorMessage(error)}`);
+        logFailure("panel", `技能包资源加载失败：${errorMessage(error)}`);
         return {};
       }
     });
   } catch (error) {
-    console.error(`[pi-tui-enhancements/panel] 技能包资源接口不可用，已隐藏技能包功能：${errorMessage(error)}`);
+    logFailure("panel", `技能包资源接口不可用，已隐藏技能包功能：${errorMessage(error)}`);
     return;
   }
 
@@ -182,7 +183,7 @@ export default async function skillPacks(pi: ExtensionAPI): Promise<void> {
       } catch (error) {
         // ctx may already be invalid after a partial reload; keep the real
         // failure visible without calling stale UI methods.
-        console.error(`[pi-tui-enhancements/panel] 技能包重新加载失败：${errorMessage(error)}`);
+        logFailure("panel", `技能包重新加载失败：${errorMessage(error)}`);
       }
     },
   });

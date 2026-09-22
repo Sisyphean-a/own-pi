@@ -13,6 +13,7 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import { frameBottom, frameRow, frameTop } from "../overlay-frame.ts";
+import type { DescriptionLookup } from "./description-translations.ts";
 
 /** 命令面板与上下文查看共用边框排版；面板比上下文窄，只保留命令名与描述即可。 */
 const FRAME_WIDTH_UTILS = { visibleWidth, truncateToWidth };
@@ -156,6 +157,7 @@ async function getAutocompleteCommands(provider: AutocompleteProvider | undefine
 export async function loadCommandPaletteItems(
   provider: AutocompleteProvider | undefined,
   pi: CommandPalettePi,
+  describe?: DescriptionLookup,
 ): Promise<SelectItem[]> {
   const providerItems = await getAutocompleteCommands(provider);
   let registeredCommands: Array<{ name: string; description?: string }> = [];
@@ -169,7 +171,17 @@ export async function loadCommandPaletteItems(
     // command metadata API is unavailable during startup or reload.
   }
 
-  return mergeCommandItems(providerItems, registeredCommands);
+  const commands = mergeCommandItems(providerItems, registeredCommands);
+  if (!describe) return commands;
+  return commands.map((command) => {
+    if (!command.description) return command;
+    const isSkill = command.value.startsWith("skill:");
+    const name = isSkill ? command.value.slice("skill:".length) : command.value;
+    return {
+      ...command,
+      description: describe(isSkill ? "skill" : "command", name, command.description),
+    };
+  });
 }
 
 export type CommandPaletteTheme = {
@@ -327,13 +339,14 @@ export async function showCommandPalette(
   provider?: AutocompleteProvider,
   requestRender?: () => void,
   executeCommand?: (command: string) => boolean,
+  describe?: DescriptionLookup,
 ): Promise<void> {
   if (ctx.mode !== "tui") {
     ctx.ui.notify("命令面板仅支持交互式终端", "error");
     return;
   }
 
-  const commands = await loadCommandPaletteItems(provider, pi);
+  const commands = await loadCommandPaletteItems(provider, pi, describe);
   if (commands.length === 0) {
     ctx.ui.notify("当前没有可用命令", "warning");
     return;

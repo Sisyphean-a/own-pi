@@ -8,6 +8,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { logFailure } from "../extension-log.ts";
 import { errorMessage } from "../optional-feature.ts";
 
 type ThemeLike = { bold(text: string): string; fg(color: string, text: string): string };
@@ -42,7 +43,7 @@ export function restoreWorkingIndicator(ctx: ExtensionContext): void {
   try {
     ctx.ui.setWorkingVisible(true);
   } catch (error) {
-    console.error(`[pi-tui-enhancements/内置工作指示器] 不可用，已隐藏相关功能：${errorMessage(error)}`);
+    logFailure("内置工作指示器", `不可用，已隐藏相关功能：${errorMessage(error)}`);
   }
 }
 
@@ -50,7 +51,7 @@ async function refreshUsage(controller: UsageController, ctx: ExtensionContext):
   try {
     await controller.refresh(ctx);
   } catch (error) {
-    console.error(`[pi-tui-enhancements/usage] 刷新失败：${errorMessage(error)}`);
+    logFailure("usage", `刷新失败：${errorMessage(error)}`);
   }
 }
 
@@ -58,7 +59,7 @@ function clearUsage(controller: UsageController, ctx: ExtensionContext): void {
   try {
     controller.clear(ctx);
   } catch (error) {
-    console.error(`[pi-tui-enhancements/usage] 清理失败：${errorMessage(error)}`);
+    logFailure("usage", `清理失败：${errorMessage(error)}`);
   }
 }
 
@@ -89,7 +90,7 @@ export function createDisplaySession(options: DisplaySessionOptions): { register
         installFooter(ctx);
       }
     } catch (error) {
-      console.error(`[pi-tui-enhancements/会话显示初始化] 失败：${errorMessage(error)}`);
+      logFailure("会话显示初始化", `失败：${errorMessage(error)}`);
     }
     if (usageController) void refreshUsage(usageController, ctx);
   };
@@ -106,7 +107,7 @@ export function createDisplaySession(options: DisplaySessionOptions): { register
     try {
       labelAssistantMessage(event, ctx);
     } catch (error) {
-      console.error(`[pi-tui-enhancements/思考内容标记] 失败：${errorMessage(error)}`);
+      logFailure("思考内容标记", `失败：${errorMessage(error)}`);
     }
   };
 
@@ -137,7 +138,7 @@ export function createDisplaySession(options: DisplaySessionOptions): { register
           try {
             event.messages.splice(0, event.messages.length, ...messageDisplay.sanitizeThinking(event.messages));
           } catch (error) {
-            console.error(`[pi-tui-enhancements/思考内容清理] 失败：${errorMessage(error)}`);
+            logFailure("思考内容清理", `失败：${errorMessage(error)}`);
           }
         });
       }
@@ -152,7 +153,7 @@ export function createDisplaySession(options: DisplaySessionOptions): { register
             messageDisplay!.toggleThinking(ctx);
           }
         } catch (error) {
-          console.error(`[pi-tui-enhancements/thinking 快捷键] 失败：${errorMessage(error)}`);
+          logFailure("thinking 快捷键", `失败：${errorMessage(error)}`);
         }
       },
     });

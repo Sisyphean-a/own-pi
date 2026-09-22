@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { expandInlineSkillDirectives } from "../src/panel/skills.ts";
+import { expandInlineSkillDirectives, getSkills } from "../src/panel/skills.ts";
 
 type TestSkill = {
   name: string;
@@ -21,6 +21,14 @@ function createPi(skills: TestSkill[]): ExtensionAPI {
     })),
   } as unknown as ExtensionAPI;
 }
+
+test("uses translated skill descriptions without changing skill names", () => {
+  const pi = createPi([{ name: "review", filePath: "/tmp/review/SKILL.md" }]);
+  const skills = getSkills(pi, (_kind, _name, description) => `${description} 中文`);
+
+  assert.equal(skills[0]?.name, "review");
+  assert.equal(skills[0]?.description, "review description 中文");
+});
 
 test("expands every selected skill in editor order", async () => {
   const directory = await mkdtemp(join(tmpdir(), "quick-panel-test-"));

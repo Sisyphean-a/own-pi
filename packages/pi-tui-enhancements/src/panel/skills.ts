@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { DescriptionLookup } from "./description-translations.ts";
 import type { Skill } from "./types.ts";
 
 const inlineSkillDirective = /\/skill:([a-z0-9-]+)/g;
@@ -11,15 +12,19 @@ type SkillDirective = {
   skill: Skill;
 };
 
-export function getSkills(pi: ExtensionAPI): Skill[] {
+export function getSkills(pi: ExtensionAPI, describe?: DescriptionLookup): Skill[] {
   return pi.getCommands()
     .filter((command) => command.source === "skill" && command.name.startsWith("skill:"))
-    .map((command) => ({
-      name: command.name.slice("skill:".length),
-      description: command.description ?? "未提供描述",
-      filePath: command.sourceInfo.path,
-      baseDir: dirname(command.sourceInfo.path),
-    }))
+    .map((command) => {
+      const name = command.name.slice("skill:".length);
+      const description = command.description ?? "未提供描述";
+      return {
+        name,
+        description: describe?.("skill", name, description) ?? description,
+        filePath: command.sourceInfo.path,
+        baseDir: dirname(command.sourceInfo.path),
+      };
+    })
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 

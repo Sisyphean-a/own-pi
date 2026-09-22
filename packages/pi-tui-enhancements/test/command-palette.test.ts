@@ -47,6 +47,29 @@ test("loads built-in autocomplete commands and merges extension metadata without
   ]);
 });
 
+test("replaces only command descriptions with cached translations", async () => {
+  const provider = {
+    async getSuggestions() {
+      return {
+        prefix: "/",
+        items: [{ value: "resume", label: "resume", description: "Resume a session" }],
+      };
+    },
+    applyCompletion() {
+      throw new Error("not used");
+    },
+  };
+  const pi = { getCommands: () => [] } as unknown as CommandPalettePi;
+
+  const items = await loadCommandPaletteItems(
+    provider as never,
+    pi,
+    (_kind, _name, description) => description === "Resume a session" ? "恢复会话" : description,
+  );
+
+  assert.deepEqual(items, [{ value: "resume", label: "resume", description: "恢复会话" }]);
+});
+
 test("ranks command-name matches above description-only matches", () => {
   const commands = [
     { value: "import", label: "import", description: "Import and resume a session" },

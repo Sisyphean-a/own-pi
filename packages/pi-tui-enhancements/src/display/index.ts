@@ -1,10 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { logFailure } from "../extension-log.ts";
 import { createFeatureLoader, errorMessage } from "../optional-feature.ts";
 import { createDisplaySession } from "./session.ts";
 
 // Rule: 可选 peer、原型 API 和包内模块随时可能消失；登记过的失败在这里统一转成“隐藏该功能”的日志。
 const loader = createFeatureLoader((name, error) => {
-  console.error(`[pi-tui-enhancements/${name}] 不可用，已隐藏相关功能：${errorMessage(error)}`);
+  logFailure(name, `不可用，已隐藏相关功能：${errorMessage(error)}`);
 });
 
 function installToolRendering(toolRendering: typeof import("./tool-rendering.ts") | undefined): void {
@@ -12,12 +13,12 @@ function installToolRendering(toolRendering: typeof import("./tool-rendering.ts"
   try {
     toolRendering.installContainerParentTracking();
   } catch (error) {
-    console.error(`[pi-tui-enhancements/工具容器分组] 不可用，已隐藏相关功能：${errorMessage(error)}`);
+    logFailure("工具容器分组", `不可用，已隐藏相关功能：${errorMessage(error)}`);
   }
   try {
     toolRendering.installToolRenderers();
   } catch (error) {
-    console.error(`[pi-tui-enhancements/工具紧凑渲染] 不可用，已隐藏相关功能：${errorMessage(error)}`);
+    logFailure("工具紧凑渲染", `不可用，已隐藏相关功能：${errorMessage(error)}`);
   }
 }
 
@@ -26,13 +27,13 @@ function installMessageDisplay(messageDisplay: typeof import("./message-display.
   try {
     messageDisplay.installCompactUserMessage();
   } catch (error) {
-    console.error(`[pi-tui-enhancements/用户消息紧凑渲染] 不可用，已隐藏相关功能：${errorMessage(error)}`);
+    logFailure("用户消息紧凑渲染", `不可用，已隐藏相关功能：${errorMessage(error)}`);
   }
   try {
     messageDisplay.installThinkingCollapse();
     return true;
   } catch (error) {
-    console.error(`[pi-tui-enhancements/思考折叠] 不可用，已隐藏相关功能：${errorMessage(error)}`);
+    logFailure("思考折叠", `不可用，已隐藏相关功能：${errorMessage(error)}`);
     return false;
   }
 }
@@ -46,7 +47,7 @@ function createUsageController(
   try {
     return usageModule.createProviderUsageController();
   } catch (error) {
-    console.error(`[pi-tui-enhancements/provider usage controller] 不可用：${errorMessage(error)}`);
+    logFailure("provider usage controller", `不可用：${errorMessage(error)}`);
     return undefined;
   }
 }

@@ -26,6 +26,7 @@ code-paths:
 
 - TUI 编辑器中的 `Ctrl+L` 与 `/quick-panel` 都打开快捷面板；非 TUI 模式不创建面板，并明确提示该功能不可用。快捷面板编辑器通过 `CustomEditor` 的 `embedWorkingStatus: true` 接管内置工作状态：working、重试、压缩等状态显示在输入框上边框内，不另起独立状态行。
 - 选择技能只向当前编辑器插入 `/skill:<name>`；选择模型或思考等级后调用 Pi 的对应设置接口；选择组合前必须确认目标模型存在且支持指定思考等级。
+- TUI 会话启动 3 秒后只判定一次命令与技能描述：完全不含中文字符且没有有效缓存的描述由当前模型后台翻译为简体中文。模型只接收描述文本且不请求推理；命令名、技能名、命令值和技能正文不翻译。Pi 补全数据附加的 `[u]`、`[t]`、`[u:npm:…]` 等来源标签只属于展示，不参与描述缓存身份；命令面板保留标签，快捷面板使用无标签描述，但两者复用同一译文。输出必须匹配固定 JSON 结构，格式错误最多重试三次；成功结果按规范化源描述持久化到用户 agent 目录，正文变化即失效，模型或缓存失败保持原描述且不阻塞启动、输入或弹窗。
 - `/skill-packs` 只扫描全局 `~/.pi/agent/skill-packs` 与项目 `.pi/skill-packs` 的直接包目录；不含可发现 `SKILL.md` 的目录不会显示。未受信任项目只显示全局包。普通包会将包目录整体交给 Pi 的 `resources_discover`；包根存在 `skill-pack.json` 时只交给 Pi 其中 `skillPaths` 指定且位于包内的入口路径。未启用包不会进入系统提示词或技能命令。
 - 技能包选择是当前会话状态：以 `skill-pack-selection` custom entry 保存，不写 `settings.json`；reload 重新读取该 entry，新会话没有选择，恢复原会话可恢复选择。
 - 输入中的已知内联技能指令按编辑器出现顺序展开为技能块；未知指令保持原文，用户剩余文本保持原有顺序，技能 frontmatter 被移除。
@@ -39,6 +40,7 @@ code-paths:
 - 上下文分类按字符估算后整体缩放到 provider 上报的总量，分类之和与总量一致；读取技能文件的工具调用计入技能而不是工具。
 - 当前模型为 `openai-codex` 且使用官方 OAuth 时，provider usage 显示 5 小时和周窗口；`opencode-go` 使用官方 API key 显示 5 小时、周和月窗口；Command Code 按 provider 名称特征（`commandcode`、`command-code`、`cmdc`）识别，用官方 API key 查询官方 credits 与订阅套餐，显示 5 小时、周和套餐月窗口，套餐未知时只省略月窗口。面板显示重置时间，footer 显示紧凑剩余百分比；非目标 provider、认证失败、响应不完整或网络失败不阻塞 TUI。每个 provider 的端点、认证、请求头与解析由 `src/providers/` 下自己的适配器拥有；新增 provider 只添加一个适配器文件。
 - 面板、上下文查看和显示三个功能域独立动态激活；缺少 Pi peer、TUI seam 或单侧内部模块时，只隐藏受影响功能，不阻断其他侧或 Pi 启动。
+- 后台任务和软依赖失败只追加到用户 agent 目录的 `pi-tui-enhancements/errors.ndjson`，不得直接写入 stdout/stderr 或主动弹出通知；用户明确发起的命令仍可通过 Pi UI 返回必要结果。
 - 包不重复分发 Pi 核心运行时依赖；核心包由 Pi 提供并通过可选 peer dependency 声明。
 
 ## 非目标

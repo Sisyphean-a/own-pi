@@ -7,6 +7,7 @@ import { loadCombos } from "./combos.ts";
 import { QuickPanel } from "./quick-panel-ui.ts";
 import { createSkillDirective, getSkills } from "./skills.ts";
 import type { Combo } from "./combos.ts";
+import type { DescriptionLookup } from "./description-translations.ts";
 import type { PickerResult, Skill } from "./types.ts";
 
 function sameModel(left: Model<Api> | undefined, right: Model<Api> | undefined): boolean {
@@ -69,13 +70,17 @@ async function applyCombo(pi: ExtensionAPI, ctx: ExtensionContext, combo: Combo)
   ctx.ui.notify(`已切换组合：${combo.name}（${combo.modelId} · ${combo.thinkingLevel}${suffix}）`, type);
 }
 
-export async function showQuickPanel(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+export async function showQuickPanel(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  describe?: DescriptionLookup,
+): Promise<void> {
   if (ctx.mode !== "tui") {
     ctx.ui.notify("快捷面板仅支持交互式终端", "error");
     return;
   }
 
-  const skills = getSkills(pi);
+  const skills = getSkills(pi, describe);
   const models = getModels(ctx);
   let combos: Combo[];
   try {

@@ -7,6 +7,8 @@
  * Guarantee: 任何被装载的功能返回 undefined 或抛错，都不影响同包其他功能与其他包。
  */
 
+import { logFailure } from "./extension-log.ts";
+
 export type FeatureFailureReporter = (name: string, error: unknown) => void;
 
 export type OptionalFeatureLoader = {
@@ -32,7 +34,7 @@ export function createFeatureLoader(report?: FeatureFailureReporter): OptionalFe
       report(name, error);
       return;
     }
-    console.error(`[optional-feature/${name}] 不可用，已跳过：${errorMessage(error)}`);
+    logFailure(`optional-feature/${name}`, `不可用，已跳过：${errorMessage(error)}`);
   };
 
   return {
