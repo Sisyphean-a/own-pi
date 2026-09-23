@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { registerCompactionTrigger } from "../src/hooks/compaction-trigger.js";
+import { JournalTokenProgress } from "../src/session-ledger/token-progress.js";
 import { compactionEntry, rawMessage, textCustomMessage, type TestEntry } from "./fixtures/session.js";
 
 function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensMode?: "calibrated" | "ratio"; compactAfterTokensRatio?: number; passive?: boolean; compactInFlight?: boolean } = {}) {
@@ -20,6 +21,7 @@ function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensM
 			passive: args.passive ?? false,
 		},
 		compactInFlight: args.compactInFlight ?? false,
+		tokenProgress: new JournalTokenProgress(),
 		sessionEpoch: 0,
 		isSessionCurrent: (epoch: number) => runtime.sessionEpoch === epoch,
 		observerPromise: new Promise(() => {}),

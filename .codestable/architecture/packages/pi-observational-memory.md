@@ -18,7 +18,7 @@
 - 会话代次：Pi 在会话替换（new/resume/fork）、重载或退出时先触发 `session_shutdown`，再让旧 ctx/pi 失效；`Runtime.endSession()` 自增代次并释放运行标志，后台任务按启动时捕获的代次作废，之后不得再触碰 ctx/pi；Pi 的 stale-ctx 错误按正常取消处理，不作为失败提示用户。
 - 后台 worker 只在达到配置阈值时启动；失败不得阻塞 Pi 主回合，没有可用模型或认证时跳过并报告，不伪造记忆。
 - 记忆状态由折叠当前分支的 V3 ledger 条目重建；`coversUpToId` 只是进度水位，来源关系由观察的 `sourceEntryIds` 与反思的 `supportingObservationIds` 表达。
-- 覆盖进度的原始 token 计量由 `src/session-ledger/token-progress.ts` 维护为增量水位：账本对象被替换（reload、分支切换、压缩重写）时整体重建，账本追加时只累计新增源条目，覆盖标记推进时从新标记重新累计；真实上下文增量仍以 provider 上报的 usage 为基准，锚点缺失时回退到该水位。阶段到期判断与阶段内准入都消费它，不逐轮重算整本账本。
+- 覆盖进度和主动压缩的原始 token 计量由 `src/session-ledger/token-progress.ts` 维护为增量水位：Pi 的 `getBranch()` 每次都返回新数组，因此以分支前缀的首/末条目身份而非数组身份判定追加；分叉、压缩重写等前缀变化时重建，会话关闭时主动清空。账本追加只累计新增源条目，覆盖标记推进时从新标记重新累计；真实上下文增量仍以 provider 上报的 usage 为基准，锚点缺失时回退到原始水位。阶段到期判断与阶段内准入都消费它，主动压缩在 `agent_settled` 及延迟复核时复用同一进度缓存，不逐轮重算整本账本。
 - 压缩只使用已写入 ledger 的记忆，不等待运行中的 worker；没有可渲染记忆时放弃接管，交给 Pi 原生摘要器。
 - `Runtime` 在首次使用时加载配置；模型认证判定不得比 Pi 自身的门禁更严格。
 

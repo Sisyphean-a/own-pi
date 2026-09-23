@@ -136,7 +136,7 @@ export class Runtime {
 	} | undefined;
 	/**
 	 * 覆盖时钟的增量缓存：`turn_end` 每个回合都要判断阶段是否到期，逐轮重算整本账本会
-	 * 随会话长度线性变慢。缓存跨会话保留，账本对象被替换时会自行重建。
+	 * 随会话长度线性变慢。缓存按分支前缀复用，会话替换时主动清空。
 	 */
 	readonly tokenProgress = new JournalTokenProgress();
 
@@ -165,6 +165,7 @@ export class Runtime {
 		this.compactInFlight = false;
 		this.compactHookInFlight = false;
 		this.observerEmptyBackoff = undefined;
+		this.tokenProgress.reset();
 	}
 
 	/** 代次仍匹配时，启动该任务时的 ctx/pi 才可用。 */

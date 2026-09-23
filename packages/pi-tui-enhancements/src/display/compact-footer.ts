@@ -32,17 +32,17 @@ type UsageTotals = {
 /**
  * footer 的 usage 增量缓存。
  *
- * Rule: 会话条目只在末尾追加，因此已累计的 usage 永不失效；只有条目数量变化或前缀身份改变
- * （reload、分支切换、压缩重写）才整体重算。footer 每次重绘都调用 render，逐帧全量求和会让
- * 每帧成本随会话长度增长。
+ * Rule: 会话条目只在末尾追加，因此已累计的 usage 永不失效；分支前缀改变时整体重算。
+ * render 只在 session/leaf 变化时读取条目，避免 Pi 的 getEntries 每帧遍历全会话。
  */
 type UsageMemo = UsageTotals & {
   count: number;
   first: unknown;
+  last: unknown;
 };
 
 function emptyUsageMemo(): UsageMemo {
-  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, count: 0, first: undefined };
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, count: 0, first: undefined, last: undefined };
 }
 
 type StatPart = {
@@ -94,7 +94,8 @@ function addEntryUsage(totals: UsageTotals, value: unknown): boolean {
 }
 
 export function collectUsage(entries: readonly unknown[], memo?: UsageMemo): UsageTotals {
-  const stablePrefix = memo !== undefined && entries.length >= memo.count && entries[0] === memo.first;
+  const stablePrefix = memo !== undefined && entries.length >= memo.count && entries[0] === memo.first
+    && (memo.count === 0 || entries[memo.count - 1] === memo.last);
   const totals: UsageTotals = stablePrefix
     ? { input: memo.input, output: memo.output, cacheRead: memo.cacheRead, cacheWrite: memo.cacheWrite }
     : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -114,6 +115,7 @@ export function collectUsage(entries: readonly unknown[], memo?: UsageMemo): Usa
     memo.latestCacheHitRate = totals.latestCacheHitRate;
     memo.count = entries.length;
     memo.first = entries[0];
+    memo.last = entries.at(-1);
   }
   return totals;
 }
@@ -146,9 +148,7 @@ function identityText(ctx: ExtensionContext, footerData: FooterDataLike): string
   return identity;
 }
 
-function statParts(ctx: ExtensionContext, usageMemo: UsageMemo): StatPart[] {
-  const entries = ctx.sessionManager.getEntries() as readonly unknown[];
-  const usage = collectUsage(entries, usageMemo);
+function statParts(ctx: ExtensionContext, usage: UsageTotals): StatPart[] {
   const parts: StatPart[] = [];
 
   if (usage.input) parts.push({ text: `↑${formatTokens(usage.input)}`, tone: "thinkingLow" });
@@ -244,8 +244,25 @@ export function createCompactFooter(
   widthUtils: WidthUtils,
 ) {
   const unsubscribeBranch = footerData.onBranchChange(() => tui.requestRender());
-  // 每帧重绘复用同一份增量缓存，只有新条目才需要求和。
-  const usageMemo = emptyUsageMemo();
+  let usageMemo = emptyUsageMemo();
+  let sessionManager: ExtensionContext["sessionManager"] | undefined;
+  let sessionId: string | undefined;
+  let leafId: string | null | undefined;
+  let usage: UsageTotals = usageMemo;
+
+  const currentUsage = (): UsageTotals => {
+    const manager = ctx.sessionManager;
+    const currentSessionId = manager.getSessionId();
+    const currentLeafId = manager.getLeafId();
+    if (manager !== sessionManager || currentSessionId !== sessionId) usageMemo = emptyUsageMemo();
+    if (manager !== sessionManager || currentSessionId !== sessionId || currentLeafId !== leafId) {
+      usage = collectUsage(manager.getEntries(), usageMemo);
+      sessionManager = manager;
+      sessionId = currentSessionId;
+      leafId = currentLeafId;
+    }
+    return usage;
+  };
 
   return {
     dispose() {
@@ -256,7 +273,7 @@ export function createCompactFooter(
       if (width <= 0) return [];
 
       const identity = identityText(ctx, footerData);
-      const stats = styleStats(statParts(ctx, usageMemo), theme);
+      const stats = styleStats(statParts(ctx, currentUsage()), theme);
       const identityStyled = theme.fg("dim", identity);
       const separator = theme.fg("dim", " | ");
       const combinedLeft = identityStyled + separator + stats;

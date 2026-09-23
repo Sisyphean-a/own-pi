@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveCompactAfterTokens } from "../config.js";
 import { isStaleSessionError } from "../runtime.js";
-import { rawTokensSinceLastCompaction, type Entry } from "../session-ledger/index.js";
+import type { Entry } from "../session-ledger/index.js";
 import type { Runtime } from "../runtime.js";
 
 export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): void {
@@ -13,7 +13,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 
 		const entries = ctx.sessionManager?.getBranch?.() as Entry[] | undefined;
 		if (!entries) return;
-		const progress = rawTokensSinceLastCompaction(entries);
+		const progress = runtime.tokenProgress.compactionProgress(entries);
 		const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
 		const threshold = resolveCompactAfterTokens(runtime.config, contextWindow);
 		if (progress < threshold) return;
@@ -51,7 +51,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 					runtime.compactInFlight = false;
 					return;
 				}
-				const currentProgress = rawTokensSinceLastCompaction(currentEntries);
+				const currentProgress = runtime.tokenProgress.compactionProgress(currentEntries);
 				if (currentProgress < threshold) {
 					runtime.compactInFlight = false;
 					if (hasUI) ui?.notify(

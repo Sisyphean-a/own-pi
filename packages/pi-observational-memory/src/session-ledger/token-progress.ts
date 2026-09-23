@@ -1,5 +1,5 @@
 import { estimateEntryTokens } from "../tokens.js";
-import { findLastCompactionIndex, isSourceEntry } from "./progress.js";
+import { isSourceEntry } from "./progress.js";
 import {
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
@@ -27,12 +27,24 @@ type ClockState = {
 	baselineTokens: number | undefined;
 };
 
+type CoverageKind = "observations" | "reflections";
+type CoverageMarker = { id: string; coversUpToId: string; entryIndex: number; coveredIndex: number };
+type PendingMarker = { kind: CoverageKind; id: string; entryIndex: number };
+type CompactionClock = { compactionIndex: number; start: number; scannedTo: number; tokens: number };
+
 type JournalState = {
 	entries: Entry[];
+	length: number;
+	first: Entry | undefined;
+	last: Entry | undefined;
 	indexById: Map<string, number>;
+	pendingMarkers: Map<string, PendingMarker[]>;
 	compactionIndex: number;
+	postCompactionBaseline: number | undefined;
+	markers: { observations?: CoverageMarker; reflections?: CoverageMarker };
 	observations: ClockState;
 	reflections: ClockState;
+	compaction: CompactionClock;
 };
 
 /** `stageDue` 需要的两个数字：真实 token 增量与原始估算增量。 */
@@ -72,6 +84,31 @@ function validAssistantContextTokens(entry: Entry): number | undefined {
 export class JournalTokenProgress {
 	private journal: JournalState | undefined;
 
+	reset(): void {
+		this.journal = undefined;
+	}
+
+	/** 自上次压缩保留的第一条源条目起，估算当前分支的原始 token。 */
+	compactionProgress(entries: Entry[]): number {
+		const journal = this.syncJournal(entries);
+		const compactionIndex = journal.compactionIndex;
+		const firstKeptEntryId = compactionIndex >= 0 ? entries[compactionIndex].firstKeptEntryId : undefined;
+		const firstKeptIndex = firstKeptEntryId ? journal.indexById.get(firstKeptEntryId) : undefined;
+		const start = compactionIndex < 0 ? 0 : firstKeptIndex ?? compactionIndex + 1;
+		const clock = journal.compaction;
+		if (clock.compactionIndex !== compactionIndex || clock.start !== start) {
+			clock.compactionIndex = compactionIndex;
+			clock.start = start;
+			clock.scannedTo = start;
+			clock.tokens = 0;
+		}
+		for (let i = clock.scannedTo; i < entries.length; i++) {
+			if (isSourceEntry(entries[i])) clock.tokens += estimateEntryTokens(entries[i]);
+		}
+		clock.scannedTo = entries.length;
+		return clock.tokens;
+	}
+
 	/** 观察覆盖之后的进度。 */
 	observationProgress(entries: Entry[], currentTokens: number | undefined): StageProgress {
 		return this.stageProgress(entries, "observations", currentTokens);
@@ -93,7 +130,7 @@ export class JournalTokenProgress {
 		const compactionIndex = journal.compactionIndex;
 
 		if (compactionIndex > coverageIndex) {
-			const baseline = this.tokensAfterCompaction(journal, compactionIndex);
+			const baseline = journal.postCompactionBaseline;
 			const real = baseline === undefined || currentTokens === undefined || currentTokens < baseline
 				? undefined
 				: currentTokens - baseline;
@@ -112,31 +149,81 @@ export class JournalTokenProgress {
 		};
 	}
 
-	/** Guarantee: 只在账本对象被替换、覆盖标记推进或标记位置变化时整体重建。 */
+	/** Pi 的 getBranch 每次返回新数组；用旧分支末端条目判断它是否仍是当前分支的前缀。 */
 	private syncJournal(entries: Entry[]): JournalState {
 		const existing = this.journal;
-		if (existing && existing.entries === entries) return existing;
-
-		const indexById = new Map<string, number>();
-		for (let i = 0; i < entries.length; i++) indexById.set(entries[i].id, i);
+		if (existing && entries.length >= existing.length && entries[0] === existing.first
+			&& (existing.length === 0 || entries[existing.length - 1] === existing.last)) {
+			this.appendEntries(existing, entries, existing.length);
+			return existing;
+		}
 
 		const fresh: JournalState = {
 			entries,
-			indexById,
-			compactionIndex: findLastCompactionIndex(entries),
+			length: 0,
+			first: undefined,
+			last: undefined,
+			indexById: new Map(),
+			pendingMarkers: new Map(),
+			compactionIndex: -1,
+			postCompactionBaseline: undefined,
+			markers: {},
 			observations: emptyClock(),
 			reflections: emptyClock(),
+			compaction: { compactionIndex: -1, start: 0, scannedTo: 0, tokens: 0 },
 		};
-		// 账本被替换（reload、分支切换、压缩重写）时无法安全复用旧的累计值，全部重算。
+		this.appendEntries(fresh, entries, 0);
 		this.journal = fresh;
 		return fresh;
+	}
+
+	private appendEntries(journal: JournalState, entries: Entry[], from: number): void {
+		journal.entries = entries;
+		for (let i = from; i < entries.length; i++) {
+			const entry = entries[i];
+			journal.indexById.set(entry.id, i);
+			const pending = journal.pendingMarkers.get(entry.id);
+			if (pending) {
+				journal.pendingMarkers.delete(entry.id);
+				for (const marker of pending) this.acceptMarker(journal, marker.kind, marker.id, entry.id, marker.entryIndex);
+			}
+			if (entry.type === "compaction") {
+				journal.compactionIndex = i;
+				journal.postCompactionBaseline = undefined;
+			} else if (journal.compactionIndex >= 0 && journal.postCompactionBaseline === undefined) {
+				journal.postCompactionBaseline = validAssistantContextTokens(entry);
+			}
+			if (isObservationsRecordedEntry(entry)) {
+				this.acceptMarker(journal, "observations", entry.id, entry.data.coversUpToId, i);
+			} else if (isReflectionsRecordedEntry(entry)) {
+				this.acceptMarker(journal, "reflections", entry.id, entry.data.coversUpToId, i);
+			}
+		}
+		journal.length = entries.length;
+		journal.first = entries[0];
+		journal.last = entries.at(-1);
+	}
+
+	private acceptMarker(journal: JournalState, kind: CoverageKind, id: string, coversUpToId: string, entryIndex: number): void {
+		const coveredIndex = journal.indexById.get(coversUpToId);
+		if (coveredIndex === undefined) {
+			const pending = journal.pendingMarkers.get(coversUpToId) ?? [];
+			pending.push({ kind, id, entryIndex });
+			journal.pendingMarkers.set(coversUpToId, pending);
+			return;
+		}
+		const current = journal.markers[kind];
+		if (!current || coveredIndex > current.coveredIndex
+			|| (coveredIndex === current.coveredIndex && entryIndex > current.entryIndex)) {
+			journal.markers[kind] = { id, coversUpToId, entryIndex, coveredIndex };
+		}
 	}
 
 	/** 推进或重建一个覆盖时钟，返回当前覆盖下标。 */
 	private syncClock(journal: JournalState, clock: ClockState, kind: "observations" | "reflections"): number {
 		const entries = journal.entries;
-		const marker = this.latestCoverageMarker(journal, kind);
-		const coveredIndex = marker ? journal.indexById.get(marker.coversUpToId) ?? -1 : -1;
+		const marker = journal.markers[kind];
+		const coveredIndex = marker?.coveredIndex ?? -1;
 		const markerId = marker?.id;
 		const stale = clock.markerId !== markerId || clock.coveredIndex !== coveredIndex;
 
@@ -157,34 +244,6 @@ export class JournalTokenProgress {
 		return coveredIndex;
 	}
 
-	/**
-	 * 取最新生效的覆盖标记：`coversUpToId` 必须能在账本中定位，且指向最靠后的位置。
-	 * 覆盖标记位于账本末尾附近，从后向前扫描可在命中后立刻停止。
-	 */
-	private latestCoverageMarker(
-		journal: JournalState,
-		kind: "observations" | "reflections",
-	): { id: string; coversUpToId: string } | undefined {
-		const entries = journal.entries;
-		let latestIndex = -1;
-		let marker: { id: string; coversUpToId: string } | undefined;
-		const consider = (entry: Entry, coversUpToId: string): void => {
-			const coveredIndex = journal.indexById.get(coversUpToId);
-			if (coveredIndex === undefined || coveredIndex < 0 || coveredIndex <= latestIndex) return;
-			latestIndex = coveredIndex;
-			marker = { id: entry.id, coversUpToId };
-		};
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const entry = entries[i];
-			if (kind === "observations") {
-				if (isObservationsRecordedEntry(entry)) consider(entry, entry.data.coversUpToId);
-			} else if (isReflectionsRecordedEntry(entry)) {
-				consider(entry, entry.data.coversUpToId);
-			}
-		}
-		return marker;
-	}
-
 	private baselineAtCoverage(entries: Entry[], coverageIndex: number): number | undefined {
 		for (let i = coverageIndex; i >= 0; i--) {
 			const tokens = validAssistantContextTokens(entries[i]);
@@ -193,11 +252,4 @@ export class JournalTokenProgress {
 		return undefined;
 	}
 
-	private tokensAfterCompaction(journal: JournalState, compactionIndex: number): number | undefined {
-		for (let i = compactionIndex + 1; i < journal.entries.length; i++) {
-			const tokens = validAssistantContextTokens(journal.entries[i]);
-			if (tokens !== undefined) return tokens;
-		}
-		return undefined;
-	}
 }

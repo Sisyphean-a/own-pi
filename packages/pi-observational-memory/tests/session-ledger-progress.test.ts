@@ -10,7 +10,9 @@ import {
 	rawTokensSinceLastCompaction,
 	rawTokensSinceObservationCoverage,
 	rawTokensSinceReflectionCoverage,
+	type Entry,
 } from "../src/session-ledger/index.js";
+import { JournalTokenProgress } from "../src/session-ledger/token-progress.js";
 import {
 	V3_OBSERVATIONS_DROPPED,
 	V3_OBSERVATIONS_RECORDED,
@@ -132,5 +134,45 @@ describe("session-ledger V3 progress helpers", () => {
 		];
 
 		expect(rawTokensSinceLastCompaction(entries)).toBe(3); // raw-1 + raw-2 from live tail starting at firstKeptEntryId
+	});
+});
+
+describe("incremental session progress", () => {
+	it("keeps fresh Pi branch arrays incremental, including an older coverage marker", () => {
+		const progress = new JournalTokenProgress();
+		const entries = [textCustomMessage("raw-1", "aaaa"), textCustomMessage("raw-2", "bbbbbbbb")];
+		const branch = () => [...entries] as Entry[];
+		expect(progress.observationProgress(branch(), 10)).toEqual({ realTokens: 10, rawTokens: 3 });
+		entries.push(observationsRecordedEntry("om-1", {
+			observations: [observation("aaaaaaaaaaaa")], coversUpToId: "raw-2",
+		}));
+		expect(progress.observationProgress(branch(), 10)).toEqual({ realTokens: undefined, rawTokens: 0 });
+		entries.push(textCustomMessage("raw-3", "cccccccccccc"));
+		expect(progress.reflectionProgress(branch(), 11)).toEqual({ realTokens: 11, rawTokens: 6 });
+		expect(progress.observationProgress(branch(), 11)).toEqual({ realTokens: undefined, rawTokens: 3 });
+		entries.push(observationsRecordedEntry("om-2", {
+			observations: [observation("bbbbbbbbbbbb")], coversUpToId: "raw-1",
+		}));
+		expect(progress.observationProgress(branch(), 11)).toEqual({ realTokens: undefined, rawTokens: 3 });
+		expect(progress.compactionProgress(branch())).toBe(rawTokensSinceLastCompaction(branch()));
+	});
+
+	it("rebuilds after a fork, session reset, and compaction, including a newly resolved marker", () => {
+		const progress = new JournalTokenProgress();
+		const first = textCustomMessage("raw-1", "aaaa");
+		const original = [first, textCustomMessage("raw-2", "bbbbbbbb")];
+		progress.observationProgress(original as Entry[], undefined);
+		const fork = [first, textCustomMessage("fork-2", "cccccccccccc")];
+		expect(progress.observationProgress(fork as Entry[], undefined).rawTokens).toBe(4);
+		fork.push(observationsRecordedEntry("om-future", {
+			observations: [observation("aaaaaaaaaaaa")], coversUpToId: "future",
+		}));
+		expect(progress.observationProgress([...fork] as Entry[], undefined).rawTokens).toBe(4);
+		fork.push(textCustomMessage("future", "dddddddd"));
+		expect(progress.observationProgress([...fork] as Entry[], undefined).rawTokens).toBe(0);
+		fork.push(compactionEntry("cmp-1", { firstKeptEntryId: "fork-2" }));
+		expect(progress.compactionProgress([...fork] as Entry[])).toBe(rawTokensSinceLastCompaction(fork));
+		progress.reset();
+		expect(progress.observationProgress(original as Entry[], undefined).rawTokens).toBe(3);
 	});
 });

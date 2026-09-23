@@ -52,6 +52,8 @@ function fixture(
         },
       }, ...extraEntries],
       getSessionName: () => undefined,
+      getSessionId: () => "session-1",
+      getLeafId: () => "leaf-1",
     },
     getContextUsage: () => ({ tokens: 189_040, contextWindow: 272_000, percent: 69.5 }),
   };
@@ -142,6 +144,52 @@ test("includes usage reported by tool results", () => {
   const lines = footer.render(180);
 
   assert.match(lines[0], /↑8\.0k ↓1\.0k/);
+});
+
+test("reuses usage on redraw but refreshes on append, branch switch and session replacement", () => {
+  const first = { type: "message", message: { role: "assistant", usage: { input: 100 } } };
+  let entries: unknown[] = [first];
+  let reads = 0;
+  let sessionId = "session-1";
+  let leafId = "leaf-1";
+  let percent = 1;
+  const ctx = {
+    cwd: "E:\\github\\own-pi",
+    sessionManager: {
+      getEntries() { reads++; return [...entries]; },
+      getSessionId: () => sessionId,
+      getLeafId: () => leafId,
+      getSessionName: () => undefined,
+    },
+    getContextUsage: () => ({ contextWindow: 100, percent }),
+  };
+  const footerData = {
+    getGitBranch: () => null,
+    getExtensionStatuses: () => new Map<string, string>(),
+    getAvailableProviderCount: () => 1,
+    onBranchChange: () => () => {},
+  };
+  const footer = createCompactFooter(ctx as never, { requestRender() {} }, theme, footerData, widthUtils);
+  assert.match(footer.render(100)[0], /↑100.*1\.0%\/100/);
+  percent = 2;
+  assert.match(footer.render(100)[0], /↑100.*2\.0%\/100/);
+  assert.equal(reads, 1);
+
+  entries.push({ type: "message", message: { role: "toolResult", usage: { output: 30 } } });
+  leafId = "leaf-2";
+  assert.match(footer.render(100)[0], /↑100 ↓30/);
+  assert.equal(reads, 2);
+
+  entries = [first, { type: "message", message: { role: "toolResult", usage: { output: 50 } } }];
+  leafId = "fork-2";
+  assert.match(footer.render(100)[0], /↑100 ↓50/);
+  assert.equal(reads, 3);
+
+  sessionId = "session-2";
+  entries = [{ type: "message", message: { role: "assistant", usage: { input: 7 } } }];
+  assert.match(footer.render(100)[0], /↑7/);
+  assert.doesNotMatch(footer.render(100)[0], /↑100/);
+  assert.equal(reads, 4);
 });
 
 test("keeps pi's native working indicator visible when compact footer installs", () => {

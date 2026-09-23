@@ -16,6 +16,7 @@ vi.mock("../src/agents/dropper/agent.js", () => ({ runDropper: mockAgents.runDro
 import { ObserverStreamError } from "../src/agents/observer/agent.js";
 import { registerConsolidationTrigger } from "../src/hooks/consolidation-trigger.js";
 import { Runtime } from "../src/runtime.js";
+import { JournalTokenProgress } from "../src/session-ledger/token-progress.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
@@ -81,6 +82,7 @@ function setup(args: {
 			model: { provider: "anthropic", id: "memory", thinking: "minimal" },
 		},
 		consolidationInFlight: args.consolidationInFlight ?? false,
+		tokenProgress: new JournalTokenProgress(),
 		sessionEpoch: 0,
 		isSessionCurrent: (epoch: number) => runtime.sessionEpoch === epoch,
 		consolidationPhase: undefined as "observer" | "reflector" | "dropper" | undefined,
