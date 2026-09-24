@@ -26,7 +26,7 @@ type UserMessagePrototype = {
 };
 type AssistantContent = { type?: string; thinking?: unknown };
 export type AssistantMessage = { role?: unknown; content?: AssistantContent[]; api?: unknown };
-type ThinkingDisplayState = { collapsed: boolean };
+type ThinkingDisplayState = { automatic: boolean };
 type ThinkingLabelTarget = { ui: { setHiddenThinkingLabel(label?: string): void } };
 type ThemeCache = { __piTuiTheme?: Theme };
 type UserMessagePatch = { originalRender: UserMessagePrototype["render"] };
@@ -39,8 +39,9 @@ const LEGACY_USER_PATCH = Symbol.for("pi.lean-tool-display.user-message.v1");
 const USER_PATCH = Symbol.for("pi.lean-tool-display.user-message.v2");
 const LEGACY_THINKING_PATCH_V1 = Symbol.for("pi.lean-tool-display.thinking.v1");
 const LEGACY_THINKING_PATCH_V2 = Symbol.for("pi.lean-tool-display.thinking.v2");
-const THINKING_PATCH = Symbol.for("pi.lean-tool-display.thinking.v3");
-const THINKING_STATE = Symbol.for("pi.lean-tool-display.thinking-state.v1");
+const LEGACY_THINKING_PATCH_V3 = Symbol.for("pi.lean-tool-display.thinking.v3");
+const THINKING_PATCH = Symbol.for("pi.lean-tool-display.thinking.v4");
+const THINKING_STATE = Symbol.for("pi.lean-tool-display.thinking-state.v2");
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC133_PATTERN = /\x1b\]133;[ABC](?:\x07|\x1b\\)/g;
 
@@ -67,10 +68,18 @@ function stripControlSequences(line: string): string {
   return line.replace(OSC133_PATTERN, "").replace(ANSI_PATTERN, "");
 }
 
-function withoutThinkingForDisplay(message: unknown): unknown {
+function withoutPastThinkingForDisplay(message: unknown, isStreaming: boolean): unknown {
   const record = asRecord(message);
   if (!Array.isArray(record.content)) return message;
-  const content = record.content.filter((block) => asRecord(block).type !== "thinking");
+  let lastNonThinking = -1;
+  for (let index = record.content.length - 1; index >= 0; index--) {
+    if (asRecord(record.content[index]).type !== "thinking") {
+      lastNonThinking = index;
+      break;
+    }
+  }
+  const content = record.content.filter((block, index) =>
+    asRecord(block).type !== "thinking" || (isStreaming && index > lastNonThinking));
   return content.length === record.content.length ? message : { ...record, content };
 }
 
@@ -124,36 +133,36 @@ function getThinkingState(): ThinkingDisplayState {
   const existing = prototype[THINKING_STATE] as ThinkingDisplayState | undefined;
   if (existing) return existing;
 
-  const state: ThinkingDisplayState = { collapsed: true };
+  const state: ThinkingDisplayState = { automatic: true };
   prototype[THINKING_STATE] = state;
   return state;
 }
 
-function getThinkingLabel(collapsed: boolean): string {
-  return collapsed ? "" : "Thinking...";
+function getThinkingLabel(automatic: boolean): string {
+  return automatic ? "" : "Thinking...";
 }
 
 /**
- * Effect: collapsed thinking blocks are removed from historical and streaming assistant rows,
- * including the spacer that Pi normally keeps for a hidden label.
- * Guarantee: the original message remains intact for context and can be shown again without data loss.
- *
- * Effect: pi 的 setHiddenThinkingLabel 会被 interactive mode 广播到所有已渲染消息组件，
- * 在此同步显示状态并用原始消息重建内容，使 toggle 即时展开或彻底隐藏历史思考。
+ * Rule: 自动模式只显示流式消息末尾尚未接续正文或工具调用的思考；结束后全部隐藏。
+ * Guarantee: 只过滤渲染副本，原始消息仍可通过快捷键展开，且不影响模型上下文。
+ * Effect: Pi 广播 setHiddenThinkingLabel 时，用原始消息重建所有已渲染组件。
  */
 export function installThinkingCollapse(): void {
   const prototype = AssistantMessageComponent.prototype as unknown as Patched<AssistantMessagePrototype>;
   const previousPatch = prototype[THINKING_PATCH] as ThinkingPatch | undefined;
   if (previousPatch) return;
 
+  const legacyPatchV3 = prototype[LEGACY_THINKING_PATCH_V3] as ThinkingPatch | undefined;
   const legacyPatchV2 = prototype[LEGACY_THINKING_PATCH_V2] as ThinkingPatch | undefined;
   const legacyPatchV1 = prototype[LEGACY_THINKING_PATCH_V1] as
     | { originalUpdateContent?: AssistantMessagePrototype["updateContent"] }
     | undefined;
-  const originalUpdateContent = legacyPatchV2?.originalUpdateContent
+  const originalUpdateContent = legacyPatchV3?.originalUpdateContent
+    ?? legacyPatchV2?.originalUpdateContent
     ?? legacyPatchV1?.originalUpdateContent
     ?? prototype.updateContent;
-  const originalSetHiddenThinkingLabel = legacyPatchV2?.originalSetHiddenThinkingLabel
+  const originalSetHiddenThinkingLabel = legacyPatchV3?.originalSetHiddenThinkingLabel
+    ?? legacyPatchV2?.originalSetHiddenThinkingLabel
     ?? prototype.setHiddenThinkingLabel;
 
   prototype.updateContent = function updateLeanThinking(
@@ -161,9 +170,11 @@ export function installThinkingCollapse(): void {
     message: unknown,
     isStreaming?: boolean,
   ): void {
-    const collapsed = getThinkingState().collapsed;
-    this.hideThinkingBlock = collapsed;
-    originalUpdateContent.call(this, collapsed ? withoutThinkingForDisplay(message) : message, isStreaming);
+    const automatic = getThinkingState().automatic;
+    this.hideThinkingBlock = false;
+    originalUpdateContent.call(this,
+      automatic ? withoutPastThinkingForDisplay(message, isStreaming ?? this.isStreaming) : message,
+      isStreaming);
     // Guarantee: keep the unmodified source for theme invalidation and later expansion.
     this.lastMessage = message;
   };
@@ -173,7 +184,7 @@ export function installThinkingCollapse(): void {
     label: string,
   ): void {
     this.hiddenThinkingLabel = label;
-    this.hideThinkingBlock = getThinkingState().collapsed;
+    this.hideThinkingBlock = false;
     if (this.lastMessage) this.updateContent(this.lastMessage, this.isStreaming);
   };
 
@@ -183,16 +194,16 @@ export function installThinkingCollapse(): void {
   } satisfies ThinkingPatch;
 }
 
-/** 把当前折叠状态同步到 Pi 的隐藏思考标签（会话开始或重载后）。 */
+/** 同步自动隐藏或手动展开模式（会话开始或重载后）。 */
 export function syncThinkingLabel(ctx: ThinkingLabelTarget): void {
-  ctx.ui.setHiddenThinkingLabel(getThinkingLabel(getThinkingState().collapsed));
+  ctx.ui.setHiddenThinkingLabel(getThinkingLabel(getThinkingState().automatic));
 }
 
-/** 切换思考折叠：状态与动作同属本模块，调用方不用自己取状态再取反。 */
+/** 在自动显示当前思考与手动展开全部思考之间切换。 */
 export function toggleThinking(ctx: ThinkingLabelTarget): void {
   const state = getThinkingState();
-  state.collapsed = !state.collapsed;
-  ctx.ui.setHiddenThinkingLabel(getThinkingLabel(state.collapsed));
+  state.automatic = !state.automatic;
+  ctx.ui.setHiddenThinkingLabel(getThinkingLabel(state.automatic));
 }
 
 export function isAssistantMessage(value: unknown): value is AssistantMessage {

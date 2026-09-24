@@ -7,10 +7,9 @@
 ## 公开边界
 
 - 包入口：`package.json` 中 `pi.extensions` 声明的 `extensions/index.ts`。
-- 紧凑显示入口：`Ctrl+Shift+T` 切换 thinking 显示；提供紧凑工具、用户消息和 footer。
+- 紧凑显示入口：默认自动展示当前流式思考，正文或工具调用开始后隐藏已完成思考；`Ctrl+Shift+T` 切换自动模式与全部展开，并提供紧凑工具、用户消息和 footer。
 - 快捷面板入口：TUI 编辑器 `Ctrl+L` 与 `/quick-panel`；提供技能、模型、思考等级和模型组合选择，并展开已知 `/skill:<name>`。编辑器还接管内嵌工作状态：working、重试、压缩显示在输入框上边框内。命令与技能描述中文化遵循 [TUI 体验上下文](../../requirements/contexts/tui-experience.md)，只影响面板描述。
 - 临时技能包入口：`/skill-packs`；扫描全局 `skill-packs/` 与项目 `.pi/skill-packs/`，按包切换技能目录，并通过 Pi 的临时资源发现接口 reload 当前会话；包根可用 `skill-pack.json` 的 `skillPaths` 只暴露路由入口。
-- 紧凑显示入口：`Ctrl+Shift+T` 切换 thinking 显示；提供紧凑工具、用户消息和 footer。
 - 上下文查看入口：`/context` 打开带标签页的覆盖层，展示统计、系统提示词、工具、消息和完整上下文；内容页提供滚动、搜索和复制。
 - provider usage：Codex 显示 5 小时/周窗口，OpenCode Go 显示 5 小时/周/月窗口，Command Code 按 provider 名称特征（`commandcode` / `cmdc` 等）识别并显示 5 小时/周/套餐月窗口；面板显示重置时间，footer 显示紧凑百分比。
 - 组合配置：全局 `quick-panel.json` 与受信任项目的 `.pi/quick-panel.json` 仍由面板域读取。

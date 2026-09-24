@@ -1,8 +1,9 @@
 /**
  * 一次 TUI 显示会话：把 display 域的模块接到 Pi 生命周期上。
  *
- * Flow: `session_start` 提供主题、同步思考折叠标签、安装紧凑 footer 并刷新 usage；
- * `message_update`/`message_end` 标记思考内容，`context` 事件清掉思考标记，快捷键切换折叠。
+ * Flow: `session_start` 提供主题、同步思考显示模式、安装紧凑 footer 并刷新 usage；
+ * `message_update`/`message_end` 标记思考内容，显示补丁在正文/工具开始时隐藏已完成的思考；
+ * `context` 事件清掉思考标记，快捷键切换自动模式与全部展开。
  * Rule: 补丁安装留在组合根；事件接线、主题缓存、思考折叠动作和 usage 调度集中在这里，
  * 每个事件处理器自己承担失败隔离，不让可选功能影响 Pi 启动。
  */
@@ -146,7 +147,7 @@ export function createDisplaySession(options: DisplaySessionOptions): { register
 
     if (!thinkingAvailable || typeof pi.registerShortcut !== "function") return;
     pi.registerShortcut("ctrl+shift+t", {
-      description: "折叠或展开思考内容",
+      description: "自动显示当前思考或展开全部思考",
       handler: (ctx) => {
         try {
           if (hasUiMethod(ctx, "setHiddenThinkingLabel")) {
