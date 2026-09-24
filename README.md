@@ -45,7 +45,7 @@ pi install ./packages/pi-tui-enhancements
 
 ## pi-optimization
 
-Pi 优化工具箱，集中提供 `nul` 重定向修复、视觉 MCP 自动开关、fullscreen 滚轮优化、扩展包无感更新和会话内定时任务。
+Pi 优化工具箱，集中提供 `nul` 重定向修复、fullscreen 交互优化、扩展包无感更新和会话内定时任务。
 
 ```bash
 pi -e ./packages/pi-optimization

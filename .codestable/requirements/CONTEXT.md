@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | `context:lsp-feedback` | 代理编辑文件后的 LSP 诊断反馈 | `pi-lsp-feedback` | [lsp-feedback](contexts/lsp-feedback.md) |
 | `context:tui-experience` | Pi TUI 中的面板选择、紧凑显示与上下文查看 | `pi-tui-enhancements` | [tui-experience](contexts/tui-experience.md) |
-| `context:pi-optimization` | Pi Bash 重定向修复、视觉 MCP 自动开关、fullscreen 交互优化、定时消息和扩展包无感更新 | `pi-optimization` | [pi-optimization](contexts/pi-optimization.md) |
+| `context:pi-optimization` | Pi Bash 重定向修复、fullscreen 交互优化、定时消息和扩展包无感更新 | `pi-optimization` | [pi-optimization](contexts/pi-optimization.md) |
 | `context:pi-advisor` | 复杂 Pi 编码任务中的战略顾问调用与方向检查 | `pi-advisor` | [pi-advisor](contexts/pi-advisor.md) |
 | `context:observational-memory` | 压缩前的观察/反思记忆提取、折叠、渲染与召回 | `pi-observational-memory` | [observational-memory](contexts/observational-memory.md) |
 

@@ -10,14 +10,12 @@ code-paths:
 
 - 上下文：`pi-optimization`
 - 实现包：`pi-optimization`
-- 入口与证据：`packages/pi-optimization/extensions/index.ts`、`src/nul-redirect.ts`、`src/vision-mcp-auto.ts`、`src/fullscreen-scroll.ts`、`src/fullscreen-right-click-copy.ts`、`src/auto-extension-update.ts`、`src/wait.ts` 与 `README.md`
+- 入口与证据：`packages/pi-optimization/extensions/index.ts`、`src/nul-redirect.ts`、`src/fullscreen-scroll.ts`、`src/fullscreen-right-click-copy.ts`、`src/auto-extension-update.ts`、`src/wait.ts` 与 `README.md`
 
 ## 术语
 
 - **优化工具箱**：集中收纳能改善 Pi 使用或运行体验、但没有必要单独成为插件的可选低干扰能力。
 - **nul 重定向修复**：只把重定向操作符后的独立 `nul` 目标改写为 `/dev/null`；只处理 Pi 直接执行的 `bash`/`user_bash`，不改写 `write`/`edit` 传入的脚本文本。
-- **识图 MCP 工具**：工具名匹配配置后缀、用于让不支持图片输入的模型间接识图的 MCP 工具。
-- **视觉模式**：`auto` 按模型输入能力决定，`on` 强制激活，`off` 强制关闭。
 - **无感扩展更新**：插件的包更新检查与 Pi 启动并行，不阻塞启动；确有更新时只更新检查结果中的扩展。
 - **fullscreen 滚轮优化**：在 Pi fullscreen TUI 的滚轮处理 seam 可用时，将每次鼠标滚轮事件换算为配置的逻辑行数。
 - **fullscreen 右键复制与粘贴**：关闭“选中即复制”且有非空 fullscreen 文本选区时右键复制，成功后取消原选区；无选区时右键将剪贴板文本粘贴到当前聚焦组件。
@@ -29,7 +27,6 @@ code-paths:
 
 - AI Bash 工具调用和手动 `!`/`!!` 命令都遵循 `PI_FIX_NUL_REDIRECT`；手动命令还受 `PI_FIX_NUL_USER_BASH` 控制。`write`/`edit` 工具写入或修改的脚本文本不经过该改写。
 - 发现 Here-doc/Here-string 时只跳过脚本正文，正文之外的独立 `nul` 重定向仍改写；文件描述符复制如 `2>&1` 不改写。
-- 视觉 MCP 工具没有注册、尚未注册或无法读取时不调用 active-tools API；`auto` 模式在模型尚未确定时等待，不发送临时通知。
 - 无感扩展更新不增加轮询或常驻资源；发现更新后同一 Pi 进程只启动一个隐藏 runner，由 runner 顺序更新实际有变化的扩展。
 - fullscreen 滚轮配置写入 `~/.pi/agent/settings.json` 的 `fullscreen-scroll` 段，默认原生 Windows 开启且每次滚动 3 行；实现不兼容时空操作，并在 `session_shutdown` 恢复。
 - fullscreen 右键行为不依赖滚轮开关：`fullscreenCopyOnSelect=false` 且有非空选区时复制，不要求右键落在高亮区；只在复制成功、补丁仍有效且原选区未被替换时清除选区并重绘，失败或重新选中时保留。无选区时调用 Pi 的原生右键粘贴回调（目标为当前聚焦组件），不另行读取剪贴板。被接管的按下与对应松开事件只处理一次；已有选区且重新启用选中即复制、缺少粘贴回调或运行时能力不兼容时沿用 Pi 原有处理，补丁在会话关闭时恢复。

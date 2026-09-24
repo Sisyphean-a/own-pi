@@ -14,7 +14,6 @@
 - `packages/pi-optimization/extensions/index.ts`：各优化/调度功能独立激活。
 - `packages/pi-optimization/src/optional-feature.ts`、`packages/pi-tui-enhancements/src/optional-feature.ts`：两包各自持有自包含的软依赖装载器，接口契约一致但故障日志归各包自己的边界实现，不建立跨包依赖。
 - `packages/pi-optimization/src/nul-redirect.ts`：手动 Bash 后端动态加载，缺失时保留 Pi 原始执行路径。
-- `packages/pi-optimization/src/vision-mcp-auto.ts`：识图 MCP 工具缺失时保持可重试的空操作。
 - `packages/pi-optimization/src/auto-extension-update.ts`：Pi 包管理器能力缺失时不接管更新检查。
 - `packages/pi-optimization/src/wait.ts`：定时消息只依赖 Pi 生命周期和发送接口，UI 故障不改变调度。
 - `packages/pi-tui-enhancements/extensions/index.ts`：显示和面板两个功能域独立激活。

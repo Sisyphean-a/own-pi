@@ -12,22 +12,15 @@ test("loads all optimizations as independent, non-fatal features", async () => {
     registerCommand(name: string) {
       commands.add(name);
     },
-    getAllTools() {
-      return [];
-    },
-    getActiveTools() {
-      return [];
-    },
-    setActiveTools() {},
   };
 
   await assert.doesNotReject(() => piOptimization(pi as never));
   assert.ok(events.has("tool_call"));
   assert.ok(events.has("user_bash"));
   assert.ok(events.has("session_start"));
-  assert.ok(events.has("model_select"));
-  assert.ok(events.has("before_agent_start"));
-  assert.deepEqual([...commands].sort(), ["fullscreen-scroll", "nulfix", "vision-mcp", "wait"]);
+  assert.ok(!events.has("model_select"));
+  assert.ok(!events.has("before_agent_start"));
+  assert.deepEqual([...commands].sort(), ["fullscreen-scroll", "nulfix", "wait"]);
 });
 
 test("factory remains safe when optional capability methods are absent", async () => {

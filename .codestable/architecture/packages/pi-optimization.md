@@ -2,21 +2,20 @@
 
 ## 职责
 
-`pi-optimization` 是一个私有 Pi 优化工具箱：收纳那些确实能改善 Pi 使用或运行体验、但没有必要单独成为插件的可选低干扰能力；后续同类能力按这一边界继续归入本包。当前集中分发 Windows Bash `nul` 重定向修复、视觉 MCP 自动开关、fullscreen 滚轮优化、fullscreen 右键复制与粘贴、扩展包无感更新和会话内定时消息六项彼此独立的能力。
+`pi-optimization` 是一个私有 Pi 优化工具箱：收纳那些确实能改善 Pi 使用或运行体验、但没有必要单独成为插件的可选低干扰能力；后续同类能力按这一边界继续归入本包。当前集中分发 Windows Bash `nul` 重定向修复、fullscreen 滚轮优化、fullscreen 右键复制与粘贴、扩展包无感更新和会话内定时消息五项彼此独立的能力。
 
 ## 公开边界
 
 - 包入口：`package.json` 中 `pi.extensions` 声明的 `extensions/index.ts`。
-- 用户命令：`/nulfix`、`/vision-mcp`、`/fullscreen-scroll` 和 `/wait`。
-- 全局配置：视觉功能读取 `vision-mcp-auto` 段；滚轮功能读取 `fullscreen-scroll` 段；定时消息不持久化配置或任务。
-- 外部能力：Pi 的 Bash 后端、识图 MCP 工具、fullscreen TUI 运行时 seam、`DefaultPackageManager` 更新检查和 Pi 消息发送接口都是可选运行时能力，不由包强制安装。
+- 用户命令：`/nulfix`、`/fullscreen-scroll` 和 `/wait`。
+- 全局配置：滚轮功能读取 `fullscreen-scroll` 段；定时消息不持久化配置或任务。
+- 外部能力：Pi 的 Bash 后端、fullscreen TUI 运行时 seam、`DefaultPackageManager` 更新检查和 Pi 消息发送接口都是可选运行时能力，不由包强制安装。
 
 ## 架构规则
 
 - `extensions/index.ts` 只负责各功能的独立动态加载；一个功能失败不能阻止其他功能注册。
 - `src/optional-feature.ts` 拥有本包的软依赖装载契约：模块导入失败、缺少约定导出或工厂抛错时只记录日志并跳过，不向调用方抛出；它与 `pi-tui-enhancements` 的同名模块保持接口契约一致且分发独立，日志实现各归本包，不互相依赖。
 - `src/nul-redirect.ts` 拥有 Shell 重定向词法扫描、保守 Here-doc 边界、统计和 `/nulfix` 命令；AI `tool_call` 直接修改输入，手动 `user_bash` 只在可取得 Pi 原生 Bash backend 时接管执行。
-- `src/vision-mcp-auto.ts` 拥有配置读写、模型视觉能力判断、工具发现和 active tools 同步；没有识图 MCP 工具时不修改 Pi 工具集合，并等待后续生命周期事件重试。
 - `src/fullscreen-scroll.ts` 通过 `ctx.ui.setWidget()` 取得 Pi 的稳定 TUI 代理，在检测到 fullscreen TUI 的 `routeWheel` 与 `wheelScrollLines` seam 后临时提高滚轮行数；会话关闭时恢复原方法。
 - `src/fullscreen-right-click-copy.ts` 独立取得 fullscreen TUI 代理并临时接入鼠标处理入口：关闭 Pi 的选中即复制且有非空选区时右键复制，复制成功且仍是原选区时清除该选区并请求重绘；失败或异步期间出现新选区时不清除。无选区时调用 Pi 的右键粘贴回调，由 Pi 粘贴到当前聚焦组件；两种接管均消费对应松开事件。已有选区且启用选中即复制、或粘贴回调缺失时不改变原有右键行为；缺少必需 API 时不安装，会话关闭时恢复原方法。
 - `src/auto-extension-update.ts` 使用与 Pi 相同的更新检查；发现更新时只启动一个隐藏 runner，按检查结果逐个执行 `pi update --extension <source>`，不阻塞 Pi 启动。
@@ -28,7 +27,6 @@
 - 入口：`packages/pi-optimization/extensions/index.ts`
 - 可选功能装载：`packages/pi-optimization/src/optional-feature.ts`
 - `nul` 重写与执行后端边界：`packages/pi-optimization/src/nul-redirect.ts`
-- 视觉 MCP 同步与配置：`packages/pi-optimization/src/vision-mcp-auto.ts`
 - fullscreen 滚轮适配与配置：`packages/pi-optimization/src/fullscreen-scroll.ts`
 - fullscreen 右键复制与粘贴：`packages/pi-optimization/src/fullscreen-right-click-copy.ts`
 - 扩展包无感更新：`packages/pi-optimization/src/auto-extension-update.ts`

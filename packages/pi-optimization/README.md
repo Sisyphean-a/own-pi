@@ -3,7 +3,6 @@
 把几个低干扰优化集中为一个可安装的 Pi 包：
 
 - `fix-nul-redirect`：把 Bash 重定向目标中的 Windows `nul` 安全改写为 `/dev/null`；
-- `vision-mcp-auto`：按当前模型是否支持图片，自动开关识图 MCP 工具；
 - `fullscreen-scroll`：在 Windows fullscreen TUI 中提高鼠标滚轮的每次滚动行数；
 - `fullscreen-right-click-copy`：fullscreen 右键在关闭“选中即复制”且有选区时复制；无选区时粘贴到当前聚焦组件；
 - `auto-extension-update`：Pi 检查到扩展包更新时，不显示更新提示，只在不可见的独立进程中更新实际有变化的扩展；
@@ -24,20 +23,16 @@ pi install ./packages/pi-optimization
 安装并确认新包可用后，请停用或移走原来的：
 
 - `~/.pi/agent/extensions/fix-nul-redirect.ts`
-- `~/.pi/agent/extensions/vision-mcp-auto.ts`
 
 否则同一命令或事件可能被重复注册。
 
 ## 命令
 
 - `/nulfix [on|off|manual-on|manual-off|preview <bash command>]`
-- `/vision-mcp [auto|on|off]`
 - `/fullscreen-scroll [on|off|<每次滚动行数>]`
 - `/wait <时间> [-- <任务>]`、`/wait list`、`/wait cancel [<任务 ID>]`
 
 `nul` 修复还支持环境变量：`PI_FIX_NUL_REDIRECT=0` 关闭总开关，`PI_FIX_NUL_USER_BASH=0` 不接管手动 `!`/`!!` 命令，`PI_FIX_NUL_NOTIFY=1` 在首次修复时提示。
-
-`vision-mcp-auto` 不内置或强依赖识图 MCP；没有对应 MCP 工具时只跳过同步逻辑，其他功能仍可用。
 
 `fullscreen-scroll` 默认只在原生 Windows 上启用，每次滚轮默认滚动 3 行，适配 ConPTY 下 fullscreen TUI 将一次滚轮事件按一行处理的问题。配置写入 `~/.pi/agent/settings.json`：
 
@@ -60,21 +55,10 @@ Pi 0.84.4+ 的 fullscreen 选中复制是 Pi 自带设置，不属于本插件�
 
 ## 可选依赖降级
 
-这个包的外部能力都按可选依赖处理：入口分别加载六个功能，缺少 Pi API、识图 MCP、fullscreen TUI 运行时 seam、包管理器或版本不兼容时，只停用受影响的逻辑，不让异常冒出到 Pi 加载器。没有 UI 时不发送通知；已有工具和其他扩展继续运行。
+这个包的外部能力都按可选依赖处理：入口分别加载五个功能，缺少 Pi API、fullscreen TUI 运行时 seam、包管理器或版本不兼容时，只停用受影响的逻辑，不让异常冒出到 Pi 加载器。没有 UI 时不发送通知；已有工具和其他扩展继续运行。
 
 本包现在也替代原来的 `pi-wait`。安装确认可用后，请移除旧包，避免 `/wait` 重复注册：
 
 ```bash
 pi remove E:/path/to/packages/pi-wait
-```
-
-视觉配置仍兼容 `~/.pi/agent/settings.json` 中的 `"vision-mcp-auto"` 段：
-
-```json
-{
-  "vision-mcp-auto": {
-    "mode": "auto",
-    "toolPatterns": ["analyze_image"]
-  }
-}
 ```

@@ -20,11 +20,6 @@ export default async function piOptimization(pi: ExtensionAPI): Promise<void> {
       pi,
     ),
     loader.activate(
-      "vision-mcp-auto",
-      () => import("../src/vision-mcp-auto.ts"),
-      pi,
-    ),
-    loader.activate(
       "fullscreen-scroll",
       () => import("../src/fullscreen-scroll.ts"),
       pi,
