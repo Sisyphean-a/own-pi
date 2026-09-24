@@ -1,7 +1,7 @@
 /**
  * pi-optimization 的包级组合根。
  *
- * Rule: 五个优化/调度功能独立可选加载；任一功能失败只跳过自己，不影响其他功能或 Pi 启动。
+ * Rule: 各优化/调度功能独立可选加载；任一功能失败只跳过自己，不影响其他功能或 Pi 启动。
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -27,6 +27,11 @@ export default async function piOptimization(pi: ExtensionAPI): Promise<void> {
     loader.activate(
       "fullscreen-scroll",
       () => import("../src/fullscreen-scroll.ts"),
+      pi,
+    ),
+    loader.activate(
+      "fullscreen-right-click-copy",
+      () => import("../src/fullscreen-right-click-copy.ts"),
       pi,
     ),
     loader.activate(

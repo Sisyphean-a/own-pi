@@ -5,6 +5,7 @@
 - `fix-nul-redirect`：把 Bash 重定向目标中的 Windows `nul` 安全改写为 `/dev/null`；
 - `vision-mcp-auto`：按当前模型是否支持图片，自动开关识图 MCP 工具；
 - `fullscreen-scroll`：在 Windows fullscreen TUI 中提高鼠标滚轮的每次滚动行数；
+- `fullscreen-right-click-copy`：fullscreen 右键在关闭“选中即复制”且有选区时复制；无选区时粘贴到当前聚焦组件；
 - `auto-extension-update`：Pi 检查到扩展包更新时，不显示更新提示，只在不可见的独立进程中更新实际有变化的扩展；
 - `wait`：在 Pi 进程内暂存任务，到指定时间后才交给 AI，不提前发起模型请求。
 
@@ -53,13 +54,13 @@ pi install ./packages/pi-optimization
 
 `/wait 30m` 会等待下一条普通输入；`/wait 2小时 -- 运行测试并修复失败` 可直接保存任务。任务只保存在当前 Pi 进程内存中，reload、切换/fork/clone 会话或退出 Pi 后会清除，Pi 未运行时不会后台执行。
 
-Pi 0.84.4+ 的 fullscreen 选中复制是 Pi 自带设置，不属于本插件配置。若不希望“选中即复制”，在全局 `~/.pi/agent/settings.json` 设置 `"fullscreenCopyOnSelect": false`；关闭后仍可用 `Ctrl+X` 复制当前选区，终端自己的右键复制行为不受影响。
+Pi 0.84.4+ 的 fullscreen 选中复制是 Pi 自带设置，不属于本插件配置。若不希望“选中即复制”，在全局 `~/.pi/agent/settings.json` 设置 `"fullscreenCopyOnSelect": false`；关闭后仍可用 `Ctrl+X` 复制当前选区。本插件在 fullscreen 中，关闭“选中即复制”且有非空选区时，右键复制该选区（不要求右键落在高亮范围内）；成功后自动取消该选区，复制失败或期间重新选中其他内容则保留选区；没有选区时复用 Pi 的右键粘贴回调，将剪贴板文本粘贴到当前聚焦组件。已有选区且重新打开“选中即复制”时，仍沿用 Pi 原有右键处理。功能依赖终端向 Pi 发送右键鼠标事件及当前 Pi 的 fullscreen 鼠标处理接口；粘贴回调不可用时不接管无选区右键。
 
 `auto-extension-update` 使用与 Pi 相同的更新检查，不增加轮询或常驻定时器。启动时只安装一个识别 Pi 内置包更新守卫的一次性闸门；插件自己的检查可以并行进行，不阻塞 Pi 启动，同时保留模型和 Pi 版本检查。只有确实发现更新时才启动一次后台 runner，并按检查结果逐个执行 `pi update --extension <source>`，不会把没有变化的扩展一起重装。runner 和更新子进程都不使用 shell、隐藏窗口、忽略标准流，完成后自然退出。
 
 ## 可选依赖降级
 
-这个包的外部能力都按可选依赖处理：入口分别加载五个功能，缺少 Pi API、识图 MCP、fullscreen TUI 运行时 seam、包管理器或版本不兼容时，只停用受影响的逻辑，不让异常冒出到 Pi 加载器。没有 UI 时不发送通知；已有工具和其他扩展继续运行。
+这个包的外部能力都按可选依赖处理：入口分别加载六个功能，缺少 Pi API、识图 MCP、fullscreen TUI 运行时 seam、包管理器或版本不兼容时，只停用受影响的逻辑，不让异常冒出到 Pi 加载器。没有 UI 时不发送通知；已有工具和其他扩展继续运行。
 
 本包现在也替代原来的 `pi-wait`。安装确认可用后，请移除旧包，避免 `/wait` 重复注册：
 

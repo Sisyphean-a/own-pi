@@ -10,7 +10,7 @@ code-paths:
 
 - 上下文：`pi-optimization`
 - 实现包：`pi-optimization`
-- 入口与证据：`packages/pi-optimization/extensions/index.ts`、`src/nul-redirect.ts`、`src/vision-mcp-auto.ts`、`src/fullscreen-scroll.ts`、`src/auto-extension-update.ts`、`src/wait.ts` 与 `README.md`
+- 入口与证据：`packages/pi-optimization/extensions/index.ts`、`src/nul-redirect.ts`、`src/vision-mcp-auto.ts`、`src/fullscreen-scroll.ts`、`src/fullscreen-right-click-copy.ts`、`src/auto-extension-update.ts`、`src/wait.ts` 与 `README.md`
 
 ## 术语
 
@@ -20,6 +20,7 @@ code-paths:
 - **视觉模式**：`auto` 按模型输入能力决定，`on` 强制激活，`off` 强制关闭。
 - **无感扩展更新**：插件的包更新检查与 Pi 启动并行，不阻塞启动；确有更新时只更新检查结果中的扩展。
 - **fullscreen 滚轮优化**：在 Pi fullscreen TUI 的滚轮处理 seam 可用时，将每次鼠标滚轮事件换算为配置的逻辑行数。
+- **fullscreen 右键复制与粘贴**：关闭“选中即复制”且有非空 fullscreen 文本选区时右键复制，成功后取消原选区；无选区时右键将剪贴板文本粘贴到当前聚焦组件。
 - **待发任务**：已保存在当前 Pi 进程内存中、尚未到期交给 AI 的用户内容。
 - **到期派发**：到达指定时间后，才通过 `sendUserMessage` 把待发任务作为 `followUp` 送入 Pi 代理流程。
 - **可选能力**：外部插件、MCP 工具、peer dependency 或运行时 API；不存在时不构成包加载错误。
@@ -31,6 +32,7 @@ code-paths:
 - 视觉 MCP 工具没有注册、尚未注册或无法读取时不调用 active-tools API；`auto` 模式在模型尚未确定时等待，不发送临时通知。
 - 无感扩展更新不增加轮询或常驻资源；发现更新后同一 Pi 进程只启动一个隐藏 runner，由 runner 顺序更新实际有变化的扩展。
 - fullscreen 滚轮配置写入 `~/.pi/agent/settings.json` 的 `fullscreen-scroll` 段，默认原生 Windows 开启且每次滚动 3 行；实现不兼容时空操作，并在 `session_shutdown` 恢复。
+- fullscreen 右键行为不依赖滚轮开关：`fullscreenCopyOnSelect=false` 且有非空选区时复制，不要求右键落在高亮区；只在复制成功、补丁仍有效且原选区未被替换时清除选区并重绘，失败或重新选中时保留。无选区时调用 Pi 的原生右键粘贴回调（目标为当前聚焦组件），不另行读取剪贴板。被接管的按下与对应松开事件只处理一次；已有选区且重新启用选中即复制、缺少粘贴回调或运行时能力不兼容时沿用 Pi 原有处理，补丁在会话关闭时恢复。
 - `/wait` 的设置时间、捕获输入、列出和取消都不调用 AI；任务只保存在当前 Pi 进程，不写 session 文件，不提前进入模型上下文。
 - `/wait` 支持相对时间、本地时钟、本地日期时间和带时区 ISO 时间；斜杠命令必须用 `/wait <时间> -- <任务>` 一行保存，到期后才启用正常命令、技能和模板展开。
 - session_start、reload、切换/fork/clone 会话和退出都会清除待发任务；Pi 未运行时没有后台调度能力。Pi 忙碌时到期任务等待当前工作结束；发送被同步拒绝时任务保留并在 30 秒后重试。
