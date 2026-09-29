@@ -1,8 +1,8 @@
 /**
  * Command Code 官方 API key 额度适配器。
  *
- * Flow: 先用 credits 接口取 5 小时/周窗口，再 best-effort 取订阅套餐推断月度窗口；
- * 订阅失败时仍返回已拿到的窗口。
+ * Flow: 先用 credits 接口取 5 小时/周窗口，再 best-effort 查询 whoami 的组织身份，
+ * 按组织查询订阅套餐推断月度窗口；身份或订阅失败时仍返回已拿到的窗口。
  * Rule: provider 名称可能是 commandcode / command-code / cmdc，按名称特征路由而不是固定 id；
  * 月度额度来自订阅套餐表，未知套餐不猜测额度，只省略月窗口。
  */
@@ -19,6 +19,7 @@ import {
 
 const COMMANDCODE_CREDITS_URL = "https://api.commandcode.ai/alpha/billing/credits";
 const COMMANDCODE_SUBSCRIPTIONS_URL = "https://api.commandcode.ai/alpha/billing/subscriptions";
+const COMMANDCODE_WHOAMI_URL = "https://api.commandcode.ai/alpha/whoami?limits=1";
 
 const COMMANDCODE_PROVIDER_PATTERN = /command[-_ ]?code|\bcmdc\b/i;
 
@@ -122,10 +123,13 @@ export const commandCodeAdapter: ProviderAdapter = {
     headers: { Authorization: `Bearer ${apiKey}` },
   }),
   async parse({ payload, auth, options, signal }: ProviderParseContext) {
-    const subscriptionPayload = await fetchJsonBestEffort(COMMANDCODE_SUBSCRIPTIONS_URL, {
-      headers: { Authorization: `Bearer ${auth.apiKey}` },
-      signal,
-    });
+    const headers = { Authorization: `Bearer ${auth.apiKey}` };
+    const whoami = asRecord(await fetchJsonBestEffort(COMMANDCODE_WHOAMI_URL, { headers, signal }));
+    const orgId = asRecord(whoami.org).id;
+    const subscriptionUrl = typeof orgId === "string" && orgId.length > 0
+      ? `${COMMANDCODE_SUBSCRIPTIONS_URL}?${new URLSearchParams({ orgId })}`
+      : COMMANDCODE_SUBSCRIPTIONS_URL;
+    const subscriptionPayload = await fetchJsonBestEffort(subscriptionUrl, { headers, signal });
     return parseCommandCodeWindows(payload, subscriptionPayload, options);
   },
 };

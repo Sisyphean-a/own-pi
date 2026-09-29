@@ -276,6 +276,9 @@ test("fetches Command Code usage from the official credits and subscriptions end
     requestUrls.push(String(input));
     requestHeaders.push(new Headers(init?.headers));
     requestRedirect = init?.redirect;
+    if (requestUrls.at(-1)?.endsWith("/whoami?limits=1")) {
+      return new Response(JSON.stringify({ org: { id: "org-test-123" } }), { status: 200 });
+    }
     if (requestUrls.at(-1)?.endsWith("/credits")) {
       return new Response(JSON.stringify({
         credits: { monthlyCredits: 65.4, purchasedCredits: 0, freeCredits: 0 },
@@ -289,7 +292,9 @@ test("fetches Command Code usage from the official credits and subscriptions end
     }
     return new Response(JSON.stringify({
       success: true,
-      data: { status: "active", planId: "individual-goat", currentPeriodEnd: periodEnd },
+      data: requestUrls.at(-1)?.endsWith("/subscriptions?orgId=org-test-123")
+        ? { status: "active", planId: "individual-goat", currentPeriodEnd: periodEnd }
+        : null,
     }), { status: 200 });
   }) as typeof fetch;
   t.after(() => {
@@ -301,7 +306,8 @@ test("fetches Command Code usage from the official credits and subscriptions end
 
   assert.deepEqual(requestUrls, [
     "https://api.commandcode.ai/alpha/billing/credits",
-    "https://api.commandcode.ai/alpha/billing/subscriptions",
+    "https://api.commandcode.ai/alpha/whoami?limits=1",
+    "https://api.commandcode.ai/alpha/billing/subscriptions?orgId=org-test-123",
   ]);
   for (const headers of requestHeaders) {
     assert.equal(headers?.get("authorization"), "Bearer cmdc-api-key");
@@ -528,6 +534,9 @@ test("publishes all three Command Code percentages in the compact footer", async
   installFetch(t, async (input, init) => {
     requestUrl = String(input);
     requestHeaders = new Headers(init?.headers);
+    if (requestUrl.endsWith("/whoami?limits=1")) {
+      return new Response(JSON.stringify({ org: { id: "org-test-123" } }), { status: 200 });
+    }
     if (requestUrl.endsWith("/credits")) {
       return new Response(JSON.stringify({
         credits: { monthlyCredits: 65.4 },
@@ -546,7 +555,7 @@ test("publishes all three Command Code percentages in the compact footer", async
 
   await controller.refresh(fake.ctx);
 
-  assert.equal(requestUrl.endsWith("/subscriptions"), true);
+  assert.equal(requestUrl, "https://api.commandcode.ai/alpha/billing/subscriptions?orgId=org-test-123");
   assert.equal(requestHeaders?.get("authorization"), "Bearer test-key");
   assert.deepEqual(fake.statusCalls(), [{
     id: TUI_PROVIDER_USAGE_STATUS_ID,
