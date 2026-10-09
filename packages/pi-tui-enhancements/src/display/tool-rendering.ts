@@ -6,7 +6,7 @@ import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { Container, sliceByColumn, Text, visibleWidth } from "@earendil-works/pi-tui";
 import {
   canJoinToolGroup,
-  compactToolFrame,
+  compactToolFrameWithSource,
   countTextLines,
   firstLinePreview,
   formatCommandInputMetric,
@@ -66,6 +66,7 @@ type ToolComponent = {
   expanded?: unknown;
   toolDefinition?: ToolDefinitionShape & { renderShell?: unknown };
   toolName: string;
+  getRenderShell?: () => unknown;
 };
 
 type ToolExecutionPrototype = {
@@ -73,10 +74,15 @@ type ToolExecutionPrototype = {
   getResultRenderer(this: ToolComponent): ToolResultRenderer | undefined;
   getRenderShell(this: ToolComponent): unknown;
   render(this: ToolComponent, width: number): string[];
+  handleMouse(this: ToolComponent, event: unknown): unknown;
 };
 
 type Renderable = { render(width: number): string[] };
-type ContainerLike = { children: Renderable[] };
+type ContainerMouseChild = { component: Renderable; height: number };
+type ContainerLike = {
+  children: Renderable[];
+  mouseLayout?: { width: number; children: ContainerMouseChild[] };
+};
 type ContainerPrototype = {
   render(this: ContainerLike, width: number): string[];
 };
@@ -84,11 +90,27 @@ type RenderAwareToolComponent = ToolComponent & {
   [TOOL_PREVIOUS]?: ToolComponent;
 };
 
+/** Pi fullscreen 鼠标事件在命中测试链路中携带的坐标。 */
+type PaintedMouseEvent = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  screenX: number;
+  screenY: number;
+  [key: string]: unknown;
+};
+type PaintedRowTarget = { component: Renderable; y: number; frameHeight: number };
+/** 紧凑帧已改变的绘制行到真实子组件坐标的映射；宽度不匹配时失效。 */
+type ToolMouseMap = { width: number; rows: (PaintedRowTarget | undefined)[] };
+type MouseAwareToolComponent = ToolComponent & { [TOOL_MOUSE_MAP]?: ToolMouseMap };
+
 const LEGACY_TOOL_PATCH = Symbol.for("pi.lean-tool-display.tool-renderers.v1");
 const TOOL_PATCH = Symbol.for("pi.lean-tool-display.tool-renderers.v2");
 const LEGACY_CONTAINER_PATCH = Symbol.for("pi.lean-tool-display.container-groups.v1");
 const CONTAINER_PATCH = Symbol.for("pi.lean-tool-display.container-groups.v2");
 const TOOL_PREVIOUS = Symbol.for("pi.lean-tool-display.tool-previous.v1");
+const TOOL_MOUSE_MAP = Symbol.for("pi.lean-tool-display.tool-mouse-map.v1");
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC133_PATTERN = /\x1b\]133;[ABC](?:\x07|\x1b\\)/g;
 
@@ -98,6 +120,7 @@ type ToolRendererPatch = {
   originalResultRenderer: ToolExecutionPrototype["getResultRenderer"];
   originalRenderShell: ToolExecutionPrototype["getRenderShell"];
   originalRender: ToolExecutionPrototype["render"];
+  originalHandleMouse: ToolExecutionPrototype["handleMouse"];
 };
 type ContainerPatch = { originalRender: ContainerPrototype["render"] };
 
@@ -549,10 +572,67 @@ function isAdjacentToToolGroup(component: ToolComponent): boolean {
   return Boolean(previous && canJoinToolGroup(previous) && canJoinToolGroup(component));
 }
 
-function removeTrailingBlankLines(lines: string[]): void {
+function removeTrailingBlankLines(lines: string[]): number {
+  let removed = 0;
   while (lines.length > 0 && stripControlSequences(lines[lines.length - 1]).trim().length === 0) {
     lines.pop();
+    removed++;
   }
+  return removed;
+}
+
+/**
+ * 与 Pi 的 `dispatchMouseEvent` 保持同一结果形状：容器转发子组件事件时，
+ * capture/focus 必须指向真正的子组件，否则全屏拖动与聚焦会落在外层容器上。
+ */
+function dispatchPaintedMouseEvent(component: Renderable, event: PaintedMouseEvent): unknown {
+  const handler = (component as { handleMouse?: (event: PaintedMouseEvent) => unknown }).handleMouse;
+  if (typeof handler !== "function") return undefined;
+
+  const result = handler.call(component, event) as Record<string, unknown> | undefined;
+  if (!result) return undefined;
+  if ("target" in result) {
+    return result.focus && (component as { handleInput?: unknown }).handleInput
+      ? { ...result, focusTarget: component }
+      : result;
+  }
+  if (!result.handled && !result.capture && !result.focus) return undefined;
+  return {
+    ...result,
+    handled: true,
+    ...(result.focus ? { focusTarget: component } : {}),
+    target: {
+      component,
+      originX: event.screenX - event.x,
+      originY: event.screenY - event.y,
+      width: event.width,
+      height: event.height,
+    },
+  };
+}
+
+/**
+ * 把紧凑后保留的原始行下标还原为紧凑前帧里各子组件的行坐标。
+ *
+ * Failure: 帧结构与紧凑前渲染不一致时放弃映射，退回 Pi 原有命中测试。
+ */
+function buildToolMouseMap(
+  component: ToolComponent,
+  width: number,
+  frameLineCount: number,
+  sourceIndexes: number[],
+): ToolMouseMap | undefined {
+  const layout = (component as unknown as ContainerLike).mouseLayout;
+  if (!layout || layout.width !== width) return undefined;
+
+  const targets: (PaintedRowTarget | undefined)[] = [];
+  for (const child of layout.children) {
+    for (let line = 0; line < child.height; line++) {
+      targets.push({ component: child.component, y: line, frameHeight: child.height });
+    }
+  }
+  if (targets.length !== frameLineCount) return undefined;
+  return { width, rows: sourceIndexes.map((index) => targets[index]) };
 }
 
 /**
@@ -568,6 +648,7 @@ export function installContainerParentTracking(): void {
   const originalRender = legacyPatch?.originalRender ?? prototype.render;
   prototype.render = function renderWithToolGroups(this: ContainerLike, width: number): string[] {
     const lines: string[] = [];
+    const mouseChildren: ContainerMouseChild[] = [];
     let previousVisibleTool: ToolComponent | undefined;
 
     for (const child of this.children) {
@@ -584,14 +665,24 @@ export function installContainerParentTracking(): void {
 
       const childLines = child.render(width);
       if (joinsPrevious && childLines.length > 0) {
-        removeTrailingBlankLines(lines);
+        // Rule: 合并的是上一个可见子项末尾的空白行，命中测试高度必须同步回退；
+        // 否则 Pi 的 Container.handleMouse 仍按未合并高度累计，点击会落到更早的子项。
+        let removed = removeTrailingBlankLines(lines);
+        for (let index = mouseChildren.length - 1; index >= 0 && removed > 0; index--) {
+          const entry = mouseChildren[index]!;
+          const take = Math.min(removed, entry.height);
+          entry.height -= take;
+          removed -= take;
+        }
       }
-      lines.push(...childLines);
+      mouseChildren.push({ component: child, height: childLines.length });
+      for (const line of childLines) lines.push(line);
       if (childLines.length > 0) {
         previousVisibleTool = tool;
       }
     }
 
+    this.mouseLayout = { width, children: mouseChildren };
     return lines;
   };
   prototype[CONTAINER_PATCH] = { originalRender } satisfies ContainerPatch;
@@ -607,6 +698,7 @@ export function installToolRenderers(): void {
   const originalResultRenderer = previousPatch?.originalResultRenderer ?? prototype.getResultRenderer;
   const originalRenderShell = previousPatch?.originalRenderShell ?? prototype.getRenderShell;
   const originalRender = previousPatch?.originalRender ?? prototype.render;
+  const originalHandleMouse = previousPatch?.originalHandleMouse ?? prototype.handleMouse;
 
   prototype.getCallRenderer = function getLeanCallRenderer(this: ToolComponent) {
     if (!shouldCompact(this)) {
@@ -646,13 +738,49 @@ export function installToolRenderers(): void {
   };
 
   // Effect: 折叠态把可分组工具行裁到一行正文；展开态保留 Pi 的完整输出。
+  // Rule: 裁剪会移除帧首空白行，绘制行下标与帧内坐标不再一致，
+  // 必须同时记录绘制行到真实子组件的映射，否则点击会落到错误的行。
   prototype.render = function renderLeanToolExecution(this: ToolComponent, width: number): string[] {
+    const originalLines = originalRender.call(this, width);
+    // Rule: self 渲染 shell 自行管理布局，紧凑帧不理解的几何不裁剪。
+    if (this.getRenderShell?.() === "self") {
+      (this as MouseAwareToolComponent)[TOOL_MOUSE_MAP] = undefined;
+      return originalLines;
+    }
+
     const joinsGroup = canJoinToolGroup(this);
-    return compactToolFrame(
-      originalRender.call(this, width),
+    const compacted = compactToolFrameWithSource(
+      originalLines,
       joinsGroup && isAdjacentToToolGroup(this),
       getCollapsedContentLineLimit(this),
     );
+    const unchanged = compacted.sourceIndexes.length === originalLines.length &&
+      compacted.sourceIndexes.every((source, index) => source === index);
+    (this as MouseAwareToolComponent)[TOOL_MOUSE_MAP] = unchanged
+      ? undefined
+      : buildToolMouseMap(this, width, originalLines.length, compacted.sourceIndexes);
+    return compacted.lines;
+  };
+
+  // Rule: 紧凑帧改变了几何时按记录的映射转发鼠标事件，否则保持 Pi 原生命中测试。
+  prototype.handleMouse = function handleLeanToolMouse(this: ToolComponent, event: unknown): unknown {
+    const map = (this as MouseAwareToolComponent)[TOOL_MOUSE_MAP];
+    const mouse = event as PaintedMouseEvent;
+    if (map && map.width === mouse.width) {
+      if (mouse.y < 0 || mouse.y >= mouse.height || mouse.y >= map.rows.length) return undefined;
+      const target = map.rows[mouse.y];
+      if (!target) return undefined;
+      const result = dispatchPaintedMouseEvent(target.component, {
+        ...mouse,
+        y: target.y,
+        height: target.frameHeight,
+      }) as { focus?: unknown } | undefined;
+      if (result?.focus && (this as { handleInput?: unknown }).handleInput) {
+        return { ...result, focusTarget: this };
+      }
+      return result;
+    }
+    return originalHandleMouse.call(this, event);
   };
 
   prototype[TOOL_PATCH] = {
@@ -660,6 +788,7 @@ export function installToolRenderers(): void {
     originalResultRenderer,
     originalRenderShell,
     originalRender,
+    originalHandleMouse,
   } satisfies ToolRendererPatch;
 }
 

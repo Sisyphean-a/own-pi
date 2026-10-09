@@ -83,29 +83,44 @@ function isBlankDisplayLine(line: string): boolean {
 
 /**
  * 折叠态只保留一个稳定的底部结构空行，不能把流式文本产生的尾部空行带回结果。
+ *
+ * Guarantee: `sourceIndexes` 与 `lines` 一一对应，记录每个输出行的原始行下标；
+ * 命中测试靠它把绘制行还原到紧凑前的帧坐标。
  */
-export function compactToolFrame(
+export function compactToolFrameWithSource(
   lines: string[],
   removeLeadingSpacer = false,
   maxContentLines?: number,
-): string[] {
-  if (lines.length === 0) return lines;
+): { lines: string[]; sourceIndexes: number[] } {
+  if (lines.length === 0) return { lines, sourceIndexes: [] };
 
   let start = 0;
   let end = lines.length;
   while (start < end && isBlankDisplayLine(lines[start]!)) start++;
   while (end > start && isBlankDisplayLine(lines[end - 1]!)) end--;
 
-  const content = maxContentLines === undefined
-    ? lines.slice(start, end)
-    : lines.slice(start, end).slice(0, maxContentLines);
-  if (content.length === 0) return [];
+  const contentLength = maxContentLines === undefined
+    ? end - start
+    : Math.min(maxContentLines, end - start);
+  if (contentLength <= 0) return { lines: [], sourceIndexes: [] };
 
-  const leadingSpacers = !removeLeadingSpacer ? lines.slice(0, start) : [];
-  const trailingSpacers = maxContentLines === undefined
-    ? lines.slice(end)
-    : end < lines.length
-      ? [lines[lines.length - 1]!]
-      : [];
-  return [...leadingSpacers, ...content, ...trailingSpacers];
+  const sourceIndexes: number[] = [];
+  if (!removeLeadingSpacer) {
+    for (let index = 0; index < start; index++) sourceIndexes.push(index);
+  }
+  for (let index = start; index < start + contentLength; index++) sourceIndexes.push(index);
+  if (maxContentLines === undefined) {
+    for (let index = end; index < lines.length; index++) sourceIndexes.push(index);
+  } else if (end < lines.length) {
+    sourceIndexes.push(lines.length - 1);
+  }
+  return { lines: sourceIndexes.map((index) => lines[index]!), sourceIndexes };
+}
+
+export function compactToolFrame(
+  lines: string[],
+  removeLeadingSpacer = false,
+  maxContentLines?: number,
+): string[] {
+  return compactToolFrameWithSource(lines, removeLeadingSpacer, maxContentLines).lines;
 }
