@@ -23,6 +23,51 @@ function response(text: string): string {
   return JSON.stringify({ translations: [{ id: "d0", text }] });
 }
 
+for (const cancelAt of ["delta", "terminal"] as const) {
+  test(`翻译在 ${cancelAt} 阶段取消仍记录最终用量一次，并保留取消原因`, async () => {
+    const controller = new AbortController(), reason = new Error("取消翻译");
+    const usage = { input: 100, output: 12, cacheRead: 50, cacheWrite: 0, totalTokens: 162 };
+    const result = { role: "assistant", model: "test-model", provider: "test", timestamp: Date.now(), stopReason: "aborted", usage, content: [{ type: "text", text: response("恢复之前的会话") }] };
+    let resultCalls = 0;
+    const notifications: unknown[] = [];
+    const ctx = {
+      model: { maxTokens: 2048 },
+      modelRegistry: {
+        streamSimple(_model: unknown, _context: unknown, options: { signal: AbortSignal }) {
+          assert.equal(options.signal, controller.signal);
+          return {
+            async *[Symbol.asyncIterator]() {
+              if (cancelAt === "delta") controller.abort(reason);
+              yield { type: "text_delta", partial: { ...result, usage: { ...usage, output: 1 } } };
+              if (cancelAt === "terminal") controller.abort(reason);
+              yield { type: "error", error: result };
+            },
+            async result() { resultCalls++; return result; },
+          };
+        },
+      },
+    } as never;
+    const requester = createModelTranslationRequester(ctx, { emit(channel, value) { assert.equal(channel, "pi:model-usage:v1"); notifications.push(value); } });
+    assert.ok(requester);
+    await assert.rejects(() => requester("system", "user", 512, controller.signal), error => error === reason);
+    assert.equal(resultCalls, 1);
+    assert.equal(notifications.length, 1);
+    assert.deepEqual((notifications[0] as { usage: unknown }).usage, { ...usage, cacheWrite1h: undefined });
+  });
+}
+for (const stopReason of ["stop", "error"] as const) {
+  test(`翻译 ${stopReason} 终止响应的用量只记录一次，保留成功或失败结果`, async () => {
+    const notifications: unknown[] = [];
+    const result = { role: "assistant", stopReason, errorMessage: "upstream failure", usage: { input: 20, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 23 }, content: [{ type: "text", text: response("恢复之前的会话") }] };
+    const ctx = { model: { maxTokens: 2048 }, modelRegistry: { streamSimple: () => ({ async *[Symbol.asyncIterator]() { yield stopReason === "stop" ? { type: "done", message: result } : { type: "error", error: result }; }, async result() { return result; } }) } } as never;
+    const requester = createModelTranslationRequester(ctx, { emit(_channel, value) { notifications.push(value); } });
+    assert.ok(requester);
+    if (stopReason === "stop") assert.equal(await requester("system", "user", 512), response("恢复之前的会话"));
+    else await assert.rejects(() => requester("system", "user", 512), /upstream failure/);
+    assert.equal(notifications.length, 1);
+  });
+}
+
 test("detects descriptions containing at least one Han character", () => {
   assert.equal(hasChineseDescription("Resume session"), false);
   assert.equal(hasChineseDescription("Resume 会话"), true);

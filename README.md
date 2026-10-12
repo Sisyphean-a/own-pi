@@ -1,6 +1,6 @@
 # own-pi
 
-本仓库维护五个可独立安装的 Pi 扩展包。下面的命令都在仓库根目录运行。
+本仓库维护六个可独立安装的 Pi 扩展包。下面的命令都在仓库根目录运行。
 
 ## 一键重新安装当前目录扩展
 
@@ -75,5 +75,16 @@ pi install ./packages/pi-observational-memory
 ```
 
 详见 [`packages/pi-observational-memory/README.md`](packages/pi-observational-memory/README.md)。
+
+## pi-token-stats
+
+按模型记录 Token、缓存、官方价估算与请求时间。使用 `/token` 查看今日/本月/累计，`/token html` 生成离线快照；采集有界异步写入，不加载全历史或启动服务器。
+
+```bash
+pi -e ./packages/pi-token-stats
+pi install ./packages/pi-token-stats
+```
+
+详见 [`packages/pi-token-stats/README.md`](packages/pi-token-stats/README.md)。
 
 所有包对可选外部能力采用软依赖：缺少对应插件或运行时 API 时只停用受影响的逻辑，不阻断 Pi 或其他扩展启动。

@@ -18,6 +18,7 @@ const targets = [
   "pi-optimization",
   "pi-observational-memory",
   "pi-tui-enhancements",
+  "pi-token-stats",
 ];
 
 function usage() {
@@ -27,7 +28,7 @@ function usage() {
   ${targets.join("\n  ")}
 
 默认输出：${relative(projectRoot, defaultOutput)}
-压缩包顶层就是三个扩展目录，可直接解压到 ~/.pi/agent/extensions/。`);
+压缩包顶层就是四个扩展目录，可直接解压到 ~/.pi/agent/extensions/。`);
 }
 
 function parseArgs(argv) {

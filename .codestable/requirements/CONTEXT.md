@@ -10,6 +10,8 @@
 | `context:pi-advisor` | 复杂 Pi 编码任务中的战略顾问调用与方向检查 | `pi-advisor` | [pi-advisor](contexts/pi-advisor.md) |
 | `context:observational-memory` | 压缩前的观察/反思记忆提取、折叠、渲染与召回 | `pi-observational-memory` | [observational-memory](contexts/observational-memory.md) |
 
+- `context:model-usage`：本机模型用量与官方价估算，由 `pi-token-stats` 实现；唯一规则见 [model-usage](contexts/model-usage.md)。
+
 目前没有单独的工作区业务领域；可选扩展依赖是跨包架构契约，权威记录见 [可选扩展依赖](../architecture/shared/optional-extension-dependencies.md)。`package:pi-lsp-feedback`、`package:pi-tui-enhancements`、`package:pi-optimization` 和 `package:pi-advisor` 分别是各自领域的实现边界。
 
 ## 工作区术语

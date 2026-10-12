@@ -10,6 +10,8 @@
 | `package:pi-advisor` | `packages/pi-advisor` | [pi-advisor](packages/pi-advisor.md) | `extensions/index.ts`、`src/advisor.ts`、`src/advisor-config.ts`、`src/advisor-runner.ts`、`src/advisor-tools.ts`、`src/advisor-messages.ts`、`src/advisor-signals.ts` |
 | `package:pi-observational-memory` | `packages/pi-observational-memory` | [pi-observational-memory](packages/pi-observational-memory.md) | `src/index.ts`、`src/runtime.ts`、`src/hooks/`、`src/agents/`、`src/session-ledger/`、`src/tools/recall-observation.ts` |
 
+- `package:pi-token-stats`：所有者 `packages/pi-token-stats`；[包架构](packages/pi-token-stats.md)；入口 `extensions/index.ts`，代码 `src/index.ts`、`src/record.ts`、`src/pricing.ts`、`src/writer.ts`、`src/query.ts`、`src/report.ts`。
+
 ## 共享机制
 
 - [可选扩展依赖](shared/optional-extension-dependencies.md)：所有扩展对外部插件、可选 peer 和运行时能力的降级契约。

@@ -1,0 +1,43 @@
+{
+  "name": "pi-token-stats",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "低开销的本机模型 token、缓存与官方价统计",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "files": [
+    "extensions/",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "benchmark": "node --expose-gc test/performance.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.86.0",
+    "@types/node": "^25.9.3",
+    "typescript": "^6.0.3"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  }
+}

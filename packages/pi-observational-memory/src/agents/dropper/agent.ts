@@ -50,6 +50,7 @@ interface RunDropperArgs {
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	onUsage?: (message: unknown) => void;
 }
 
 const RELEVANCE_DROP_RANK: Record<Observation["relevance"], number> = {
@@ -261,6 +262,9 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 	for await (const event of stream) {
 		// 工具执行时收集候选 id。
 		logAgentStreamError("dropper", event);
+		if (event.type === "message_end") {
+			try { args.onUsage?.(event.message); } catch { /* Failure: 可选统计不得改变 worker 结果。 */ }
+		}
 	}
 	await stream.result();
 	const droppedIds = selectDropCandidates(proposedDropIds, observations, maxDropsAllowed, reflections);

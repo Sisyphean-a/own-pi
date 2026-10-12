@@ -22,6 +22,8 @@
 - `src/advisor-messages.ts` 负责角色过滤、逐条文本裁剪、首尾保留和 closing context message；`src/advisor-signals.ts` 负责工具摘要、阶段识别和验证命令识别。
 - 顾问调用只有在模型、认证和会话上下文均可用时计入 `maxUsesPerRun`；失败不消耗调用配额。
 
+- 请求完成处可选发布轻量用量通知；只发送计数、隔离消费者/旧上下文错误，不改变模型结果。协议唯一依据见 [pi-token-stats 可选计量协议](pi-token-stats.md#可选计量协议)，本包不拥有统计或定价规则。
+
 ## 代码锚点
 
 - Pi 入口：`packages/pi-advisor/extensions/index.ts`

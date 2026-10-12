@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { publishUsage } from "../agents/model-usage.js";
 import { runDropper } from "../agents/dropper/agent.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { ObserverStreamError, runObserver } from "../agents/observer/agent.js";
@@ -351,6 +352,7 @@ async function runObserverStage(
 	let observations: Observation[] | undefined;
 	try {
 		observations = await runObserver({
+			onUsage: (message) => { try { publishUsage(pi.events, message); } catch { /* Failure: 旧会话已失效。 */ } },
 			model: resolved.model as any,
 			apiKey: resolved.apiKey,
 			headers: resolved.headers,
@@ -426,6 +428,7 @@ async function runReflectorStage(
 
 	const folded = foldLedger(entries);
 	const reflections = await runReflector({
+		onUsage: (message) => { try { publishUsage(pi.events, message); } catch { /* Failure: 旧会话已失效。 */ } },
 		model: resolved.model as any,
 		apiKey: resolved.apiKey,
 		headers: resolved.headers,
@@ -501,6 +504,7 @@ async function runDropperStage(
 
 	const reflectionsForDropper = mergeReflections(folded.reflections, sameRunReflections);
 	const droppedIds = await runDropper({
+		onUsage: (message) => { try { publishUsage(pi.events, message); } catch { /* Failure: 旧会话已失效。 */ } },
 		model: resolved.model as any,
 		apiKey: resolved.apiKey,
 		headers: resolved.headers,

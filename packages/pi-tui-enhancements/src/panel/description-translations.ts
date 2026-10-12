@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { logFailure } from "../extension-log.ts";
+import { publishUsage } from "../model-usage.ts";
 
 const CACHE_VERSION = 1;
 const CACHE_FILE_NAME = "tui-description-translations.json";
@@ -230,7 +231,7 @@ async function requestValidatedTranslations(
   throw new Error("翻译未返回结果");
 }
 
-export function createModelTranslationRequester(ctx: TranslationContext): TranslationRequester | undefined {
+export function createModelTranslationRequester(ctx: TranslationContext, events?: Parameters<typeof publishUsage>[0]): TranslationRequester | undefined {
   const model = ctx.model;
   if (!model) return undefined;
 
@@ -256,10 +257,10 @@ export function createModelTranslationRequester(ctx: TranslationContext): Transl
       },
     );
 
-    for await (const _event of stream) {
-      signal?.throwIfAborted();
-    }
+    // Rule: signal 已传给 provider；仍排空流取得终止用量，再抛取消，避免提前退出漏记。
+    for await (const _event of stream) {}
     const result = await stream.result();
+    publishUsage(events, result);
     signal?.throwIfAborted();
     if (result.stopReason !== "stop") {
       throw new Error(result.errorMessage ?? `模型未正常完成翻译：${result.stopReason}`);

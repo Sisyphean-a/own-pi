@@ -10,6 +10,7 @@ import {
   type ThinkingLevel,
 } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
+import { publishUsage } from "./model-usage.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAdvisorTools, summarizeAdvisorToolCall } from "./advisor-tools.ts";
 
@@ -116,6 +117,9 @@ export async function runAdvisor(options: RunAdvisorOptions): Promise<AdvisorRun
   const toolUses: AdvisorRunResult["toolUses"] = [];
 
   for await (const event of stream) {
+    if (event.type === "message_end") {
+      try { publishUsage(options.pi.events, event.message); } catch { /* Failure: 旧宿主上下文不可用时只跳过统计。 */ }
+    }
     if (event.type === "tool_execution_start") {
       pending.set(event.toolCallId, summarizeAdvisorToolCall(event.toolName, event.args));
     } else if (event.type === "tool_execution_end") {

@@ -22,6 +22,8 @@
 - 压缩只使用已写入 ledger 的记忆，不等待运行中的 worker；没有可渲染记忆时放弃接管，交给 Pi 原生摘要器。
 - `Runtime` 在首次使用时加载配置；模型认证判定不得比 Pi 自身的门禁更严格。
 
+- 请求完成处可选发布轻量用量通知；只发送计数、隔离消费者/旧上下文错误，不改变模型结果。协议唯一依据见 [pi-token-stats 可选计量协议](pi-token-stats.md#可选计量协议)，本包不拥有统计或定价规则。
+
 ## 代码锚点
 
 - 入口与事件注册：`packages/pi-observational-memory/src/index.ts`

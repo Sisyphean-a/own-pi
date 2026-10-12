@@ -31,6 +31,7 @@ interface RunReflectorArgs {
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	onUsage?: (message: unknown) => void;
 }
 
 const RecordReflectionsSchema = Type.Object({
@@ -194,6 +195,9 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 	for await (const event of stream) {
 		// 工具执行时收集记录。
 		logAgentStreamError("reflector", event);
+		if (event.type === "message_end") {
+			try { args.onUsage?.(event.message); } catch { /* Failure: 可选统计不得改变 worker 结果。 */ }
+		}
 	}
 	await stream.result();
 	const acceptedReflections = Array.from(accumulated.values());

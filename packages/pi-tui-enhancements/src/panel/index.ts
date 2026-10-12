@@ -13,7 +13,7 @@ function notify(ctx: ExtensionContext, message: string, level: "info" | "warning
       ctx.ui.notify(message, level);
     }
   } catch {
-    // UI is optional and may be stale during session replacement.
+    // Failure: UI 可选，会话替换后可能已失效。
   }
 }
 
@@ -98,7 +98,7 @@ export default async function quickPanel(pi: ExtensionAPI): Promise<void> {
                     description: item.description,
                   }];
                 }),
-                translation.createModelTranslationRequester(ctx),
+                translation.createModelTranslationRequester(ctx, pi.events),
                 controller.signal,
               ))
               .catch((error: unknown) => {

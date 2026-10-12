@@ -25,6 +25,7 @@ interface RunObserverArgs {
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
+	onUsage?: (message: unknown) => void;
 }
 
 const RelevanceSchema = Type.Union([
@@ -213,6 +214,9 @@ ${conversation}`;
 	for await (const event of stream) {
 		// 排空事件；工具执行已经收集了记录。
 		logAgentStreamError("observer", event);
+		if (event.type === "message_end") {
+			try { args.onUsage?.(event.message); } catch { /* Failure: 可选统计不得改变 worker 结果。 */ }
+		}
 		// 监测终止性 API/流失败，避免与刻意空结果混为一谈。
 		const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
 		if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
