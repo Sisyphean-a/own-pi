@@ -187,7 +187,9 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
-		...(effectiveMaxTurns !== undefined ? { shouldStopAfterTurn: () => ++turnCount >= effectiveMaxTurns } : {}),
+		...(effectiveMaxTurns !== undefined
+			? { finishTurn: () => (++turnCount >= effectiveMaxTurns ? { action: "end" } as const : undefined) }
+			: {}),
 	};
 
 	const loop = args.agentLoop ?? agentLoop;

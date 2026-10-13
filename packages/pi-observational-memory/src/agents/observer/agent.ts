@@ -200,9 +200,9 @@ ${conversation}`;
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
 		...(effectiveMaxTurns !== undefined
 			? {
-				shouldStopAfterTurn: () => {
+				finishTurn: () => {
 					turnCount++;
-					return turnCount >= effectiveMaxTurns;
+					return turnCount >= effectiveMaxTurns ? { action: "end" } as const : undefined;
 				},
 			}
 			: {}),

@@ -25,6 +25,6 @@
 
 ## 验证与版本边界
 
-`test/stats.test.ts` 覆盖公开计量、去重、损坏日志、故障、导入、注册生命周期和 HTML 安全；`test/performance.mjs` 测量合成采集/入队。Node 基线为 24（内建 SQLite 仅冷路径加载）。开发 peer 使用现有 Pi 0.86 基线；该上游 npm shrinkwrap 的 brace-expansion 5.0.9 存在 DoS 公告，本包不分发它，升级由宿主基线统一处理。
+`test/stats.test.ts` 覆盖公开计量、去重、损坏日志、故障、导入、注册生命周期和 HTML 安全；`test/performance.mjs` 测量合成采集/入队。Node 基线为 24（内建 SQLite 仅冷路径加载）。开发依赖随 [Pi 运行时契约](../shared/pi-runtime-contract.md) 的当前基线，仅用于本包类型检查与测试，不分发 `node_modules`。
 
 用户用法与数据恢复入口见 [包 README](../../../packages/pi-token-stats/README.md)。

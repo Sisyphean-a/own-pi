@@ -99,9 +99,9 @@ export async function runAdvisor(options: RunAdvisorOptions): Promise<AdvisorRun
     sessionId: options.sessionId,
     convertToLlm: (messages) => messages as Message[],
     toolExecution: "sequential",
-    shouldStopAfterTurn: () => {
+    finishTurn: () => {
       turnCount++;
-      return turnCount >= maxTurns;
+      return turnCount >= maxTurns ? { action: "end" } : undefined;
     },
   };
 

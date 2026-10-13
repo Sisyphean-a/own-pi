@@ -52,6 +52,6 @@ npm --prefix packages/pi-token-stats run check
 npm --prefix packages/pi-token-stats run benchmark
 ```
 
-基准只测合成突发中的请求完成计量/入队，不代表生产端到端延迟。开发基线 Pi 0.86 的 npm shrinkwrap 锁定 `brace-expansion@5.0.9`，存在上游高严重度 DoS 公告；本包无新增运行时依赖，也不分发 `node_modules`，但开发依赖仍需随宿主基线升级处理。
+基准只测合成突发中的请求完成计量/入队，不代表生产端到端延迟。开发依赖随宿主 Pi 基线升级，仅用于本地类型检查与测试；本包无新增运行时依赖，也不分发 `node_modules`。
 
 稳定统计口径见 [模型用量上下文](../../.codestable/requirements/contexts/model-usage.md)。
