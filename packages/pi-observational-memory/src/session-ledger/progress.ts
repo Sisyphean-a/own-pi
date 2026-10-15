@@ -3,6 +3,8 @@ import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
+	isObservationsRecordedEntry,
+	isReflectionsRecordedEntry,
 	type Entry,
 	type V3MemoryCustomType,
 } from "./types.js";
@@ -37,8 +39,8 @@ function isValidCoverageEntry(entry: Entry, customType: V3MemoryCustomType): ent
 	if (entry.type !== "custom" || entry.customType !== customType) return false;
 	if (!isObject(entry.data) || typeof entry.data.coversUpToId !== "string") return false;
 
-	if (customType === OM_OBSERVATIONS_RECORDED) return isNonEmptyArray(entry.data.observations);
-	if (customType === OM_REFLECTIONS_RECORDED) return isNonEmptyArray(entry.data.reflections);
+	if (customType === OM_OBSERVATIONS_RECORDED) return isObservationsRecordedEntry(entry) && entry.data.processing !== undefined;
+	if (customType === OM_REFLECTIONS_RECORDED) return isReflectionsRecordedEntry(entry);
 	return isNonEmptyArray(entry.data.observationIds);
 }
 
@@ -48,8 +50,9 @@ export function latestCoverageIndex(entries: Entry[], customType: V3MemoryCustom
 
 	for (const entry of entries) {
 		if (!isValidCoverageEntry(entry, customType)) continue;
-		const coveredIndex = idToIndex.get(entry.data.coversUpToId);
+		let coveredIndex = idToIndex.get(entry.data.coversUpToId);
 		if (coveredIndex === undefined) continue;
+		if (isObservationsRecordedEntry(entry) && entry.data.processing?.nextSourceOffset !== undefined) coveredIndex--;
 		if (coveredIndex > latest) latest = coveredIndex;
 	}
 
@@ -63,15 +66,41 @@ export function latestCoverageMarkerId(entries: Entry[], customType: V3MemoryCus
 
 	for (const entry of entries) {
 		if (!isValidCoverageEntry(entry, customType)) continue;
-		const coveredIndex = idToIndex.get(entry.data.coversUpToId);
+		let coveredIndex = idToIndex.get(entry.data.coversUpToId);
 		if (coveredIndex === undefined) continue;
+		if (isObservationsRecordedEntry(entry) && entry.data.processing?.nextSourceOffset !== undefined) coveredIndex--;
 		if (coveredIndex > latestIndex) {
 			latestIndex = coveredIndex;
-			latestMarkerId = entry.data.coversUpToId;
+			latestMarkerId = entries[coveredIndex]?.id;
 		}
 	}
 
 	return latestMarkerId;
+}
+
+export function observationProcessingState(entries: Entry[]): { nextEntryIndex: number; startOffset: number } {
+	const offsets = new Map<string, number>();
+	for (const entry of entries) {
+		if (!isObservationsRecordedEntry(entry) || !entry.data.processing) continue;
+		const processing = entry.data.processing;
+		processing.processedSourceEntryIds.forEach((id, index, ids) => {
+			const current = offsets.get(id) ?? 0;
+			const start = index === 0 ? processing.startSourceOffset ?? 0 : 0;
+			if (current === Number.POSITIVE_INFINITY || current !== start) return;
+			const next = index === ids.length - 1 ? processing.nextSourceOffset : undefined;
+			if (next !== undefined && next <= start) return;
+			offsets.set(id, next ?? Number.POSITIVE_INFINITY);
+		});
+	}
+	const nextEntryIndex = entries.findIndex((entry) => isSourceEntry(entry) && offsets.get(entry.id) !== Number.POSITIVE_INFINITY);
+	return { nextEntryIndex, startOffset: nextEntryIndex < 0 ? 0 : offsets.get(entries[nextEntryIndex].id) ?? 0 };
+}
+
+export function hasProcessedSourcePrefix(entries: Entry[], firstKeptEntryId: string): boolean {
+	const boundary = entries.findIndex((entry) => entry.id === firstKeptEntryId);
+	if (boundary < 0) return false;
+	const { nextEntryIndex } = observationProcessingState(entries);
+	return nextEntryIndex < 0 || nextEntryIndex >= boundary;
 }
 
 export function earlierCoverageMarkerId(entries: Entry[], firstId: string | undefined, secondId: string | undefined): string | undefined {

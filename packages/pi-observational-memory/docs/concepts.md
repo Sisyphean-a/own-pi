@@ -30,7 +30,7 @@ type Observation = {
 }
 ```
 
-Observer 只能引用它收到的源条目 ID。代码会校验 ID、去重，并重新计算 ID 和 token 数。
+Observer 只能引用它收到的源条目 ID。事件 ID 由内容、来源和片段位置共同生成：同一次事件重放去重，不同源上的同文重申保留独立身份，避免复用旧精简标记。代码计算渲染行的估算 token 数。
 
 ### Reflection
 
@@ -45,47 +45,33 @@ type Reflection = {
 }
 ```
 
-Reflection 应该少于 observation，不能机械地为每条 observation 生成一条 reflection。支持 ID 是后续 Dropper 判断冗余覆盖的证据，不能为了提高覆盖数量而虚增。
+Reflection 只保留会影响后续决定的当前持久结论，内容带项目/任务作用域、限定条件和必要理由。支持 ID 仅供溯源，不代表原观察已被完整覆盖。
+
+明确纠正、取代或失效时，Reflector 可原子提交新反思与旧反思撤回。撤回包含旧 ID、支撑变化的观察 ID 和理由；旧反思退出当前投影，但保留历史与召回通道。提问、未再次提及或预算压力本身不构成撤回依据。
 
 ### Drop
 
-Drop 是 observation ID 的 tombstone：
-
-```ts
-om.observations.dropped: {
-  observationIds: string[];
-  coversUpToId: string;
-}
-```
-
-Drop 只移除活动 projection 中的 observation，不删除 ledger 历史。只要 ID 仍在当前分支上，已经 dropped 的 observation 仍可以 recall。
+Drop 把观察移出活动投影，不删除账本历史。新记录包含精简原因及替代记忆 ID；冗余、被取代和已解决都须有实际留存的证据，仅 low 级例行回执可无替代证据。多个替代 ID 视为共同证据，必须全部留存；证据失效时恢复原观察。旧 V3 tombstone 仍可读取。
 
 ## 三个后台角色
 
 ### Observer
 
-在 `agent_start`/`turn_end` 的 consolidation 检查中，源文本达到 `observeAfterTokens` 后运行。它接收 observation 水位之后的源条目，按大小从旧到新分块，并通过 `record_observations` 工具提交结果。
+在 `agent_start`/`turn_end` 检查中，进度达到 `observeAfterTokens` 后运行。从最旧未读源开始分块；超长源连续分片，保留续读位置。
 
-没有值得记录的内容时不写空 ledger entry，也不推进覆盖水位；为避免每轮重复请求，故意的空结果会短暂退避。
+通过 `record_observations` 记录事实，再用 `finish_observation` 确认全部提供的源片段已审阅。完成回执允许零观察；失败或缺回执不提交部分产出，也不推进进度。
 
 ### Reflector
 
-源文本达到 `reflectAfterTokens` 且存在 observation 覆盖后运行。它读取当前活动 observations 和既有 reflections，通过 `record_reflections` 提交新的稳定结论。
-
-每个 observation 会被标记为 `none`、`partial` 或 `strong` 覆盖等级，供模型判断遗漏，但覆盖等级不是必须生成 reflection 的配额。
+进度达到 `reflectAfterTokens`，或活跃观察达到池上限时运行；需已有完整源处理水位。读取当前活动观察和有效反思，通过一次 `record_reflections` 原子提交新增、撤回及全部观察的审阅回执。无变化也可完成，不按引用次数生成覆盖等级。
 
 ### Dropper
 
-Dropper 只在同一次 consolidation 中 Reflector 成功写入非空 reflection 后尝试运行，并且活动 observation 池超过 `observationsPoolTargetTokens` 时才有工作。
+活动观察池超过 `observationsPoolTargetTokens` 时独立尝试，不要求同轮新增反思。同一记忆修订已完成检查后，零候选不会导致逐轮重试。
 
-它可以提出要删除的活动 observation ID，但代码仍会：
+模型提交原因与替代证据；代码校验当前 ID、排除同批删除的替代证据，按完整行估算 token 选择候选，达到目标即停止。预算是方向而非删除配额，没有安全项就保留。
 
-- 过滤未知 ID 和重复 ID；
-- 根据 reflection 覆盖、相关性、时间等因素排序；
-- 限制最多删除的数量；
-- 把删除记录写为 tombstone。
-
-`critical` 是高阻力等级，不是永久锁定；只有模型判断旧内容已被安全覆盖、替代或去重时才可能被移除。
+`critical` 不是永久锁定，但仍有效的用户约束、未完成工作和决定理由须完整留存。
 
 ## Ledger entry
 
@@ -93,18 +79,30 @@ V3 使用三种自定义 entry：
 
 ```ts
 om.observations.recorded: {
-  observations: Observation[];
+  observations: Observation[]; // 允许零条
   coversUpToId: string;
+  processing: {
+    processedSourceEntryIds: string[];
+    startSourceOffset?: number; // 首个源的起读位置
+    nextSourceOffset?: number;  // 最后一个源尚未读完时的续读位置
+  };
 }
 
 om.reflections.recorded: {
-  reflections: Reflection[];
+  reflections: Reflection[]; // 允许零条
   coversUpToId: string;
+  retirements?: { reflectionId: string; supportingObservationIds: string[]; reason: string }[];
+  reviewedObservationIds: string[];
 }
 
 om.observations.dropped: {
   observationIds: string[];
   coversUpToId: string;
+  evidence: {
+    observationId: string;
+    reason: "redundant" | "superseded" | "resolved" | "routine";
+    replacementIds: string[];
+  }[];
 }
 ```
 
@@ -120,11 +118,11 @@ type MemoryDetails = {
 }
 ```
 
-`src/session-ledger/types.ts` 负责类型、ID、相关性和 entry 数据校验；无效数据、旧 V2 数据和未知自定义 entry 会被忽略。
+以上是新写入协议；[`src/session-ledger/types.ts`](../src/session-ledger/types.ts) 定义类型与校验。旧 V3 可缺少新增元数据并继续读取，但旧水位不证明完整处理；不迁移或改写会话。无效数据、旧 V2 数据和未知自定义 entry 会被忽略。
 
 ## 水位与来源
 
-`coversUpToId` 是 worker 的**进度/投影水位**，表示它处理到哪个源 entry。它不是：
+`coversUpToId` 是 worker 的**进度水位**。Observer 的整源覆盖还必须由连续片段的 `processing` 回执证明；部分源不算整条处理完成。它不是：
 
 - observation 的来源证明；
 - reflection 的依赖指针；
@@ -153,7 +151,7 @@ V3 区分三种 projection：
 
 1. 查找 observation 或 reflection；
 2. 对 observation 标记 `active` 或 `dropped`；
-3. 对 reflection 找出支持它的 observations；
+3. 对 reflection 标记 `active`/`retired`，展开支撑观察，以及撤回理由与撤回证据；
 4. 从 observation 的 source ID 恢复原始 entry；
 5. 报告缺失、非源类型和部分证据。
 

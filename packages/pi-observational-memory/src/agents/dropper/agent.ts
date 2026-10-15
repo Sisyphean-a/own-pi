@@ -1,42 +1,15 @@
 import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel, ProviderHeaders } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
+import { Type, type Message, type Model, type ModelThinkingLevel, type ProviderHeaders } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
-import { debugLog } from "../../debug-log.js";
-import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
 import { createAgentContext } from "../agent-context.js";
 import { logAgentStreamError } from "../stream-errors.js";
-import { reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
-import { DROPPER_SYSTEM } from "./prompts.js";
-import {
-	REFLECTION_COVERAGE_DROP_RANK,
-	coverageTierForObservation,
-	reflectionCoverageMap,
-	summarizeCoverageByRelevance,
-	summarizeCoverageByRelevanceForIds,
-	observationToDropperLine,
-} from "./coverage.js";
+import { workerMaxTokens, workerMessages } from "../../model-budget.js";
+import { observationToSummaryLine, reflectionToSummaryLine, type Observation, type Reflection, type ObservationDrop } from "../../session-ledger/index.js";
 import { observationPoolMetrics } from "./pool.js";
-export {
-	maxDropCountForPool,
-	observationPoolFullness,
-	observationPoolMetrics,
-} from "./pool.js";
-export type { ObservationPoolMetrics } from "./pool.js";
-export {
-	REFLECTION_COVERAGE_TIERS,
-	coverageTierForObservation,
-	emptyCoverageSummaryByRelevance,
-	observationToDropperLine,
-	reflectionCoverageMap,
-	reflectionCoverageTierForCount,
-	reflectionSupportCounts,
-	summarizeCoverageByRelevance,
-	summarizeCoverageByRelevanceForIds,
-	summarizeCoverageTransitionsByRelevance,
-} from "./coverage.js";
-export type { CoverageSummaryByRelevance, CoverageTransitionSummaryByRelevance, ReflectionCoverageTier } from "./coverage.js";
+import { observationLineTokenCount } from "../../tokens.js";
+import { DROPPER_SYSTEM } from "./prompts.js";
+export { observationPoolFullness, observationPoolMetrics } from "./pool.js";
 
 interface RunDropperArgs {
 	model: Model<any>;
@@ -52,245 +25,82 @@ interface RunDropperArgs {
 	thinkingLevel?: ModelThinkingLevel;
 	onUsage?: (message: unknown) => void;
 }
-
-const RELEVANCE_DROP_RANK: Record<Observation["relevance"], number> = {
-	low: 0,
-	medium: 1,
-	high: 2,
-	critical: 3,
-};
-
-const DropObservationsSchema = Type.Object({
-	ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-	reason: Type.Optional(Type.String()),
-});
-
-type DropObservationsArgs = Static<typeof DropObservationsSchema>;
-
-function joinOrEmpty(items: string[]): string {
-	return items.length ? items.join("\n") : "（暂无）";
-}
-
-function relevanceCounts(observations: readonly Observation[]): Record<Observation["relevance"], number> {
-	return observations.reduce<Record<Observation["relevance"], number>>((counts, observation) => {
-		counts[observation.relevance]++;
-		return counts;
-	}, { low: 0, medium: 0, high: 0, critical: 0 });
-}
-
-export function normalizeDropObservationIds(
-	ids: readonly string[] | undefined,
-	observations: readonly Observation[],
-): string[] | undefined {
-	if (!ids || ids.length === 0) return undefined;
-	const allowed = new Map(observations.map((observation) => [observation.id, observation]));
-	const result: string[] = [];
-	const seen = new Set<string>();
-	for (const id of ids) {
-		const observation = allowed.get(id);
-		if (!observation) continue;
-		if (seen.has(id)) continue;
-		seen.add(id);
-		result.push(id);
-	}
-	return result.length > 0 ? result : undefined;
-}
-
-function timestampRank(timestamp: string): number {
-	const parsed = Date.parse(timestamp);
-	return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
-}
+const DropSchema = Type.Object({ drops: Type.Array(Type.Object({
+	observationId: Type.String(),
+	reason: Type.Union([Type.Literal("redundant"), Type.Literal("superseded"), Type.Literal("resolved"), Type.Literal("routine")]),
+	replacementIds: Type.Array(Type.String()),
+})) });
 
 export function selectDropCandidates(
-	ids: readonly string[],
-	observations: readonly Observation[],
-	maxDrops: number,
-	reflections: readonly Reflection[] = [],
-): string[] {
-	if (maxDrops <= 0 || ids.length === 0) return [];
-
-	const byId = new Map(observations.map((observation) => [observation.id, observation]));
-	const coverageById = reflectionCoverageMap(observations, reflections);
-	const firstProposalIndex = new Map<string, number>();
-	for (let i = 0; i < ids.length; i++) {
-		const id = ids[i];
-		if (!firstProposalIndex.has(id)) firstProposalIndex.set(id, i);
+	proposals: readonly ObservationDrop[], observations: readonly Observation[], targetTokens: number, reflections: readonly Reflection[],
+): ObservationDrop[] {
+	const byId = new Map(observations.map((item) => [item.id, item]));
+	const reflectionIds = new Set(reflections.map((item) => item.id));
+	const unique = new Map<string, ObservationDrop>();
+	for (const proposal of proposals) {
+		const observation = byId.get(proposal.observationId);
+		if (!observation) throw new Error("精简 id 必须来自当前观察");
+		const replacements = [...new Set(proposal.replacementIds)];
+		if (replacements.some((id) => id === observation.id || (!byId.has(id) && !reflectionIds.has(id)))) throw new Error("替代证据必须是其他当前有效记忆");
+		if (proposal.reason === "routine" ? observation.relevance !== "low" : replacements.length === 0) throw new Error("非 low 例行项必须提供替代或状态变化证据");
+		unique.set(observation.id, { ...proposal, replacementIds: replacements });
 	}
-
-	return Array.from(firstProposalIndex.entries())
-		.map(([id, index]) => ({ id, index, observation: byId.get(id) }))
-		.filter((candidate): candidate is { id: string; index: number; observation: Observation } =>
-			candidate.observation !== undefined
-		)
-		.sort((a, b) => {
-			const coverageDelta = REFLECTION_COVERAGE_DROP_RANK[coverageTierForObservation(a.observation, coverageById)]
-				- REFLECTION_COVERAGE_DROP_RANK[coverageTierForObservation(b.observation, coverageById)];
-			const relevanceDelta = RELEVANCE_DROP_RANK[a.observation.relevance] - RELEVANCE_DROP_RANK[b.observation.relevance];
-			const ageDelta = timestampRank(a.observation.timestamp) - timestampRank(b.observation.timestamp);
-			return coverageDelta || relevanceDelta || ageDelta || a.index - b.index;
-		})
-		.slice(0, maxDrops)
-		.map((candidate) => candidate.id);
+	const rank = { low: 0, medium: 1, high: 2, critical: 3 };
+	const sorted = [...unique.values()].sort((a, b) => {
+		const left = byId.get(a.observationId)!, right = byId.get(b.observationId)!;
+		return rank[left.relevance] - rank[right.relevance] || left.timestamp.localeCompare(right.timestamp);
+	});
+	let remaining = observationPoolMetrics(observations, targetTokens).observationTokens;
+	const selected: ObservationDrop[] = [];
+	for (const candidate of sorted) {
+		if (remaining <= targetTokens) break;
+		selected.push(candidate);
+		remaining -= observationLineTokenCount(byId.get(candidate.observationId)!);
+	}
+	const selectedIds = new Set(selected.map((item) => item.observationId));
+	// 替代记忆必须实际留存；同批互相引用或删除链不构成保留证明。
+	return selected.filter((item) => item.reason === "routine" || item.replacementIds.every((id) => reflectionIds.has(id) || !selectedIds.has(id)));
 }
 
-export async function runDropper(args: RunDropperArgs): Promise<string[] | undefined> {
-	const { model, apiKey, headers, env, reflections, observations, targetTokens, signal } = args;
-	if (observations.length === 0) return undefined;
-
-	const metrics = observationPoolMetrics(observations, targetTokens);
-	const { observationTokens, fullness, tokensOverTarget, maxDropsAllowed } = metrics;
-	const coverageById = reflectionCoverageMap(observations, reflections);
-	const coverageSummaryByRelevance = summarizeCoverageByRelevance(observations, coverageById);
-	debugLog("dropper.agent_start", {
-		activeObservationCount: observations.length,
-		reflectionCount: reflections.length,
-		observationTokens,
-		targetTokens,
-		tokensOverTarget,
-		fullness,
-		maxDropsAllowed,
-		relevanceCounts: relevanceCounts(observations),
-		coverageSummaryByRelevance,
-	});
-	if (maxDropsAllowed <= 0) {
-		debugLog("dropper.result", {
-			reason: "not_over_target",
-			toolCallCount: 0,
-			rawRequestedIdsCount: 0,
-			acceptedCandidateCount: 0,
-			selectedDropsCount: 0,
-			selectedDropTokens: 0,
-			selectedCoverageSummaryByRelevance: summarizeCoverageByRelevanceForIds([], observations, coverageById),
-			maxDropsAllowed,
-		});
-		return undefined;
-	}
-
-	const proposedDropIds: string[] = [];
-	const proposed = new Set<string>();
-	const allowed = new Map(observations.map((observation) => [observation.id, observation]));
-	let toolCallCount = 0;
-	let rawRequestedIdsCount = 0;
-	let missingIdsCount = 0;
-	let criticalCandidateIdsCount = 0;
-	let duplicateInRequestCount = 0;
-	let duplicateInRunCount = 0;
-
-	const dropObservations: AgentTool<typeof DropObservationsSchema> = {
-		name: "drop_observations",
-		label: "精简观察",
-		description: "提交可以安全地从压缩记忆中移除的活跃观察 id。",
-		parameters: DropObservationsSchema,
-		execute: async (_id, params: DropObservationsArgs) => {
-			toolCallCount++;
-			rawRequestedIdsCount += params.ids.length;
-			const seenInRequest = new Set<string>();
-			let added = 0;
-			let requestMissingIds = 0;
-			let requestCriticalCandidateIds = 0;
-			let requestDuplicateIds = 0;
-			let requestDuplicateInRunIds = 0;
-			for (const id of params.ids) {
-				const observation = allowed.get(id);
-				if (!observation) {
-					missingIdsCount++;
-					requestMissingIds++;
-					continue;
-				}
-				if (seenInRequest.has(id)) {
-					duplicateInRequestCount++;
-					requestDuplicateIds++;
-					continue;
-				}
-				seenInRequest.add(id);
-				if (proposed.has(id)) {
-					duplicateInRunCount++;
-					requestDuplicateInRunIds++;
-					continue;
-				}
-				proposed.add(id);
-				proposedDropIds.push(id);
-				if (observation.relevance === "critical") {
-					criticalCandidateIdsCount++;
-					requestCriticalCandidateIds++;
-				}
-				added++;
-			}
-			debugLog("dropper.tool_call", {
-				toolCallCount,
-				rawRequestedIdsCount: params.ids.length,
-				acceptedIdsCount: added,
-				missingIdsCount: requestMissingIds,
-				criticalCandidateIdsCount: requestCriticalCandidateIds,
-				duplicateInRequestCount: requestDuplicateIds,
-				duplicateInRunCount: requestDuplicateInRunIds,
-				totalCandidates: proposedDropIds.length,
-				maxDropsAllowed,
-			});
-			return {
-				content: [{ type: "text", text: `已加入 ${added} 条待精简候选。本次运行累计候选：${proposedDropIds.length}。本次允许的最大精简数：${maxDropsAllowed}。` }],
-				details: { added, totalCandidates: proposedDropIds.length, maxDropsAllowed },
-			};
+export async function runDropper(args: RunDropperArgs): Promise<ObservationDrop[] | undefined> {
+	const metrics = observationPoolMetrics(args.observations, args.targetTokens);
+	if (!metrics.ready) return undefined;
+	let result: ObservationDrop[] | undefined;
+	const dropObservations: AgentTool<typeof DropSchema> = {
+		name: "drop_observations", label: "精简观察",
+		description: "提交安全精简及替代证据；无安全项时提交空数组。",
+		parameters: DropSchema,
+		execute: async (_id, params: Static<typeof DropSchema>) => {
+			if (result !== undefined) throw new Error("本次精简已完成");
+			result = selectDropCandidates(params.drops, args.observations, args.targetTokens, args.reflections);
+			return { content: [{ type: "text", text: `已选择 ${result.length} 条有依据的精简。` }], details: { selected: result.length } };
 		},
 	};
-
-	const fullnessPercent = Math.round(fullness * 100);
-	const userText = `当前反思：\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\n当前观察：\n${joinOrEmpty(observations.map((observation) => observationToDropperLine(observation, coverageTierForObservation(observation, coverageById))))}\n\n活跃观察池：约 ${observationTokens.toLocaleString()} token；目标：约 ${targetTokens.toLocaleString()} token；相对目标的充满度：约 ${fullnessPercent.toLocaleString()}%；超出目标约 ${tokensOverTarget.toLocaleString()} token。\n本次允许的最大精简数：${maxDropsAllowed.toLocaleString()} 条观察。该上限的设定前提是：每一条候选都被判定为明确安全，才能把活跃池拉向目标。\n这个上限是硬上限，不是目标。若明确安全的观察更少，就少精简或不精简。`;
-	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
-	const context = createAgentContext(
-		DROPPER_SYSTEM,
-		[dropObservations as AgentTool<any>],
-	);
-	const reasoning = (model as { reasoning?: unknown }).reasoning;
-	const thinkingLevel = args.thinkingLevel ?? "low";
-	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
-	let turnCount = 0;
+	const text = `当前有效反思：\n${args.reflections.map(reflectionToSummaryLine).join("\n") || "（暂无）"}\n\n当前观察：\n${args.observations.map(observationToSummaryLine).join("\n")}\n\n活跃观察约 ${metrics.observationTokens} token，目标约 ${args.targetTokens} token。`;
+	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text }], timestamp: Date.now() }];
+	const context = createAgentContext(DROPPER_SYSTEM, [dropObservations as AgentTool<any>]);
+	let turns = 0;
+	const thinking = args.thinkingLevel ?? "low";
 	const config: AgentLoopConfig = {
-		model,
-		apiKey,
-		headers,
-		env,
-		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
-		convertToLlm: (msgs) => msgs as Message[],
-		toolExecution: "sequential",
-		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
-		...(effectiveMaxTurns !== undefined
-			? { finishTurn: () => (++turnCount >= effectiveMaxTurns ? { action: "end" } as const : undefined) }
-			: {}),
+		model: args.model, apiKey: args.apiKey, headers: args.headers, env: args.env,
+		maxTokens: workerMaxTokens(args.model),
+		convertToLlm: (messages) => workerMessages(args.model, messages as Message[]), toolExecution: "sequential",
+		...(args.model.reasoning && thinking !== "off" ? { reasoning: thinking } : {}),
+		finishTurn: () => (++turns, result !== undefined || (args.maxTurns && turns >= args.maxTurns) ? { action: "end" } as const : undefined),
 	};
-
-	const loop = args.agentLoop ?? agentLoop;
-	const stream = loop(prompts, context, config, signal, streamSimple);
+	const stream = (args.agentLoop ?? agentLoop)(prompts, context, config, args.signal, streamSimple);
+	let failure: string | undefined;
 	for await (const event of stream) {
-		// 工具执行时收集候选 id。
 		logAgentStreamError("dropper", event);
+		if (event.type === "tool_execution_end" && event.isError) result = undefined;
 		if (event.type === "message_end") {
-			try { args.onUsage?.(event.message); } catch { /* Failure: 可选统计不得改变 worker 结果。 */ }
+			try { args.onUsage?.(event.message); } catch { /* Failure: 统计不改变精简结果。 */ }
+			const message = event.message as { stopReason?: string; errorMessage?: string };
+			if (message.stopReason === "error" || message.stopReason === "aborted") failure = message.errorMessage ?? message.stopReason;
 		}
 	}
 	await stream.result();
-	const droppedIds = selectDropCandidates(proposedDropIds, observations, maxDropsAllowed, reflections);
-	const reason = droppedIds.length > 0
-		? "selected_nonempty"
-		: toolCallCount === 0
-			? "no_tool_call"
-			: proposedDropIds.length === 0
-				? "all_filtered"
-				: "selected_empty";
-	const selectedDropTokens = droppedIds.reduce((sum, id) => sum + (allowed.get(id)?.tokenCount ?? 0), 0);
-	debugLog("dropper.result", {
-		reason,
-		toolCallCount,
-		rawRequestedIdsCount,
-		missingIdsCount,
-		criticalCandidateIdsCount,
-		duplicateInRequestCount,
-		duplicateInRunCount,
-		acceptedCandidateCount: proposedDropIds.length,
-		selectedDropsCount: droppedIds.length,
-		selectedDropTokens,
-		selectedCoverageSummaryByRelevance: summarizeCoverageByRelevanceForIds(droppedIds, observations, coverageById),
-		maxDropsAllowed,
-	});
-	return droppedIds.length > 0 ? droppedIds : undefined;
+	if (failure) throw new Error(`精简器流失败，未提交删除结果：${failure}`);
+	if (result === undefined) throw new Error("精简器缺少完成回执");
+	return result;
 }

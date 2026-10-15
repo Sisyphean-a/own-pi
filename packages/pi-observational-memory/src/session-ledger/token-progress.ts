@@ -5,6 +5,7 @@ import {
 	OM_REFLECTIONS_RECORDED,
 	isObservationsRecordedEntry,
 	isReflectionsRecordedEntry,
+	isObservationsDroppedEntry,
 	type Entry,
 } from "./types.js";
 
@@ -29,11 +30,12 @@ type ClockState = {
 
 type CoverageKind = "observations" | "reflections";
 type CoverageMarker = { id: string; coversUpToId: string; entryIndex: number; coveredIndex: number };
-type PendingMarker = { kind: CoverageKind; id: string; entryIndex: number };
+type PendingMarker = { kind: CoverageKind; id: string; entryIndex: number; partial?: boolean };
 type CompactionClock = { compactionIndex: number; start: number; scannedTo: number; tokens: number };
 
 type JournalState = {
 	entries: Entry[];
+	memoryRevision?: string;
 	length: number;
 	first: Entry | undefined;
 	last: Entry | undefined;
@@ -83,6 +85,10 @@ function validAssistantContextTokens(entry: Entry): number | undefined {
 
 export class JournalTokenProgress {
 	private journal: JournalState | undefined;
+
+	memoryRevision(entries: Entry[]): string | undefined {
+		return this.syncJournal(entries).memoryRevision;
+	}
 
 	reset(): void {
 		this.journal = undefined;
@@ -185,7 +191,7 @@ export class JournalTokenProgress {
 			const pending = journal.pendingMarkers.get(entry.id);
 			if (pending) {
 				journal.pendingMarkers.delete(entry.id);
-				for (const marker of pending) this.acceptMarker(journal, marker.kind, marker.id, entry.id, marker.entryIndex);
+				for (const marker of pending) this.acceptMarker(journal, marker.kind, marker.id, entry.id, marker.entryIndex, marker.partial);
 			}
 			if (entry.type === "compaction") {
 				journal.compactionIndex = i;
@@ -193,8 +199,9 @@ export class JournalTokenProgress {
 			} else if (journal.compactionIndex >= 0 && journal.postCompactionBaseline === undefined) {
 				journal.postCompactionBaseline = validAssistantContextTokens(entry);
 			}
-			if (isObservationsRecordedEntry(entry)) {
-				this.acceptMarker(journal, "observations", entry.id, entry.data.coversUpToId, i);
+			if (isObservationsRecordedEntry(entry) || isReflectionsRecordedEntry(entry) || isObservationsDroppedEntry(entry)) journal.memoryRevision = entry.id;
+			if (isObservationsRecordedEntry(entry) && entry.data.processing) {
+				this.acceptMarker(journal, "observations", entry.id, entry.data.coversUpToId, i, entry.data.processing.nextSourceOffset !== undefined);
 			} else if (isReflectionsRecordedEntry(entry)) {
 				this.acceptMarker(journal, "reflections", entry.id, entry.data.coversUpToId, i);
 			}
@@ -204,14 +211,15 @@ export class JournalTokenProgress {
 		journal.last = entries.at(-1);
 	}
 
-	private acceptMarker(journal: JournalState, kind: CoverageKind, id: string, coversUpToId: string, entryIndex: number): void {
-		const coveredIndex = journal.indexById.get(coversUpToId);
+	private acceptMarker(journal: JournalState, kind: CoverageKind, id: string, coversUpToId: string, entryIndex: number, partial?: boolean): void {
+		let coveredIndex = journal.indexById.get(coversUpToId);
 		if (coveredIndex === undefined) {
 			const pending = journal.pendingMarkers.get(coversUpToId) ?? [];
-			pending.push({ kind, id, entryIndex });
+			pending.push({ kind, id, entryIndex, partial });
 			journal.pendingMarkers.set(coversUpToId, pending);
 			return;
 		}
+		if (partial) coveredIndex--;
 		const current = journal.markers[kind];
 		if (!current || coveredIndex > current.coveredIndex
 			|| (coveredIndex === current.coveredIndex && entryIndex > current.entryIndex)) {

@@ -17,7 +17,6 @@ describe("V3 dropper active observation pool metrics", () => {
 			tokensOverTarget: 0,
 			fullness: 0.18,
 			activeObservationCount: 1,
-			droppableCount: 1,
 			overTarget: false,
 			ready: false,
 		});
@@ -35,12 +34,11 @@ describe("V3 dropper active observation pool metrics", () => {
 		expect(metrics.observationTokens).toBe(100);
 		expect(metrics.fullness).toBe(1);
 		expect(metrics.tokensOverTarget).toBe(0);
-		expect(metrics.maxDropsAllowed).toBe(0);
 		expect(metrics.overTarget).toBe(false);
 		expect(metrics.ready).toBe(false);
 	});
 
-	it("reports above-target pools as ready with target-return max drops", () => {
+	it("reports above-target pools as ready using the actual token excess", () => {
 		// Pad content so each rendered line is exactly 50 tokens (200 chars).
 		const observations = [
 			observation("aaaaaaaaaaaa", { relevance: "low", content: "x".repeat(154) }),
@@ -53,13 +51,11 @@ describe("V3 dropper active observation pool metrics", () => {
 		expect(metrics.observationTokens).toBe(150);
 		expect(metrics.tokensOverTarget).toBe(50);
 		expect(metrics.activeObservationCount).toBe(3);
-		expect(metrics.droppableCount).toBe(3);
-		expect(metrics.maxDropsAllowed).toBe(1);
 		expect(metrics.overTarget).toBe(true);
 		expect(metrics.ready).toBe(true);
 	});
 
-	it("clamps target-return max drops to active observation count", () => {
+	it("supports a zero target without inventing a deletion quota", () => {
 		const observations = [
 			observation("aaaaaaaaaaaa", { relevance: "low", content: "x" }),
 			observation("bbbbbbbbbbbb", { relevance: "critical", content: "x" }),
@@ -68,7 +64,6 @@ describe("V3 dropper active observation pool metrics", () => {
 		const metrics = observationPoolMetrics(observations, 0);
 
 		expect(metrics.tokensOverTarget).toBe(25);
-		expect(metrics.maxDropsAllowed).toBe(2);
 		expect(metrics.ready).toBe(true);
 	});
 

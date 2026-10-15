@@ -155,7 +155,7 @@ export function reflection(
 
 export function observationsRecordedEntry(
 	id: string,
-	args: { observations: TestObservation[]; coversUpToId: string },
+	args: { observations: TestObservation[]; coversUpToId: string; processing?: { processedSourceEntryIds: string[]; startSourceOffset?: number; nextSourceOffset?: number } },
 	overrides: Partial<TestEntry> = {},
 ): TestEntry {
 	return {
@@ -164,7 +164,7 @@ export function observationsRecordedEntry(
 		parentId: null,
 		timestamp: DEFAULT_TIMESTAMP,
 		customType: V3_OBSERVATIONS_RECORDED,
-		data: args,
+		data: { ...args, processing: args.processing ?? { processedSourceEntryIds: [...new Set([...args.observations.flatMap((item) => item.sourceEntryIds), args.coversUpToId])] } },
 		...overrides,
 	};
 }

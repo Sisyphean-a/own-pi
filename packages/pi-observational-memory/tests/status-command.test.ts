@@ -66,7 +66,7 @@ describe("V3 /om:status", () => {
 
 		expect(output).toContain("── 记忆 ──");
 		expect(output).toContain("观察：已记录 0 / 已精简 0 / 活跃 0 / 可见 0");
-		expect(output).toContain("反思：已记录 0 / 可见 0");
+		expect(output).toContain("反思：已记录 0 / 已撤回 0 / 活跃 0 / 可见 0");
 		expect(output).toContain("下次观察：");
 		expect(output).toContain("下次压缩：");
 		expect(output).not.toContain("Visible:");
@@ -92,15 +92,24 @@ describe("V3 /om:status", () => {
 		const output = await setup({ entries }).run();
 
 		expect(output).toContain("观察：已记录 2 / 已精简 1 / 活跃 1 / 可见 1 +1 -1");
-		expect(output).toContain("反思：已记录 1 / 可见 0 +1");
-		expect(output).toContain("可见观察池：~5 / 40 token（13%）");
-		// Active pool counts the full rendered line (id + timestamp + relevance + content).
+		expect(output).toContain("反思：已记录 1 / 已撤回 0 / 活跃 1 / 可见 0 +1");
+		expect(output).toContain("可见观察池：~5 token");
+		// 活跃池按完整渲染行计数（含 id、时间、重要度和正文）。
 		expect(output).toContain("活跃观察池：~19 / 20 目标 token（95%）");
 		expect(output).not.toContain("Visible:");
 		expect(output).not.toContain("Drift:");
 		expect(output).not.toContain("full truth");
 		expect(output).not.toContain("v2-obs");
 		expect(output).not.toContain("observational-memory");
+	});
+
+	it("显示已撤回结论及压缩上下文中尚未移除的反思漂移", async () => {
+		const obs = observation("aaaaaaaaaaaa");
+		const ref = reflection("eeeeeeeeeeee", [obs.id]);
+		const entries = [textCustomMessage("raw-1", "新决定"), observationsRecordedEntry("obs", { observations: [obs], coversUpToId: "raw-1" }), reflectionsRecordedEntry("ref", { reflections: [ref], coversUpToId: "raw-1" }),
+			compactionEntry("cmp", { firstKeptEntryId: "raw-1", details: memoryDetails({ reflections: [ref] }) }),
+			{ ...reflectionsRecordedEntry("retire", { reflections: [], coversUpToId: "raw-1" }), data: { reflections: [], retirements: [{ reflectionId: ref.id, supportingObservationIds: [obs.id], reason: "明确失效" }], coversUpToId: "raw-1" } }];
+		expect(await setup({ entries }).run()).toContain("反思：已记录 1 / 已撤回 1 / 活跃 0 / 可见 1 -1");
 	});
 
 	it("shows separate progress clocks, visible pool, active observation pool, and reflection pool", async () => {
@@ -122,8 +131,8 @@ describe("V3 /om:status", () => {
 		expect(output).toContain("/ 20 token");
 		expect(output).toContain("下次压缩：");
 		expect(output).toContain("/ 30 估算源 token");
-		expect(output).toContain("可见观察池：~5 / 40 token（13%）");
-		// Active pool counts the full rendered line, unlike the visible pool's stored tokenCount.
+		expect(output).toContain("可见观察池：~5 token");
+		// 活跃池按完整渲染行计数，而可见池显示已存储的 tokenCount。
 		expect(output).toContain("活跃观察池：~19 / 20 目标 token（95%）");
 		expect(output).toContain("反思池：~3 token");
 		expect(output).not.toContain("Observation pool:");

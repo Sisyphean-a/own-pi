@@ -56,8 +56,8 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				],
 			);
 			const reflectionLine = appendSuffixes(
-				`反思：已记录 ${folded.reflections.length} / 可见 ${visible.reflections.length}`,
-				[addedSuffix(drift.reflectionsOnlyInFull.length)],
+				`反思：已记录 ${folded.reflectionsById.size} / 已撤回 ${folded.retiredReflectionIds.size} / 活跃 ${folded.reflections.length} / 可见 ${visible.reflections.length}`,
+				[addedSuffix(drift.reflectionsOnlyInFull.length), removedSuffix(drift.retiredOnlyInFull.length)],
 			);
 			const obsProgress = rawTokensSinceObservationCoverage(entries);
 			const reflectionProgress = rawTokensSinceReflectionCoverage(entries);
@@ -83,7 +83,7 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`下次观察：~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} token（${pct(obsProgress, runtime.config.observeAfterTokens)}%）`,
 				`下次反思：~${reflectionProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} token（${pct(reflectionProgress, runtime.config.reflectAfterTokens)}%）`,
 				`下次压缩：~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} 估算源 token（${pct(compactionProgress, compactThreshold)}%）`,
-				`可见观察池：~${visibleObservationTokens.toLocaleString()} / ${runtime.config.observationsPoolMaxTokens.toLocaleString()} token（${pct(visibleObservationTokens, runtime.config.observationsPoolMaxTokens)}%）`,
+				`可见观察池：~${visibleObservationTokens.toLocaleString()} token`,
 				`活跃观察池：~${activeObservationPool.observationTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} 目标 token（${pct(activeObservationPool.observationTokens, runtime.config.observationsPoolTargetTokens)}%）`,
 				`反思池：~${visibleReflectionTokens.toLocaleString()} token`,
 			];

@@ -1,24 +1,17 @@
 import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel, ProviderHeaders } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
+import { Type, type Message, type Model, type ModelThinkingLevel, type ProviderHeaders } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { createAgentContext } from "../agent-context.js";
 import { logAgentStreamError } from "../stream-errors.js";
-import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
-import { truncateRecordContent } from "../../serialize.js";
+import { workerMaxTokens, workerMessages } from "../../model-budget.js";
+import { MAX_RECORD_CONTENT_CHARS } from "../../serialize.js";
 import { REFLECTOR_SYSTEM } from "./prompts.js";
 import { estimateStringTokens } from "../../tokens.js";
-import { reflectionToSummaryLine, type Observation, type Reflection } from "../../session-ledger/index.js";
-import {
-	coverageTierForObservation,
-	reflectionCoverageMap,
-	summarizeCoverageByRelevance,
-	summarizeCoverageTransitionsByRelevance,
-	type ReflectionCoverageTier,
-} from "../dropper/coverage.js";
+import { observationToSummaryLine, reflectionToSummaryLine, type Observation, type Reflection, type ReflectionRetirement } from "../../session-ledger/index.js";
+import { normalizeSourceEntryIds } from "../observer/agent.js";
 
 interface RunReflectorArgs {
 	model: Model<any>;
@@ -33,186 +26,93 @@ interface RunReflectorArgs {
 	thinkingLevel?: ModelThinkingLevel;
 	onUsage?: (message: unknown) => void;
 }
-
+const IdList = Type.Array(Type.String({ minLength: 1 }), { minItems: 1 });
+const Content = Type.String({ minLength: 1, maxLength: MAX_RECORD_CONTENT_CHARS });
 const RecordReflectionsSchema = Type.Object({
-	reflections: Type.Array(
-		Type.Object({
-			content: Type.String({ minLength: 1 }),
-			supportingObservationIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-		}),
-		{ minItems: 1 },
-	),
+	reflections: Type.Array(Type.Object({ content: Content, supportingObservationIds: IdList })),
+	retirements: Type.Array(Type.Object({ reflectionId: Type.String(), supportingObservationIds: IdList, reason: Content })),
+	reviewedObservationIds: IdList,
 });
+export const normalizeSupportingObservationIds = normalizeSourceEntryIds;
+export type ReflectorResult = { reflections: Reflection[]; retirements: ReflectionRetirement[]; reviewedObservationIds: string[] };
 
-type RecordReflectionsArgs = Static<typeof RecordReflectionsSchema>;
-
-function joinOrEmpty(items: string[]): string {
-	return items.length ? items.join("\n") : "（暂无）";
+function singleLine(content: string): string {
+	const text = content.trim();
+	if (!text || /\r|\n/.test(text) || text.length > MAX_RECORD_CONTENT_CHARS) throw new Error("反思与撤回理由必须为长度合法的单行文本");
+	return text;
 }
 
-export function observationToReflectorLine(
-	observation: Observation,
-	coverage: ReflectionCoverageTier,
-): string {
-	return `[${observation.id}] ${observation.timestamp} [${observation.relevance}] [coverage: ${coverage}] ${observation.content}`;
-}
-
-export function summarizeSupportIdCounts(reflections: readonly Reflection[]): {
-	reflectionCount: number;
-	totalSupportIds: number;
-	minSupportIds: number;
-	maxSupportIds: number;
-	averageSupportIds: number;
-	histogram: Record<string, number>;
-} {
-	if (reflections.length === 0) {
-		return { reflectionCount: 0, totalSupportIds: 0, minSupportIds: 0, maxSupportIds: 0, averageSupportIds: 0, histogram: {} };
-	}
-	const counts = reflections.map((reflection) => reflection.supportingObservationIds.length);
-	const totalSupportIds = counts.reduce((sum, count) => sum + count, 0);
-	const histogram: Record<string, number> = {};
-	for (const count of counts) histogram[String(count)] = (histogram[String(count)] ?? 0) + 1;
-	return {
-		reflectionCount: reflections.length,
-		totalSupportIds,
-		minSupportIds: Math.min(...counts),
-		maxSupportIds: Math.max(...counts),
-		averageSupportIds: totalSupportIds / reflections.length,
-		histogram,
-	};
-}
-
-export function normalizeSupportingObservationIds(
-	supportingObservationIds: readonly string[] | undefined,
-	allowedObservationIds: readonly string[],
-): string[] | undefined {
-	if (!supportingObservationIds || supportingObservationIds.length === 0) return undefined;
-	const allowedOrder = new Map<string, number>();
-	for (let i = 0; i < allowedObservationIds.length; i++) {
-		if (!allowedOrder.has(allowedObservationIds[i])) allowedOrder.set(allowedObservationIds[i], i);
-	}
-
-	const seen = new Set<string>();
-	for (const id of supportingObservationIds) {
-		if (!allowedOrder.has(id)) return undefined;
-		seen.add(id);
-	}
-	if (seen.size === 0) return undefined;
-	return Array.from(seen).sort((a, b) => (allowedOrder.get(a) ?? 0) - (allowedOrder.get(b) ?? 0));
-}
-
-function normalizeReflectionContent(content: string): string | undefined {
-	const normalized = truncateRecordContent(content.trim());
-	if (!normalized || /\r|\n/.test(normalized)) return undefined;
-	return normalized;
-}
-
-export async function runReflector(args: RunReflectorArgs): Promise<Reflection[] | undefined> {
-	const { model, apiKey, headers, env, reflections, observations, signal } = args;
-	if (observations.length === 0) return undefined;
-
-	const coverageById = reflectionCoverageMap(observations, reflections);
-	debugLog("reflector.agent_start", {
-		activeObservationCount: observations.length,
-		reflectionCount: reflections.length,
-		coverageSummaryByRelevance: summarizeCoverageByRelevance(observations, coverageById),
-	});
-
-	const allowedObservationIds = observations.map((observation) => observation.id);
-	const existingReflectionIds = new Set(reflections.map((reflection) => reflection.id));
-	const accumulated = new Map<string, Reflection>();
-	let toolCallCount = 0;
-	let rawProposedReflectionCount = 0;
-	let acceptedReflectionCount = 0;
-	let duplicateReflectionCount = 0;
-	let rejectedReflectionCount = 0;
-
+export async function runReflector(args: RunReflectorArgs): Promise<ReflectorResult | undefined> {
+	if (!args.observations.length) return undefined;
+	const allowedIds = args.observations.map((observation) => observation.id);
+	const existingIds = new Set(args.reflections.map((reflection) => reflection.id));
+	let result: ReflectorResult | undefined;
 	const recordReflections: AgentTool<typeof RecordReflectionsSchema> = {
-		name: "record_reflections",
-		label: "记录反思",
-		description: "记录新的持久反思及其支撑观察 id。",
+		name: "record_reflections", label: "维护反思",
+		description: "原子提交新增反思、旧反思撤回和全部观察的审阅回执；无变化时两个结果数组均为空。",
 		parameters: RecordReflectionsSchema,
-		execute: async (_id, params: RecordReflectionsArgs) => {
-			toolCallCount++;
-			rawProposedReflectionCount += params.reflections.length;
-			let added = 0;
-			let duplicates = 0;
-			let rejected = 0;
-			for (const proposal of params.reflections) {
-				const content = normalizeReflectionContent(proposal.content);
-				const supportingObservationIds = normalizeSupportingObservationIds(proposal.supportingObservationIds, allowedObservationIds);
-				if (!content || !supportingObservationIds) {
-					rejected++;
-					continue;
-				}
-				const id = hashId(content);
-				if (existingReflectionIds.has(id) || accumulated.has(id)) {
-					duplicates++;
-					continue;
-				}
-				accumulated.set(id, {
-					id,
-					content,
-					supportingObservationIds,
-					tokenCount: estimateStringTokens(content),
+		execute: async (_id, params: Static<typeof RecordReflectionsSchema>) => {
+			if (result) throw new Error("本次反思维护已完成");
+			const reviewed = normalizeSupportingObservationIds(params.reviewedObservationIds, allowedIds);
+			if (!reviewed || reviewed.length !== new Set(allowedIds).size) throw new Error("审阅回执必须包含全部当前观察 id");
+			const support = (ids: string[]) => {
+				const normalized = normalizeSupportingObservationIds(ids, allowedIds);
+				if (!normalized) throw new Error("支撑 id 必须来自当前观察");
+				return normalized;
+			};
+			const retirements = new Map<string, ReflectionRetirement>();
+			for (const retirement of params.retirements) {
+				if (!existingIds.has(retirement.reflectionId)) throw new Error("只能撤回当前有效的反思 id");
+				retirements.set(retirement.reflectionId, {
+					reflectionId: retirement.reflectionId,
+					supportingObservationIds: support(retirement.supportingObservationIds),
+					reason: singleLine(retirement.reason),
 				});
-				added++;
 			}
-			acceptedReflectionCount += added;
-			duplicateReflectionCount += duplicates;
-			rejectedReflectionCount += rejected;
+			const existingContent = new Set(args.reflections.filter((item) => !retirements.has(item.id)).map((item) => item.content));
+			const accepted = new Map<string, Reflection>();
+			for (const proposal of params.reflections) {
+				const content = singleLine(proposal.content);
+				const supportingObservationIds = support(proposal.supportingObservationIds);
+				if (existingContent.has(content)) continue;
+				const id = hashId(JSON.stringify([content, supportingObservationIds]));
+				// 新证据上的重新确认具有独立身份；不可用新记录撤回自己。
+				if (retirements.has(id)) throw new Error("新增反思不能与撤回反思复用同一 id；需要新的变化证据");
+				accepted.set(id, { id, content, supportingObservationIds, tokenCount: estimateStringTokens(content) });
+			}
+			result = { reflections: [...accepted.values()], retirements: [...retirements.values()], reviewedObservationIds: reviewed };
 			return {
-				content: [{ type: "text", text: `已记录 ${added} 条反思；重复 ${duplicates} 条；被拒 ${rejected} 条。本次运行累计 ${accumulated.size} 条。` }],
-				details: { added, duplicates, rejected, total: accumulated.size },
+				content: [{ type: "text", text: `维护完成：新增 ${result.reflections.length} 条，撤回 ${result.retirements.length} 条。` }],
+				details: { added: result.reflections.length, retired: result.retirements.length },
 			};
 		},
 	};
-
-	const userText = `当前反思：\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\n当前观察：\n${joinOrEmpty(observations.map((observation) => observationToReflectorLine(observation, coverageTierForObservation(observation, coverageById))))}\n\n请把缺失的持久事实或模式沉淀成新的反思。如果没有足够稳定的内容，就不要调用工具。`;
+	const userText = `当前有效反思：\n${args.reflections.map(reflectionToSummaryLine).join("\n") || "（暂无）"}\n\n当前观察：\n${args.observations.map(observationToSummaryLine).join("\n")}`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
-	const context = createAgentContext(
-		REFLECTOR_SYSTEM,
-		[recordReflections as AgentTool<any>],
-	);
-	const reasoning = (model as { reasoning?: unknown }).reasoning;
-	const thinkingLevel = args.thinkingLevel ?? "low";
-	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
-	let turnCount = 0;
+	const context = createAgentContext(REFLECTOR_SYSTEM, [recordReflections as AgentTool<any>]);
+	let turns = 0;
+	const thinking = args.thinkingLevel ?? "low";
 	const config: AgentLoopConfig = {
-		model,
-		apiKey,
-		headers,
-		env,
-		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
-		convertToLlm: (msgs) => msgs as Message[],
-		toolExecution: "sequential",
-		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
-		...(effectiveMaxTurns !== undefined
-			? { finishTurn: () => (++turnCount >= effectiveMaxTurns ? { action: "end" } as const : undefined) }
-			: {}),
+		model: args.model, apiKey: args.apiKey, headers: args.headers, env: args.env,
+		maxTokens: workerMaxTokens(args.model),
+		convertToLlm: (messages) => workerMessages(args.model, messages as Message[]), toolExecution: "sequential",
+		...(args.model.reasoning && thinking !== "off" ? { reasoning: thinking } : {}),
+		finishTurn: () => (++turns, result || (args.maxTurns && turns >= args.maxTurns) ? { action: "end" } as const : undefined),
 	};
-
-	const loop = args.agentLoop ?? agentLoop;
-	const stream = loop(prompts, context, config, signal, streamSimple);
+	const stream = (args.agentLoop ?? agentLoop)(prompts, context, config, args.signal, streamSimple);
+	let failure: string | undefined;
 	for await (const event of stream) {
-		// 工具执行时收集记录。
 		logAgentStreamError("reflector", event);
+		if (event.type === "tool_execution_end" && event.isError) result = undefined;
 		if (event.type === "message_end") {
-			try { args.onUsage?.(event.message); } catch { /* Failure: 可选统计不得改变 worker 结果。 */ }
+			try { args.onUsage?.(event.message); } catch { /* Failure: 统计不改变维护结果。 */ }
+			const message = event.message as { stopReason?: string; errorMessage?: string };
+			if (message.stopReason === "error" || message.stopReason === "aborted") failure = message.errorMessage ?? message.stopReason;
 		}
 	}
 	await stream.result();
-	const acceptedReflections = Array.from(accumulated.values());
-	const afterCoverageById = reflectionCoverageMap(observations, [...reflections, ...acceptedReflections]);
-	debugLog("reflector.result", {
-		reason: acceptedReflections.length > 0 ? "accepted_nonempty" : toolCallCount === 0 ? "no_tool_call" : "all_filtered",
-		toolCallCount,
-		rawProposedReflectionCount,
-		acceptedReflectionCount,
-		duplicateReflectionCount,
-		rejectedReflectionCount,
-		acceptedSupportIdCounts: summarizeSupportIdCounts(acceptedReflections),
-		coverageTransitionsByRelevance: summarizeCoverageTransitionsByRelevance(observations, coverageById, afterCoverageById),
-	});
-	return acceptedReflections.length > 0 ? acceptedReflections : undefined;
+	if (failure) throw new Error(`反思器流失败，未提交维护结果：${failure}`);
+	if (!result) throw new Error("反思器缺少审阅完成回执");
+	debugLog("reflector.result", { reflections: result.reflections.length, retirements: result.retirements.length });
+	return result;
 }

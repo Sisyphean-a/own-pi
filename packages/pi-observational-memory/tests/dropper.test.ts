@@ -1,227 +1,73 @@
 import { describe, expect, it } from "vitest";
+import { runDropper, selectDropCandidates } from "../src/agents/dropper/agent.js";
+import { foldLedger, type ObservationDrop } from "../src/session-ledger/index.js";
+import { observation, reflection, observationsRecordedEntry, observationsDroppedEntry, reflectionsRecordedEntry, textCustomMessage } from "./fixtures/session.js";
+import { observationLineTokenCount } from "../src/tokens.js";
 
-import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
-
-import {
-	maxDropCountForPool,
-	normalizeDropObservationIds,
-	observationPoolFullness,
-	runDropper,
-	selectDropCandidates,
-} from "../src/agents/dropper/agent.js";
-import { observation, reflection } from "./fixtures/session.js";
-
-function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void): any {
-	return ((prompts: any[], context: any, config: any) => ({
-		async *[Symbol.asyncIterator]() {},
-		result: async () => {
-			await handler(prompts, context, config);
-			return {};
-		},
-	})) as any;
+const low = observation("aaaaaaaaaaaa", { relevance: "low" });
+const high = observation("bbbbbbbbbbbb", { relevance: "critical" });
+const ref = reflection("cccccccccccc", [high.id]);
+const base = { model: {} as any, observations: [low, high], reflections: [ref], targetTokens: 0 };
+const routine: ObservationDrop = { observationId: low.id, reason: "routine", replacementIds: [] };
+const covered: ObservationDrop = { observationId: high.id, reason: "redundant", replacementIds: [ref.id] };
+function fake(drops: unknown, events: any[] = []): any {
+	return (_prompts: unknown, context: any) => ({
+		async *[Symbol.asyncIterator]() { await context.tools[0].execute("drop", { drops }); yield* events; }, async result() { return {}; },
+	});
 }
 
-describe("V3 dropper agent", () => {
-	const obsA = observation("aaaaaaaaaaaa", { relevance: "medium" });
-	const obsB = observation("bbbbbbbbbbbb", { relevance: "low" });
-	const critical = observation("cccccccccccc", { relevance: "critical" });
-	const baseArgs = {
-		model: {} as any,
-		apiKey: "test",
-		reflections: [reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"])],
-		observations: [obsA, obsB, critical],
-		targetTokens: 20,
-	};
-
-	it("computes observation pool fullness defensively", () => {
-		expect(observationPoolFullness(0, 100)).toBe(0);
-		expect(observationPoolFullness(-1, 100)).toBe(0);
-		expect(observationPoolFullness(10, 0)).toBe(0);
-		expect(observationPoolFullness(10, Number.NaN)).toBe(0);
-		expect(observationPoolFullness(25, 100)).toBe(0.25);
+describe("有依据的精简", () => {
+	it("重要观察可以精简，但必须提供当前替代证据", async () => {
+		await expect(runDropper({ ...base, agentLoop: fake([covered]) })).resolves.toEqual([covered]);
 	});
-
-	it("computes max drops from token excess above target", () => {
-		const observations = Array.from({ length: 10 }, (_, index) =>
-			observation(`${index}`.padStart(12, "a"), { relevance: "low", tokenCount: 10 }),
-		);
-
-		expect(maxDropCountForPool(observations, 100, 100)).toBe(0);
-		expect(maxDropCountForPool(observations, 100, 90)).toBe(1);
-		expect(maxDropCountForPool(observations, 100, 50)).toBe(5);
-		expect(maxDropCountForPool(observations, 100, 0)).toBe(10);
+	it("low 例行回执允许无替代证据", async () => {
+		await expect(runDropper({ ...base, agentLoop: fake([routine]) })).resolves.toEqual([routine]);
 	});
-
-	it("uses active observation count for target-return max drops while critical ids remain eligible later", () => {
-		const observations = [
-			observation("aaaaaaaaaaaa", { relevance: "low", tokenCount: 10 }),
-			observation("bbbbbbbbbbbb", { relevance: "medium", tokenCount: 10 }),
-			observation("cccccccccccc", { relevance: "critical", tokenCount: 10 }),
-			observation("dddddddddddd", { relevance: "critical", tokenCount: 10 }),
-		];
-
-		expect(maxDropCountForPool(observations, 40, 20)).toBe(2);
+	it.each([
+		[{ ...covered, replacementIds: [] }],
+		[{ ...covered, replacementIds: ["missing"] }],
+		[{ ...covered, replacementIds: [high.id] }],
+		[{ ...covered, reason: "routine", replacementIds: [] }],
+		[{ ...covered, observationId: "missing" }],
+	])("拒绝无效精简而非伪装成安全结果 %#", async (invalid) => {
+		await expect(runDropper({ ...base, agentLoop: fake(invalid) })).rejects.toThrow();
 	});
-
-	it("keeps core dropper safety guidance in V3 terms", async () => {
-		let systemPrompt = "";
-		const loop = fakeAgentLoop((_prompts, context) => {
-			systemPrompt = getCurrentSystemPrompt(context.messages) ?? "";
-		});
-
-		await runDropper({ ...baseArgs, agentLoop: loop });
-
-		expect(systemPrompt).toContain("活跃记忆的定位");
-		expect(systemPrompt).toContain("年龄梯度规则");
-		expect(systemPrompt).toContain("critical");
-		expect(systemPrompt).toContain("重要度最高、抵抗力最强");
-		expect(systemPrompt).toContain("重要度是重要性与抵抗力，不是绝对的保留/精简锁");
-		expect(systemPrompt).toContain("coverage 是证据，不是自动决定");
-		expect(systemPrompt).toContain("仅有年龄不足以精简");
-		expect(systemPrompt).not.toContain("NEVER drop");
-		expect(systemPrompt).toContain("保留底线");
-		expect(systemPrompt).toContain("不要强行精简");
-		expect(systemPrompt).toContain("不能合并观察");
-		expect(systemPrompt).toContain("默认动作是保留");
-		expect(systemPrompt).toContain("拿不准时就保留");
-		expect(systemPrompt).toContain("活跃观察池目标");
-		expect(systemPrompt).not.toContain("drop freely");
-		expect(systemPrompt).not.toContain("pruner");
-		expect(systemPrompt).not.toContain("drop-priority");
-		expect(systemPrompt).not.toContain("drop-resistance");
-		expect(systemPrompt).not.toContain("Pass strategy");
-		expect(systemPrompt).not.toContain("Urgency guidance");
+	it("同批相互引用不构成保留证明", () => {
+		const proposals: ObservationDrop[] = [{ ...covered, replacementIds: [low.id] }, { ...routine, reason: "redundant", replacementIds: [high.id] }];
+		expect(selectDropCandidates(proposals, [low, high], 0, [])).toEqual([]);
 	});
-
-	it("passes target-return max drops as a hard upper bound", async () => {
-		let userText = "";
-		const loop = fakeAgentLoop((prompts) => {
-			userText = prompts[0].content[0].text;
-		});
-
-		await runDropper({ ...baseArgs, agentLoop: loop });
-
-		// Pool metrics count full rendered lines: 19 + 18 + 19 = 56 tokens against a 20-token target.
-		expect(userText).toContain("相对目标的充满度：约 280%");
-		expect(userText).toContain("超出目标约 36 token");
-		expect(userText).toContain("[coverage: partial]");
-		expect(userText).toContain("[coverage: none]");
-		expect(userText).toContain("本次允许的最大精简数：2 条观察");
-		expect(userText).toContain("该上限的设定前提是：每一条候选都被判定为明确安全，才能把活跃池拉向目标");
-		expect(userText).toContain("这个上限是硬上限，不是目标");
-		expect(userText).toContain("若明确安全的观察更少，就少精简或不精简");
-		expect(userText).not.toContain("Drop urgency");
-		expect(userText).not.toContain("drop-priority");
-		expect(userText).not.toContain("drop-resistance");
+	it("按实际完整行 token 达到目标即停止，不使用平均长度估算删除条数", () => {
+		const large = observation("dddddddddddd", { relevance: "low", content: "x".repeat(800) });
+		const target = observationLineTokenCount(high);
+		const drops = selectDropCandidates([{ ...routine, observationId: large.id }, covered], [large, high], target, [ref]);
+		expect(drops.map((item) => item.observationId)).toEqual([large.id]);
 	});
-
-	it("normalizes active drop ids, filters invalid ids, dedupes, and accepts critical observations", () => {
-		expect(normalizeDropObservationIds(["bbbbbbbbbbbb", "missing", "bbbbbbbbbbbb", "cccccccccccc", "aaaaaaaaaaaa"], [obsA, obsB, critical])).toEqual(["bbbbbbbbbbbb", "cccccccccccc", "aaaaaaaaaaaa"]);
-		expect(normalizeDropObservationIds(["missing", "cccccccccccc"], [obsA, obsB, critical])).toEqual(["cccccccccccc"]);
-		expect(normalizeDropObservationIds(["missing"], [obsA, obsB, critical])).toBeUndefined();
+	it("共同替代证据中任一观察同批被删时，原观察不能精简", () => {
+		const joint = { ...covered, replacementIds: [ref.id, low.id] };
+		expect(selectDropCandidates([routine, joint], [low, high], 0, [ref])).toEqual([routine]);
 	});
-
-	it("selects final candidates by coverage, lower relevance, age, then stable ordering", () => {
-		const highA = observation("aaaaaaaaaaaa", { relevance: "high" });
-		const lowA = observation("bbbbbbbbbbbb", { relevance: "low" });
-		const medium = observation("dddddddddddd", { relevance: "medium" });
-		const lowB = observation("eeeeeeeeeeee", { relevance: "low" });
-		const highB = observation("ffffffffffff", { relevance: "high" });
-		const critical = observation("111111111111", { relevance: "critical" });
-		const observations = [highA, lowA, medium, lowB, highB, critical];
-
-		expect(selectDropCandidates([
-			"aaaaaaaaaaaa",
-			"missing",
-			"111111111111",
-			"bbbbbbbbbbbb",
-			"dddddddddddd",
-			"bbbbbbbbbbbb",
-			"eeeeeeeeeeee",
-			"ffffffffffff",
-		], observations, 3)).toEqual(["bbbbbbbbbbbb", "eeeeeeeeeeee", "dddddddddddd"]);
-
-		const oldHigh = observation("999999999999", { relevance: "high", timestamp: "2026-01-01T00:00:00.000Z" });
-		const newHigh = observation("888888888888", { relevance: "high", timestamp: "2026-02-01T00:00:00.000Z" });
-		expect(selectDropCandidates(["888888888888", "999999999999"], [oldHigh, newHigh], 1)).toEqual(["999999999999"]);
+	it("同 id 的重复提议去重", () => {
+		expect(selectDropCandidates([routine, routine], [low], 0, [])).toEqual([routine]);
 	});
-
-	it("prefers stronger reflection coverage before relevance when over cap", () => {
-		const strongCritical = observation("aaaaaaaaaaaa", { relevance: "critical", timestamp: "2026-01-01T00:00:00.000Z" });
-		const partialLow = observation("bbbbbbbbbbbb", { relevance: "low", timestamp: "2026-01-01T00:00:00.000Z" });
-		const noneLow = observation("cccccccccccc", { relevance: "low", timestamp: "2026-01-01T00:00:00.000Z" });
-		const observations = [strongCritical, partialLow, noneLow];
-		const reflections = [
-			reflection("rrrrrrrrrrr1", ["aaaaaaaaaaaa", "bbbbbbbbbbbb"]),
-			reflection("rrrrrrrrrrr2", ["aaaaaaaaaaaa"]),
-		];
-
-		expect(selectDropCandidates(["cccccccccccc", "bbbbbbbbbbbb", "aaaaaaaaaaaa"], observations, 2, reflections)).toEqual(["aaaaaaaaaaaa", "bbbbbbbbbbbb"]);
+	it("预算压力不能强迫产生精简", async () => {
+		await expect(runDropper({ ...base, agentLoop: fake([]) })).resolves.toEqual([]);
 	});
-
-	it("keeps critical lower priority than lower relevance when coverage is equal", () => {
-		const critical = observation("aaaaaaaaaaaa", { relevance: "critical", timestamp: "2026-01-01T00:00:00.000Z" });
-		const high = observation("bbbbbbbbbbbb", { relevance: "high", timestamp: "2026-01-01T00:00:00.000Z" });
-		const low = observation("cccccccccccc", { relevance: "low", timestamp: "2026-01-01T00:00:00.000Z" });
-		const observations = [critical, high, low];
-		const reflections = [reflection("rrrrrrrrrrr1", ["aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"]), reflection("rrrrrrrrrrr2", ["aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"])];
-
-		expect(selectDropCandidates(["aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"], observations, 2, reflections)).toEqual(["cccccccccccc", "bbbbbbbbbbbb"]);
+	it("未超过目标时不发起模型请求", async () => {
+		await expect(runDropper({ ...base, targetTokens: 1_000 })).resolves.toBeUndefined();
 	});
-
-	it("returns capped coverage-preferred proposed observation ids", async () => {
-		const loop = fakeAgentLoop(async (_prompts, context) => {
-			await context.tools[0].execute("tool-1", { ids: ["aaaaaaaaaaaa", "missing", "bbbbbbbbbbbb"] });
-		});
-
-		// Rendered-line pool is 56 tokens; a 40-token target caps the run at 1 drop.
-		await expect(runDropper({ ...baseArgs, targetTokens: 40, agentLoop: loop })).resolves.toEqual(["aaaaaaaaaaaa"]);
+	it("后续工具错误使先前精简回执失效", async () => {
+		await expect(runDropper({ ...base, agentLoop: fake([routine], [{ type: "tool_execution_end", isError: true }]) })).rejects.toThrow("完成回执");
 	});
-
-	it("returns critical proposed ids when they are the selected valid candidates", async () => {
-		const loop = fakeAgentLoop(async (_prompts, context) => {
-			await context.tools[0].execute("tool-1", { ids: ["missing", "cccccccccccc"] });
-		});
-
-		await expect(runDropper({ ...baseArgs, agentLoop: loop })).resolves.toEqual(["cccccccccccc"]);
+	it("流失败不能提交删除", async () => {
+		await expect(runDropper({ ...base, agentLoop: fake([covered], [{ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "timeout" } }]) })).rejects.toThrow("未提交");
 	});
-
-	it("returns undefined when only invalid ids are proposed", async () => {
-		const loop = fakeAgentLoop(async (_prompts, context) => {
-			await context.tools[0].execute("tool-1", { ids: ["missing"] });
-		});
-
-		await expect(runDropper({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
-	});
-
-	it("dedupes repeated tool calls and enforces one run-level cap", async () => {
-		const loop = fakeAgentLoop(async (_prompts, context) => {
-			await context.tools[0].execute("tool-1", { ids: ["aaaaaaaaaaaa"] });
-			await context.tools[0].execute("tool-2", { ids: ["bbbbbbbbbbbb", "aaaaaaaaaaaa"] });
-		});
-
-		// Rendered-line pool is 56 tokens; a 40-token target caps the run at 1 drop.
-		await expect(runDropper({ ...baseArgs, targetTokens: 40, agentLoop: loop })).resolves.toEqual(["aaaaaaaaaaaa"]);
-	});
-
-	it("returns undefined when no tool call drops observations", async () => {
-		const loop = fakeAgentLoop(() => {});
-		await expect(runDropper({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
-	});
-
-	it("skips the model at or below the target", async () => {
-		let called = false;
-		const loop = fakeAgentLoop(() => {
-			called = true;
-		});
-
-		await expect(runDropper({
-			...baseArgs,
-			// The rendered line for this observation is 18 tokens; an 18-token target is exactly at target.
-			observations: [observation("aaaaaaaaaaaa", { relevance: "low" })],
-			targetTokens: 18,
-			agentLoop: loop,
-		})).resolves.toBeUndefined();
-		expect(called).toBe(false);
+	it("共同替代证据中任一反思被撤回后恢复原观察", () => {
+		const evidence = observation("eeeeeeeeeeee", { content: "旧结论已经被纠正" });
+		const other = reflection("ffffffffffff", [high.id]);
+		const entries = [textCustomMessage("raw-1", "用户原文"), observationsRecordedEntry("obs", { observations: [high, evidence], coversUpToId: "raw-1" }),
+			reflectionsRecordedEntry("ref", { reflections: [ref, other], coversUpToId: "raw-1" }),
+			{ ...observationsDroppedEntry("drop", { observationIds: [high.id], coversUpToId: "raw-1" }), data: { observationIds: [high.id], coversUpToId: "raw-1", evidence: [{ ...covered, replacementIds: [ref.id, other.id] }] } },
+			{ id: "retire", type: "custom", customType: "om.reflections.recorded", data: { reflections: [], retirements: [{ reflectionId: ref.id, supportingObservationIds: [evidence.id], reason: "明确纠正" }], coversUpToId: "raw-1" } }];
+		expect(foldLedger(entries).activeObservations.map((item) => item.id)).toContain(high.id);
 	});
 });

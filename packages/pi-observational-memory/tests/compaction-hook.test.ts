@@ -64,7 +64,7 @@ describe("V3 compaction hook", () => {
 		expect(runtime.compactHookInFlight).toBe(false);
 	});
 
-	it("first normal compaction writes covered observations without orphan reflections", async () => {
+	it("first compaction includes current observations and reflections", async () => {
 		const obs1 = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"], tokenCount: 10 });
 		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
 		const entries = [
@@ -76,14 +76,14 @@ describe("V3 compaction hook", () => {
 
 		const result = await run("raw-1") as any;
 
-		expect(result.compaction.details.fullFold).toBe(false);
+		expect(result.compaction.details.fullFold).toBe(true);
 		expect(result.compaction.details.observations.map((obs: any) => obs.id)).toEqual(["aaaaaaaaaaaa"]);
-		expect(result.compaction.details.reflections).toEqual([]);
+		expect(result.compaction.details.reflections).toEqual([ref1]);
 		expect(result.compaction.summary).toContain("## 观察");
-		expect(result.compaction.summary).not.toContain("## 反思");
+		expect(result.compaction.summary).toContain("## 反思");
 	});
 
-	it("writes a normal V3 projection without applying new reflections or drops", async () => {
+	it("always applies current reflections and drops without waiting for pool pressure", async () => {
 		const obs1 = observation("aaaaaaaaaaaa", { tokenCount: 5 });
 		const obs2 = observation("bbbbbbbbbbbb", { tokenCount: 5 });
 		const ref1 = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
@@ -102,9 +102,9 @@ describe("V3 compaction hook", () => {
 
 		const result = await run("raw-2") as any;
 
-		expect(result.compaction.details).toMatchObject({ type: "om.folded", version: 1, fullFold: false });
-		expect(result.compaction.details.observations.map((obs: any) => obs.id)).toEqual(["aaaaaaaaaaaa", "bbbbbbbbbbbb"]);
-		expect(result.compaction.details.reflections.map((ref: any) => ref.id)).toEqual(["eeeeeeeeeeee"]);
+		expect(result.compaction.details).toMatchObject({ type: "om.folded", version: 1, fullFold: true });
+		expect(result.compaction.details.observations.map((obs: any) => obs.id)).toEqual(["bbbbbbbbbbbb"]);
+		expect(result.compaction.details.reflections.map((ref: any) => ref.id)).toEqual(["eeeeeeeeeeee", "ffffffffffff"]);
 		expect(result.compaction.summary).toContain("## 反思\n[eeeeeeeeeeee]");
 		expect(result.compaction.summary).toContain("## 观察");
 	});

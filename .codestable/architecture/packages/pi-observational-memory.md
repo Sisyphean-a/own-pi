@@ -14,12 +14,12 @@
 
 ## 架构规则
 
-- 面向用户的通知、命令描述与输出、状态/查看内容和三个后台 agent 的提示词统一使用简体中文；代码、路径、命令、标识符和错误消息保留原文。
-- 会话代次：Pi 在会话替换（new/resume/fork）、重载或退出时先触发 `session_shutdown`，再让旧 ctx/pi 失效；`Runtime.endSession()` 自增代次并释放运行标志，后台任务按启动时捕获的代次作废，之后不得再触碰 ctx/pi；Pi 的 stale-ctx 错误按正常取消处理，不作为失败提示用户。
-- 后台 worker 只在达到配置阈值时启动；失败不得阻塞 Pi 主回合，没有可用模型或认证时跳过并报告，不伪造记忆。
-- 记忆状态由折叠当前分支的 V3 ledger 条目重建；`coversUpToId` 只是进度水位，来源关系由观察的 `sourceEntryIds` 与反思的 `supportingObservationIds` 表达。
+- 领域规则唯一依据见[观察式记忆上下文](../../requirements/contexts/observational-memory.md)：语言、会话作废、处理回执、反思撤回、安全精简与压缩接管条件不在本页重复定义。
+- `Runtime.endSession()` 自增代次并释放运行标志和进度缓存；后台任务捕获启动代次，Pi 的 stale-ctx 错误按取消处理。
+- 状态由 `foldLedger()` 重建，活动投影与包含已精简观察/已撤回反思的历史索引分离，`recall` 复用该折叠结果判定状态。
 - 覆盖进度和主动压缩的原始 token 计量由 `src/session-ledger/token-progress.ts` 维护为增量水位：Pi 的 `getBranch()` 每次都返回新数组，因此以分支前缀的首/末条目身份而非数组身份判定追加；分叉、压缩重写等前缀变化时重建，会话关闭时主动清空。账本追加只累计新增源条目，覆盖标记推进时从新标记重新累计；真实上下文增量仍以 provider 上报的 usage 为基准，锚点缺失时回退到原始水位。阶段到期判断与阶段内准入都消费它，主动压缩在 `agent_settled` 及延迟复核时复用同一进度缓存，不逐轮重算整本账本。
-- 压缩只使用已写入 ledger 的记忆，不等待运行中的 worker；没有可渲染记忆时放弃接管，交给 Pi 原生摘要器。
+- 压缩 Hook 用 `hasProcessedSourcePrefix()` 校验完整覆盖，观察按逐条来源位置而非整批水位选入摘要；维护结果每次都应用，避免旧结论因延迟全量折叠再次出现。
+- 池压力缓存按记忆条目的修订 id 失效；同一修订已完成精简检查后不逐轮重复调用，源消息追加仍使用增量阶段时钟。
 - `Runtime` 在首次使用时加载配置；模型认证判定不得比 Pi 自身的门禁更严格。
 
 - 请求完成处可选发布轻量用量通知；只发送计数、隔离消费者/旧上下文错误，不改变模型结果。协议唯一依据见 [pi-token-stats 可选计量协议](pi-token-stats.md#可选计量协议)，本包不拥有统计或定价规则。
@@ -34,6 +34,7 @@
 - ledger 折叠、进度与来源解析：`packages/pi-observational-memory/src/session-ledger/`
 - 覆盖进度的增量水位：`packages/pi-observational-memory/src/session-ledger/token-progress.ts`（`JournalTokenProgress`）
 - 后台 worker：`packages/pi-observational-memory/src/agents/observer/`、`src/agents/reflector/`、`src/agents/dropper/`
+- 完整输入与输出预算：`packages/pi-observational-memory/src/model-budget.ts`；连续源分片：`src/serialize.ts`
 - 召回工具：`packages/pi-observational-memory/src/tools/recall-observation.ts`
 - 配置：`packages/pi-observational-memory/src/config.ts`
 - 回归测试：`packages/pi-observational-memory/tests/`（Vitest）

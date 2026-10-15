@@ -54,11 +54,11 @@
 | --- | --- | ---: | --- |
 | `observeAfterTokens` | 正整数 | `10000` | Observer 的源文本进度阈值 |
 | `reflectAfterTokens` | 正整数 | `20000` | Reflector 的源文本进度阈值 |
-| `observerChunkMaxTokens` | 正整数 | 自动推导 | 单次 Observer 输入上限，最小按 `256` 处理 |
+| `observerChunkMaxTokens` | 正整数 | 自动推导 | 单次 Observer 新源片段上限；配置下限 `256`，运行时还会按完整输入预算缩小 |
 | `compactAfterTokens` | 正整数 | `81000` | 主动压缩的源 entry 估算阈值 |
 | `compactAfterTokensMode` | `calibrated`/`ratio` | `calibrated` | 固定阈值或按模型上下文窗口计算 |
 | `compactAfterTokensRatio` | `0 < n < 1` | `0.68` | `ratio` 模式使用的上下文窗口比例 |
-| `observationsPoolMaxTokens` | 正整数 | `20000` | 普通压缩 projection 达到该压力后执行 full fold |
+| `observationsPoolMaxTokens` | 正整数 | `20000` | 活跃观察达到该压力时提前维护反思 |
 | `observationsPoolTargetTokens` | 小于 max 的正整数 | max 的一半 | Dropper 维护的活动 observation 目标 |
 | `agentMaxTurns` | 正整数 | `16` | Observer、Reflector、Dropper 共用的嵌套 agent 回合上限 |
 | `model` | 对象 | 未设置 | memory worker 使用的模型覆盖 |
@@ -75,45 +75,41 @@
 
 ### `observeAfterTokens`
 
-Observer 统计最近 `om.observations.recorded.data.coversUpToId` 之后的源 entry。达到阈值后，按旧到新发送一块 source-addressed 文本。
+Observer 根据显式处理回执定位最旧未读源，从旧到新发送 source-addressed 片段。阶段时钟优先使用 provider 的可靠真实增量，无法度量时使用源文本估算。
 
 阈值较低：记忆更新更及时，但模型调用更多。阈值较高：调用更少，但未观察的原始会话会积累更久。
 
-如果模型没有记录任何 observation，扩展不写空 entry，也不推进水位。故意空结果会退避，等新的源文本积累后再尝试。
+审阅完成即写入处理回执，零 observation 也推进游标；缺少完成回执、工具拒绝项未修正或流失败时不写入整批结果。
 
 ### `observerChunkMaxTokens`
 
 未显式设置时，取已解析 memory model 的 `contextWindow * 0.2`，未知时取 `60000`，下限为 `256`。
 
-它只限制送给 Observer 的文本，不修改原始 session entry。完整 entry 会优先从旧到新加入；如果最老 entry 单独就超限，会发送带省略标记的头尾片段，仍保留原 ID 供 recall。
+它限制新源片段，不修改原始 session entry。完整 entry 从旧到新加入；最老 entry 单独超限时连续分片，并保存字符游标，后续从未读位置续读，中部内容不会被永久跳过。
 
-不要把它设置成模型完整上下文窗口，因为还要为 system prompt、既有记忆、工具 schema 和模型输出留空间。
+运行时会扣除 system prompt、既有记忆、工具 schema 和输出预留，再缩小源预算；每次 worker 请求前还会检查完整输入。预算采用保守的 UTF-8 字节估算，并非厂商 tokenizer。已有记忆超预算时显式报错，不通过截掉旧记忆掩盖问题；可改用更大上下文的记忆模型。
 
 ## Reflection 与 Dropper
 
 ### `reflectAfterTokens`
 
-Reflector 的进度从最近 `om.reflections.recorded.data.coversUpToId` 之后统计。它不是 Dropper 的独立阈值。
+Reflector 按最近成功审阅水位统计进度。它一次提交新增反思、旧反思撤回和完整审阅回执；没有变化也记录审阅完成。只有同一主题及作用域的明确变化才撤回旧结论。
 
-Dropper 只有在同一次 pipeline 中 Reflector 写入非空 reflection 后才会尝试，并且活动 observation 超过 `observationsPoolTargetTokens` 才会调用模型。
+Dropper 独立按活跃观察池压力运行，不要求同轮产生新反思。任一阶段真正失败会停止后续阶段，但不回滚先前已提交的记录。
 
 ### `observationsPoolMaxTokens`
 
-这是压缩 projection 的 full-fold 压力阈值，不是 Dropper 的目标，也不是 Reflector 的调度阈值。
+这是提前维护反思的压力阈值，不是强制删除上限。活跃观察达到 max 时，即使反思进度时钟未到期也会尝试维护。
 
-压缩时先构建普通 projection；如果活动 observations 的 token 数达到 max，才通过完整 ledger 应用 reflections 和 drops，生成 full fold。
+每次记忆压缩都应用当前反思、撤回和精简，不再等待池达到 max 才更新结论。
 
 ### `observationsPoolTargetTokens`
 
-这是 Dropper 维护活动 observation 的目标。超出目标时，代码把超额 token 换算成一个最大删除数量；该数量是硬上限，不是模型必须完成的数量。
+这是 Dropper 维护活跃观察的目标。超出目标可独立触发整理；同一记忆修订完成检查后，不因零安全候选逐轮重复调用。
 
-Dropper 输入会标注 observation 的 reflection 覆盖：
+每项精简须标注原因。冗余、取代、已解决三类必须提供实际留存的全部替代证据；仅 low 级例行回执可不提供。引用次数不构成语义覆盖。代码按完整观察行的实际估算 token 选择候选，达到目标即停止；没有安全项时允许池仍超目标。
 
-- `none`：没有 reflection 支持；
-- `partial`：一个 reflection 支持；
-- `strong`：两个或更多 reflection 支持。
-
-覆盖只是证据，不是自动删除规则。Dropper 仍需判断内容是否被等价保留、替代或去重。删除只影响活动 projection，历史仍可 recall。
+精简只影响活动投影。依赖的替代记忆后来失效时，原观察会恢复；账本历史和原始证据始终保留。
 
 ## 主动压缩
 

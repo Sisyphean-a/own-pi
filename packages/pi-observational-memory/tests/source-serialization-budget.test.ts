@@ -1,104 +1,60 @@
 import { describe, expect, it } from "vitest";
-
-import { renderRecallSourceEntry, serializeSourceAddressedBranchEntries } from "../src/serialize.js";
+import { renderRecallSourceEntry, serializeSourceAddressedBranchEntries, serializeBranchEntries } from "../src/serialize.js";
 import { estimateStringTokens } from "../src/tokens.js";
+import { textCustomMessage } from "./fixtures/session.js";
 
-function customEntry(id: string, content: string) {
-	return {
-		type: "custom_message",
-		id,
-		timestamp: "2026-05-02T10:00:00.000Z",
-		content,
-	};
-}
-
-function toolResultEntry(id: string, text: string) {
-	return {
-		type: "message",
-		id,
-		timestamp: "2026-05-02T10:00:00.000Z",
-		message: {
-			role: "toolResult",
-			toolCallId: "tool-1",
-			toolName: "bash",
-			content: [{ type: "text", text }],
-			isError: false,
-			timestamp: Date.parse("2026-05-02T10:00:00.000Z"),
-		},
-	};
-}
-
-describe("source-addressed serialization budget", () => {
-	it("preserves all source blocks when they fit", () => {
-		const entries = [
-			customEntry("raw-1", "first"),
-			customEntry("raw-2", "second"),
-		];
-		const result = serializeSourceAddressedBranchEntries(entries, {
-			maxTokens: 1_000,
-		});
-
-		expect(result.sourceEntryIds).toEqual(["raw-1", "raw-2"]);
-		expect(result.truncatedSourceEntryIds).toEqual([]);
-		expect(result.text).toContain("[Source entry id: raw-1]");
-		expect(result.text).toContain("[Source entry id: raw-2]");
+describe("连续源分片", () => {
+	it("预算充足时完整保留源标签与内容", () => {
+		const result = serializeSourceAddressedBranchEntries([textCustomMessage("a", "first"), textCustomMessage("b", "second")], { maxTokens: 1_000 });
+		expect(result.sourceEntryIds).toEqual(["a", "b"]);
+		expect(result.nextSourceOffset).toBeUndefined();
 		expect(result.estimatedTokens).toBe(estimateStringTokens(result.text));
 	});
-
-	it("keeps later complete entries for the next run when the budget is full", () => {
-		const first = customEntry("raw-1", "a".repeat(80));
-		const second = customEntry("raw-2", "b".repeat(80));
-		const firstOnly = serializeSourceAddressedBranchEntries([first]);
-		const result = serializeSourceAddressedBranchEntries([first, second], {
-			maxTokens: firstOnly.estimatedTokens,
-		});
-
-		expect(result.sourceEntryIds).toEqual(["raw-1"]);
-		expect(result.truncatedSourceEntryIds).toEqual([]);
-		expect(result.text).not.toContain("raw-2");
+	it("一批只放得下首条时将下一条留给后续运行", () => {
+		const first = textCustomMessage("a", "x".repeat(80)), second = textCustomMessage("b", "y".repeat(80));
+		const budget = serializeSourceAddressedBranchEntries([first]).estimatedTokens;
+		const result = serializeSourceAddressedBranchEntries([first, second], { maxTokens: budget });
+		expect(result.sourceEntryIds).toEqual(["a"]);
+		expect(result.nextSourceOffset).toBeUndefined();
 	});
-
-	it("returns no source instead of truncating the source label under an unusably small budget", () => {
-		const result = serializeSourceAddressedBranchEntries(
-			[customEntry("raw-1", "content")],
-			{ maxTokens: 1 },
-		);
-
-		expect(result).toEqual({
-			text: "",
-			sourceEntryIds: [],
-			estimatedTokens: 0,
-			truncatedSourceEntryIds: [],
-		});
+	it("连标签都放不下时不破坏源 id", () => {
+		expect(serializeSourceAddressedBranchEntries([textCustomMessage("a", "内容")], { maxTokens: 1 })).toEqual({ text: "", sourceEntryIds: [], estimatedTokens: 0 });
 	});
-
-	it("uses a marked head/tail excerpt when one tool result exceeds the budget", () => {
-		const source = `HEAD:${"m".repeat(2_000)}:TAIL`;
-		const hugeEntry = toolResultEntry("raw-huge", source);
-		const result = serializeSourceAddressedBranchEntries(
-			[hugeEntry, customEntry("raw-next", "later")],
-			{ maxTokens: 100 },
-		);
-
-		expect(result.sourceEntryIds).toEqual(["raw-huge"]);
-		expect(result.truncatedSourceEntryIds).toEqual(["raw-huge"]);
-		expect(result.estimatedTokens).toBeLessThanOrEqual(100);
-		expect(result.text).toContain("[Source entry id: raw-huge]");
-		expect(result.text).toContain("[工具结果 bash");
-		expect(result.text).toContain("HEAD:");
-		expect(result.text).toContain(":TAIL");
-		expect(result.text).toContain(
-			"中间部分已省略：源内容超出观察器输入预算",
-		);
-		expect(result.text).toContain(
-			"原始源内容仍保留在会话账本中",
-		);
-		expect(result.text).not.toContain("raw-next");
-
-		// Budgeting changes only the observer projection. Recall still renders
-		// the original, unmodified ledger entry in full.
-		const recalled = renderRecallSourceEntry(hugeEntry);
-		expect(recalled).toContain(source);
-		expect(recalled?.length).toBeGreaterThan(result.text.length);
+	it("连续分片不丢失中间内容，且原文召回不受预算影响", () => {
+		const source = textCustomMessage("huge", "HEAD:" + "x".repeat(2_000) + ":MIDDLE:" + "y".repeat(2_000) + ":TAIL");
+		const fragments: string[] = [];
+		let offset = 0;
+		for (let i = 0; i < 100; i++) {
+			const result = serializeSourceAddressedBranchEntries([source], { maxTokens: 100, startOffset: offset });
+			expect(result.estimatedTokens).toBeLessThanOrEqual(100);
+			fragments.push(result.text);
+			if (result.nextSourceOffset === undefined) break;
+			expect(result.nextSourceOffset).toBeGreaterThan(offset);
+			offset = result.nextSourceOffset;
+		}
+		expect(fragments.join("")).toContain(":MIDDLE:");
+		expect(fragments.at(-1)).toContain(":TAIL");
+		expect(renderRecallSourceEntry(source)).toContain(source.content);
+	});
+	it("每个源字符都按顺序恰好读取一次", () => {
+		const source = textCustomMessage("huge", "🙂中\\\"".repeat(500));
+		const rendered = serializeBranchEntries([source]);
+		let offset = 0, restored = "";
+		for (let i = 0; i < 100; i++) {
+			const result = serializeSourceAddressedBranchEntries([source], { maxTokens: 100, startOffset: offset });
+			const next = result.nextSourceOffset ?? rendered.length;
+			const fragment = rendered.slice(offset, next);
+			expect(result.text.endsWith(fragment)).toBe(true);
+			restored += fragment;
+			if (result.nextSourceOffset === undefined) break;
+			expect(/[\uD800-\uDBFF]$/.test(fragment)).toBe(false);
+			offset = next;
+		}
+		expect(restored).toBe(rendered);
+	});
+	it("观察输入排除助手思考，原始证据召回仍保留", () => {
+		const source = { type: "message", id: "assistant", message: { role: "assistant", content: [{ type: "thinking", thinking: "未证实的猜测" }, { type: "text", text: "准备运行测试" }] } };
+		expect(serializeBranchEntries([source])).not.toContain("未证实的猜测");
+		expect(renderRecallSourceEntry(source)).toContain("未证实的猜测");
 	});
 });

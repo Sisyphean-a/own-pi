@@ -22,8 +22,8 @@ agent_start / turn_end
   → 检查 observation 水位
   → Observer（达到阈值时）
   → 检查 reflection 水位
-  → Reflector（达到阈值时）
-  → Dropper（同轮有新 reflection 且 observation 池超标时）
+  → Reflector（进度到期或 observation 池达到压力上限时）
+  → Dropper（observation 池超过目标时，可独立启动）
   → append V3 ledger entry
 
 agent_settled
@@ -44,13 +44,13 @@ Observer 在 pipeline 中先执行。后台 worker 不会阻塞主回合，压�
 - `custom_message`
 - `branch_summary`
 
-每种 worker 都从自己最近有效的 `data.coversUpToId` 之后开始统计源文本：
+Observer 的完整覆盖须有连续源片段的 `processing` 回执；零观察可完成，部分源不算整条已处理。阶段水位如下：
 
 | Worker | 水位 |
 | --- | --- |
-| Observer | `om.observations.recorded` |
-| Reflector | `om.reflections.recorded` |
-| Dropper | `om.observations.dropped` |
+| Observer | 带显式处理回执的 `om.observations.recorded` |
+| Reflector | 含完整审阅回执的 `om.reflections.recorded`（兼容读取旧非空记录） |
+| Dropper | 不设源文本时钟，按活跃观察池压力启动 |
 | 主动压缩 | 最近一次 compaction boundary |
 
 如果 Pi 提供了 provider usage，Observer 和 Reflector 的阶段时钟会优先使用可靠的真实上下文增量；无法建立基线、上下文计数变小或旧 Pi 没有该接口时，回退到源 entry token 估算。主动压缩始终使用源 entry 估算，因为它的设置定义就是该口径。
@@ -64,51 +64,31 @@ Observer 在 pipeline 中先执行。后台 worker 不会阻塞主回合，压�
 1. 加载配置；
 2. 跳过 `passive` 模式；
 3. 防止已有 pipeline 重复启动；
-4. 检查 observation 或 reflection 阶段是否到期；
+4. 检查 observation/reflection 进度或尚未维护的观察池压力；
 5. 在后台保存 `Runtime` 的 in-flight、阶段和错误状态。
 
 模型解析只在真正需要运行的阶段发生，并缓存于当前 pipeline。认证支持 API key、OAuth headers，以及 Pi 在请求时使用的环境凭据。
 
 ### 2. Observer
 
-Observer 处理最近 observation 水位之后的源 entry：
+1. 根据显式回执定位最旧未读源及字符游标；
+2. 扣除提示词、既有记忆、工具声明和输出预留后，选择预算内的连续片段；
+3. 调用 `runObserver()`，校验来源与单行内容，生成带事件身份的 ID；
+4. 仅在 `finish_observation` 确认全部提供片段已审阅后，原子写入观察与处理回执。
 
-1. 按旧到新选择 source-addressed chunk；
-2. 受 `observerChunkMaxTokens` 限制，默认按记忆模型上下文窗口的 20% 推导，未知时为 `60000`；
-3. 如果最老的单条 entry 本身超长，发送带省略标记的头尾片段，原始 entry 不变；
-4. 调用 `runObserver()`；
-5. 校验模型返回的 source ID；
-6. 由代码生成确定性 12 位 ID 并计算 token 数；
-7. 只有至少有一条有效 observation 时才 append `om.observations.recorded`。
-
-空结果不会推进水位。API/stream 错误会作为真正失败记录，不能伪装成“没有观察”。
+零观察可推进游标；缺回执、未修正拒绝项或流失败时整批不写。超长源续读中部，而非仅保存头尾。原始 entry 不变。
 
 ### 3. Reflector
 
-Reflector 读取当前活动 observations 和既有 reflections：
+读取当前活跃观察和有效反思，调用 `runReflector()`。一次工具提交同时包含新增结论、明确失效的旧结论撤回，以及全部观察的审阅回执。代码校验引用与单行内容后原子写入；没有变化也记录审阅完成。
 
-1. 计算每个 observation 的 `none`/`partial`/`strong` 覆盖；
-2. 调用 `runReflector()`；
-3. 校验 reflection 内容为单行纯文本；
-4. 校验所有 supporting observation ID 都来自当前活动列表；
-5. 去重并 append 非空 `om.reflections.recorded`。
-
-没有新 reflection 时不写空 entry。Reflection 失败或无输出时，同轮 Dropper 不启动。
+来源引用不再被换算成覆盖等级。撤回内容退出当前投影，历史证据仍可召回。
 
 ### 4. Dropper
 
-同轮 Reflection 成功写入后，代码折叠当前 ledger 并计算活动 observation 池指标。如果没有超过 `observationsPoolTargetTokens`，直接结束。
+折叠当前 ledger，活跃观察超过目标时调用 `runDropper()`，不要求同轮有新反思。每项提议包含原因及替代证据；代码拒绝未知、自引或同批被删除的证据，并按完整行的估算 token 选择安全候选。
 
-如果超标：
-
-1. 计算 token 超额对应的最大删除数量；
-2. 给模型展示 reflection 覆盖等级、相关性和 observation 内容；
-3. 收集模型提出的 observation ID；
-4. 代码过滤未知/重复 ID，并按覆盖、相关性和时间排序；
-5. 只取硬上限以内的候选；
-6. append 非空 `om.observations.dropped`。
-
-Dropper 失败不会回滚已经写入的 reflection。
+没有安全项就不删除；同一记忆修订已检查后不逐轮重复整理。候选协议见[精简模型](concepts.md#drop)。任一阶段失败停止后续阶段，不回滚先前已提交记录。
 
 ## 主动压缩
 
@@ -128,7 +108,7 @@ Dropper 失败不会回滚已经写入的 reflection。
 
 1. 防止重复进入；
 2. 读取 `firstKeptEntryId` 和 `tokensBefore`；
-3. 根据 compaction 边界构建 projection；
+3. 仅在没有自定义摘要重点、且切点之前所有源均有完整处理回执时构建 projection；
 4. 渲染 reflections 和 observations；
 5. 返回 `{ summary, firstKeptEntryId, tokensBefore, details }`。
 
@@ -139,7 +119,7 @@ Dropper 失败不会回滚已经写入的 reflection。
 - 等待后台 worker；
 - append ledger entry。
 
-如果 projection 为空，Hook 不接管压缩，让 Pi 使用原生 summarizer，避免把原上下文替换成空摘要。
+指定了自定义摘要重点、待移除历史尚未处理，或 projection 为空时，Hook 均不接管，由 Pi 原生 summarizer 处理。不会用旧记忆覆盖未处理约束。
 
 ## Projection
 
@@ -147,10 +127,10 @@ Dropper 失败不会回滚已经写入的 reflection。
 
 - `fullProjection()`：折叠当前边界之前的完整 V3 ledger；
 - `visibleProjection()`：读取最近 V3 compaction 的 `om.folded` details；
-- `buildCompactionProjection()`：决定本次是普通折叠还是 full fold；
+- `buildCompactionProjection()`：按观察来源位置选择待压缩内容，始终应用当前维护结果；
 - `diffProjection()`：比较可见记忆与完整记忆。
 
-Projection 按 `coversUpToId` 判断 entry 是否覆盖边界，而不是按 memory entry 的物理位置判断。首次普通压缩主要带入 observations；当可见 observation 压力达到 `observationsPoolMaxTokens` 时执行 full fold，应用 reflections 和 drops。
+观察按自身 `sourceEntryIds` 判断与切点的关系，不按整批 `coversUpToId` 过滤，避免跨切点的批次丢失早期决定。每次记忆摘要均应用当前反思、撤回和精简，`fullFold` 写为 `true`。
 
 ## Recall
 
@@ -159,9 +139,9 @@ Projection 按 `coversUpToId` 判断 entry 是否覆盖边界，而不是按 mem
 1. 校验 12 位小写十六进制 ID；
 2. 索引当前分支上的 V3 observations、reflections 和 drops；
 3. 匹配 observation/reflection；
-4. reflection 展开其支持的 observations；
+4. reflection 展开支撑观察及撤回证据，标记当前有效或已撤回；
 5. observation 展开 `sourceEntryIds`；
-6. 返回记忆内容、原始 source entry、active/dropped 状态和缺失证据诊断。
+6. 返回记忆内容、原始 source entry、观察的 active/dropped 状态、反思的 active/retired 状态和缺失证据诊断。
 
 它只读取当前分支，不执行语义搜索，也不读取 V2 entry。
 
@@ -170,8 +150,8 @@ Projection 按 `coversUpToId` 判断 entry 是否覆盖边界，而不是按 mem
 - `Runtime` 的 in-flight 标记防止重复 worker；
 - 阶段错误保存在 `lastObserverError`、`lastReflectorError`、`lastDropperError`；
 - 无 UI 时不发送通知；
-- 无效 ID、重复 ID 和空 entry 在代码边界过滤；
-- Observer 的故意空结果使用退避，硬失败保持为错误；
+- 无效提议由工具回执暴露，修正后才能完成；零产出须有显式处理或审阅回执；
+- 失败及缺回执不伪装成成功；完整输入超预算时显式报错，不截断既有记忆；
 - 压缩只折叠已经落盘的 ledger，不回滚或等待后台任务；
 - 无效或悬空 coverage marker 会被进度/投影函数忽略，不导致整个会话崩溃。
 

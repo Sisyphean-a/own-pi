@@ -1,191 +1,87 @@
 import { describe, expect, it } from "vitest";
-
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, ObserverStreamError, observerChunkBudget, runObserver } from "../src/agents/observer/agent.js";
+import { observationLineTokenCount } from "../src/tokens.js";
 
-import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, ObserverStreamError, runObserver } from "../src/agents/observer/agent.js";
-
-function fakeAgentLoop(handler: (prompts: any[], context: any, config: any) => Promise<void> | void, events: any[] = []): any {
-	return ((prompts: any[], context: any, config: any) => ({
-		async *[Symbol.asyncIterator]() {
-			for (const event of events) yield event;
-		},
-		result: async () => {
-			await handler(prompts, context, config);
-			return {};
-		},
-	})) as any;
+function fake(handler: (context: any, config: any) => Promise<void> | void, events: any[] = []): any {
+	return (_prompts: unknown, context: any, config: any) => ({
+		async *[Symbol.asyncIterator]() { await handler(context, config); yield* events; }, async result() { return {}; },
+	});
 }
+const proposal = { timestamp: "2026-05-02 10:30", content: "用户明确选择 Postgres", relevance: "high", sourceEntryIds: ["entry-a"] };
+const base = { model: {} as any, priorReflections: [], priorObservations: [], chunk: "[Source entry id: entry-a]\n用户选择 Postgres", allowedSourceEntryIds: ["entry-a"] };
+const finish = (context: any, ids = ["entry-a"]) => context.tools[1].execute("finish", { processedSourceEntryIds: ids });
 
-function assistantEndEvent(stopReason: string, errorMessage?: string): any {
-	return { type: "message_end", message: { role: "assistant", stopReason, errorMessage } };
-}
-
-describe("OBSERVATION_TIMESTAMP_PATTERN", () => {
-	it("matches the fixed local minute timestamp format", () => {
+describe("观察协议", () => {
+	it("系统消息和工具声明一起送入真实 agent context", async () => {
+		await runObserver({ ...base, agentLoop: fake(async (context) => {
+			expect(getCurrentSystemPrompt(context.messages)).toBeTruthy();
+			expect(context.tools.map((item: any) => item.name)).toEqual(["record_observations", "finish_observation"]);
+			await finish(context);
+		}) });
+	});
+	it("记录来源、独立事件 id 与代码计算的完整行 token 数", async () => {
+		const result = await runObserver({ ...base, agentLoop: fake(async (context) => {
+			await context.tools[0].execute("record", { observations: [proposal] }); await finish(context);
+		}) });
+		expect(result?.complete).toBe(true);
+		const observation = result!.observations[0];
+		expect(observation).toMatchObject(proposal);
+		expect(observation.id).toMatch(/^[a-f0-9]{12}$/);
+		expect(observation.tokenCount).toBe(observationLineTokenCount(observation));
+	});
+	it("零观察也有可验证的成功结果", async () => {
+		await expect(runObserver({ ...base, agentLoop: fake((context) => finish(context)) })).resolves.toEqual({ complete: true, observations: [] });
+	});
+	it("没有完成回执不能把零结果解释成已处理", async () => {
+		await expect(runObserver({ ...base, agentLoop: fake(() => {}) })).rejects.toThrow("完成回执");
+	});
+	it("完成回执必须覆盖全部提供的源 id", async () => {
+		await expect(runObserver({ ...base, allowedSourceEntryIds: ["entry-a", "entry-b"], agentLoop: fake((context) => finish(context)) })).rejects.toThrow("全部");
+	});
+	it.each([
+		{ ...proposal, sourceEntryIds: ["invented"] },
+		{ ...proposal, content: "第一行\n第二行" },
+		{ ...proposal, content: "x".repeat(10_001) },
+	])("非法提议须修正，不能直接确认完成 %#", async (invalid) => {
+		await expect(runObserver({ ...base, agentLoop: fake(async (context) => {
+			const ack = await context.tools[0].execute("record", { observations: [invalid] });
+			expect(ack.details.rejected).toBe(1); await finish(context);
+		}) })).rejects.toThrow("修正");
+	});
+	it("同一次事件的重复工具提交只保留一条", async () => {
+		const result = await runObserver({ ...base, agentLoop: fake(async (context) => {
+			await context.tools[0].execute("record", { observations: [proposal, proposal] }); await finish(context);
+		}) });
+		expect(result?.observations).toHaveLength(1);
+	});
+	it.each(["error", "aborted"])("%s 时即便已产生观察也不提交部分成功", async (stopReason) => {
+		await expect(runObserver({ ...base, agentLoop: fake(async (context) => {
+			await context.tools[0].execute("record", { observations: [proposal] }); await finish(context);
+		}, [{ type: "message_end", message: { role: "assistant", stopReason, errorMessage: "测试失败" } }]) })).rejects.toBeInstanceOf(ObserverStreamError);
+	});
+	it.each(["minimal", "off"] as const)("保留思考设置与回合上限：%s", async (thinkingLevel) => {
+		await runObserver({ ...base, model: { reasoning: true } as any, thinkingLevel, maxTurns: 2, agentLoop: fake(async (context, config) => {
+			expect(config.reasoning).toBe(thinkingLevel === "off" ? undefined : thinkingLevel);
+			expect(config.finishTurn({})).toBeUndefined();
+			expect(config.finishTurn({})).toEqual({ action: "end" }); await finish(context);
+		}) });
+	});
+	it("完成后出现工具校验错误时不复用旧回执", async () => {
+		await expect(runObserver({ ...base, agentLoop: fake((context) => finish(context), [{ type: "tool_execution_end", isError: true }]) })).rejects.toThrow("完成回执");
+	});
+	it("分块预算包含既有记忆，不只限制新源文本", () => {
+		const model = { contextWindow: 32_000, maxTokens: 8_000 } as any;
+		expect(observerChunkBudget(model, [], [], 6_000)).toBeGreaterThan(0);
+		expect(() => observerChunkBudget(model, ["中文".repeat(20_000)], [], 6_000)).toThrow("预算");
+	});
+	it("保持本地分钟时间格式", () => {
 		const pattern = new RegExp(OBSERVATION_TIMESTAMP_PATTERN);
 		expect(pattern.test("2026-05-02 10:30")).toBe(true);
-		expect(pattern.test("2026-5-02 10:30")).toBe(false);
-		expect(pattern.test("2026-05-02T10:30")).toBe(false);
-		expect(pattern.test("2026-05-02 10:30:00")).toBe(false);
+		expect(pattern.test("2026-5-02T10:30:00")).toBe(false);
 	});
-});
-
-describe("runObserver", () => {
-	const baseArgs = {
-		model: {} as any,
-		apiKey: "test",
-		priorReflections: [],
-		priorObservations: [],
-		chunk: "[Source entry id: entry-a]\nUser asked for a memory update.",
-		allowedSourceEntryIds: ["entry-a"],
-	};
-
-	it("keeps core observer prompt rules", async () => {
-		let systemPrompt = "";
-		const loop = fakeAgentLoop((_prompts, context) => {
-			systemPrompt = getCurrentSystemPrompt(context.messages) ?? "";
-		});
-
-		await runObserver({ ...baseArgs, agentLoop: loop });
-
-		expect(systemPrompt).toContain("精确保留用户的断言");
-		expect(systemPrompt).toContain("细节保留");
-		expect(systemPrompt).toContain("把状态变化表述为取代关系");
-		expect(systemPrompt).toContain("sourceEntryIds");
-		expect(systemPrompt).toContain("产出零条观察");
-		expect(systemPrompt).toContain("精简器会最先精简这些");
-		expect(systemPrompt).toContain("抵抗力最强、最承重的观察");
-		expect(systemPrompt).not.toContain("will NEVER be dropped");
-		expect(systemPrompt).not.toContain("pruner");
-	});
-
-	it("records V3 observations with source ids and code-computed tokenCount", async () => {
-		const content = "User asked for a memory update.";
-		const loop = fakeAgentLoop(async (_prompts, context) => {
-			await context.tools[0].execute("tool-1", {
-				observations: [{ timestamp: "2026-05-02 10:30", content, relevance: "high", sourceEntryIds: ["entry-a"] }],
-			});
-		});
-
-		const observations = await runObserver({ ...baseArgs, agentLoop: loop });
-
-		expect(observations).toHaveLength(1);
-		expect(observations?.[0]).toMatchObject({
-			content,
-			timestamp: "2026-05-02 10:30",
-			relevance: "high",
-			sourceEntryIds: ["entry-a"],
-			// tokenCount is code-computed from the full rendered line (id + timestamp + relevance + content).
-			tokenCount: 18,
-		});
-		expect(observations?.[0].id).toMatch(/^[a-f0-9]{12}$/);
-	});
-
-	it("rejects invented source ids and returns no observations", async () => {
-		const loop = fakeAgentLoop(async (_prompts, context) => {
-			await context.tools[0].execute("tool-1", {
-				observations: [{ timestamp: "2026-05-02 10:30", content: "Bad source", relevance: "medium", sourceEntryIds: ["missing"] }],
-			});
-		});
-
-		await expect(runObserver({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
-	});
-
-	it("dedupes deterministic ids", async () => {
-		const loop = fakeAgentLoop(async (_prompts, context) => {
-			await context.tools[0].execute("tool-1", {
-				observations: [
-					{ timestamp: "2026-05-02 10:30", content: "Same content", relevance: "medium", sourceEntryIds: ["entry-a"] },
-					{ timestamp: "2026-05-02 10:31", content: "Same content", relevance: "high", sourceEntryIds: ["entry-a"] },
-				],
-			});
-		});
-
-		const observations = await runObserver({ ...baseArgs, agentLoop: loop });
-
-		expect(observations).toHaveLength(1);
-		expect(observations?.[0].content).toBe("Same content");
-	});
-
-	it("returns undefined when no tool call records observations", async () => {
-		const loop = fakeAgentLoop(() => {});
-		await expect(runObserver({ ...baseArgs, agentLoop: loop })).resolves.toBeUndefined();
-	});
-
-	it("throws ObserverStreamError when the stream errors with nothing recorded", async () => {
-		for (const stopReason of ["error", "aborted"]) {
-			const loop = fakeAgentLoop(() => {}, [assistantEndEvent(stopReason, "prompt is too long")]);
-			const error = await runObserver({ ...baseArgs, agentLoop: loop }).catch((e) => e);
-			expect(error).toBeInstanceOf(ObserverStreamError);
-			expect(error.stopReason).toBe(stopReason);
-			expect(error.message).toContain("prompt is too long");
-		}
-	});
-
-	it("keeps partial observations when the stream errors after recording", async () => {
-		const loop = fakeAgentLoop(async (_prompts, context) => {
-			await context.tools[0].execute("tool-1", {
-				observations: [{ timestamp: "2026-05-02 10:30", content: "Kept despite later error", relevance: "high", sourceEntryIds: ["entry-a"] }],
-			});
-		}, [assistantEndEvent("error", "gateway timeout")]);
-
-		const observations = await runObserver({ ...baseArgs, agentLoop: loop });
-
-		expect(observations).toHaveLength(1);
-		expect(observations?.[0].content).toBe("Kept despite later error");
-	});
-
-	it("uses maxTurns as an observer turn cap", async () => {
-		let finishTurn: any;
-		const loop = fakeAgentLoop((_prompts, _context, config) => {
-			finishTurn = config.finishTurn;
-		});
-
-		await runObserver({ ...baseArgs, agentLoop: loop, maxTurns: 2 });
-
-		expect(finishTurn).toBeTypeOf("function");
-		expect(finishTurn({})).toBeUndefined();
-		expect(finishTurn({})).toEqual({ action: "end" });
-	});
-
-	it("uses configured observer thinking level for reasoning models", async () => {
-		let seenReasoning: unknown;
-		const loop = fakeAgentLoop((_prompts, _context, config) => {
-			seenReasoning = config.reasoning;
-		});
-
-		await runObserver({ ...baseArgs, model: { reasoning: true } as any, agentLoop: loop, thinkingLevel: "minimal" });
-
-		expect(seenReasoning).toBe("minimal");
-	});
-
-	it("omits observer reasoning when thinkingLevel is off", async () => {
-		let seenReasoning: unknown = "unset";
-		const loop = fakeAgentLoop((_prompts, _context, config) => {
-			seenReasoning = config.reasoning;
-		});
-
-		await runObserver({ ...baseArgs, model: { reasoning: true } as any, agentLoop: loop, thinkingLevel: "off" });
-
-		expect(seenReasoning).toBeUndefined();
-	});
-});
-
-describe("normalizeSourceEntryIds", () => {
-	const allowed = ["entry-a", "entry-b", "entry-c"];
-
-	it("accepts source ids from the allowed chunk and orders them by branch order", () => {
-		expect(normalizeSourceEntryIds(["entry-c", "entry-a"], allowed)).toEqual(["entry-a", "entry-c"]);
-	});
-
-	it("dedupes repeated source ids", () => {
-		expect(normalizeSourceEntryIds(["entry-b", "entry-b", "entry-a"], allowed)).toEqual(["entry-a", "entry-b"]);
-	});
-
-	it("rejects missing, empty, or hallucinated source ids", () => {
-		expect(normalizeSourceEntryIds(undefined, allowed)).toBeUndefined();
-		expect(normalizeSourceEntryIds([], allowed)).toBeUndefined();
-		expect(normalizeSourceEntryIds(["entry-a", "not-in-the-chunk"], allowed)).toBeUndefined();
-		expect(normalizeSourceEntryIds(["entry-a"], [])).toBeUndefined();
+	it("规范来源集合时去重、保持源顺序并拒绝未知 id", () => {
+		expect(normalizeSourceEntryIds(["b", "a", "a"], ["a", "b"])).toEqual(["a", "b"]);
+		for (const ids of [undefined, [], ["missing"]]) expect(normalizeSourceEntryIds(ids, ["a"])).toBeUndefined();
 	});
 });

@@ -38,19 +38,43 @@ export type Reflection = {
 	tokenCount: number;
 };
 
+export type ObservationProcessing = {
+	/** 只有收到显式完成回执才写入；允许已处理但没有值得保存的观察。 */
+	processedSourceEntryIds: string[];
+	startSourceOffset?: number;
+	/** 最后一个源条目尚未读完时，下次从该字符位置继续。 */
+	nextSourceOffset?: number;
+};
+
 export type ObservationsRecordedEntryData = {
 	observations: Observation[];
 	coversUpToId: string;
+	processing?: ObservationProcessing;
+};
+
+export type ReflectionRetirement = {
+	reflectionId: string;
+	supportingObservationIds: string[];
+	reason: string;
 };
 
 export type ReflectionsRecordedEntryData = {
 	reflections: Reflection[];
 	coversUpToId: string;
+	retirements?: ReflectionRetirement[];
+	reviewedObservationIds?: string[];
+};
+
+export type ObservationDrop = {
+	observationId: string;
+	replacementIds: string[];
+	reason: "redundant" | "superseded" | "resolved" | "routine";
 };
 
 export type ObservationsDroppedEntryData = {
 	observationIds: string[];
 	coversUpToId: string;
+	evidence?: ObservationDrop[];
 };
 
 export type MemoryDetails = {
@@ -113,29 +137,49 @@ export function isReflection(value: unknown): value is Reflection {
 	);
 }
 
+export function isObservationProcessing(value: unknown): value is ObservationProcessing {
+	return isPlainRecord(value) && isNonEmptyStringArray(value.processedSourceEntryIds)
+		&& (value.startSourceOffset === undefined || (Number.isSafeInteger(value.startSourceOffset) && (value.startSourceOffset as number) >= 0))
+		&& (value.nextSourceOffset === undefined || (Number.isSafeInteger(value.nextSourceOffset) && (value.nextSourceOffset as number) > 0));
+}
+
+export function isReflectionRetirement(value: unknown): value is ReflectionRetirement {
+	return isPlainRecord(value) && isMemoryId(value.reflectionId)
+		&& isNonEmptyStringArray(value.supportingObservationIds) && isNonEmptyString(value.reason);
+}
+
 export function isObservationsRecordedData(value: unknown): value is ObservationsRecordedEntryData {
 	if (!isPlainRecord(value)) return false;
-	return (
-		Array.isArray(value.observations) &&
-		value.observations.length > 0 &&
-		value.observations.every(isObservation) &&
-		isNonEmptyString(value.coversUpToId)
-	);
+	return Array.isArray(value.observations) && value.observations.every(isObservation)
+		&& isNonEmptyString(value.coversUpToId)
+		&& (value.processing === undefined ? value.observations.length > 0
+			: isObservationProcessing(value.processing) && value.processing.processedSourceEntryIds.at(-1) === value.coversUpToId);
 }
 
 export function isReflectionsRecordedData(value: unknown): value is ReflectionsRecordedEntryData {
 	if (!isPlainRecord(value)) return false;
-	return (
-		Array.isArray(value.reflections) &&
-		value.reflections.length > 0 &&
-		value.reflections.every(isReflection) &&
-		isNonEmptyString(value.coversUpToId)
-	);
+	return Array.isArray(value.reflections) && value.reflections.every(isReflection)
+		&& isNonEmptyString(value.coversUpToId)
+		&& (value.retirements === undefined || (Array.isArray(value.retirements) && value.retirements.every(isReflectionRetirement)))
+		&& (value.reviewedObservationIds === undefined || isNonEmptyStringArray(value.reviewedObservationIds))
+		&& (value.reflections.length > 0 || (Array.isArray(value.retirements) && value.retirements.length > 0) || isNonEmptyStringArray(value.reviewedObservationIds));
+}
+
+export function isObservationDrop(value: unknown): value is ObservationDrop {
+	return isPlainRecord(value) && isMemoryId(value.observationId)
+		&& ["redundant", "superseded", "resolved", "routine"].includes(value.reason as string)
+		&& Array.isArray(value.replacementIds) && value.replacementIds.every(isMemoryId)
+		&& (value.reason === "routine" || value.replacementIds.length > 0);
 }
 
 export function isObservationsDroppedData(value: unknown): value is ObservationsDroppedEntryData {
-	if (!isPlainRecord(value)) return false;
-	return isNonEmptyStringArray(value.observationIds) && isNonEmptyString(value.coversUpToId);
+	if (!isPlainRecord(value) || !isNonEmptyStringArray(value.observationIds) || !isNonEmptyString(value.coversUpToId)) return false;
+	if (value.evidence === undefined) return true;
+	if (!Array.isArray(value.evidence) || value.evidence.length !== value.observationIds.length || !value.evidence.every(isObservationDrop)) return false;
+	const observationIds = new Set(value.observationIds);
+	const evidenceIds = new Set(value.evidence.map((item) => item.observationId));
+	return observationIds.size === value.observationIds.length && evidenceIds.size === observationIds.size
+		&& [...evidenceIds].every((id) => observationIds.has(id));
 }
 
 export function isMemoryDetails(value: unknown): value is MemoryDetails {
@@ -176,25 +220,23 @@ export function isObservationsDroppedEntry(entry: Entry): entry is Entry & {
 }
 
 export function buildObservationsRecordedData(
-	observations: Observation[],
-	coversUpToId: string,
+	observations: Observation[], coversUpToId: string, processing?: ObservationProcessing,
 ): ObservationsRecordedEntryData | undefined {
-	if (observations.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
-	return { observations, coversUpToId };
+	const data = { observations, coversUpToId, ...(processing ? { processing } : {}) };
+	return isObservationsRecordedData(data) ? data : undefined;
 }
 
 export function buildReflectionsRecordedData(
-	reflections: Reflection[],
-	coversUpToId: string,
+	reflections: Reflection[], coversUpToId: string, retirements: ReflectionRetirement[] = [], reviewedObservationIds?: string[],
 ): ReflectionsRecordedEntryData | undefined {
-	if (reflections.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
-	return { reflections, coversUpToId };
+	const data = { reflections, coversUpToId, ...(retirements.length > 0 ? { retirements } : {}), ...(reviewedObservationIds ? { reviewedObservationIds } : {}) };
+	return isReflectionsRecordedData(data) ? data : undefined;
 }
 
 export function buildObservationsDroppedData(
-	observationIds: string[],
-	coversUpToId: string,
+	observationIds: string[], coversUpToId: string, evidence?: ObservationDrop[],
 ): ObservationsDroppedEntryData | undefined {
 	if (observationIds.length === 0 || !isNonEmptyString(coversUpToId)) return undefined;
-	return { observationIds, coversUpToId };
+	const data = { observationIds, coversUpToId, ...(evidence ? { evidence } : {}) };
+	return isObservationsDroppedData(data) ? data : undefined;
 }

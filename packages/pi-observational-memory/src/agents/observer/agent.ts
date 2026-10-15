@@ -1,14 +1,13 @@
 import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel, ProviderHeaders } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
+import { createInitialSystemMessage, toToolDeclaration, Type, type Message, type Model, type ModelThinkingLevel, type ProviderHeaders } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
-import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
+import { remainingWorkerInputBytes, workerMaxTokens, workerMessages } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
-import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
-import type { Observation, Relevance } from "../../session-ledger/index.js";
+import { MAX_RECORD_CONTENT_CHARS, nowTimestamp } from "../../serialize.js";
+import type { Observation } from "../../session-ledger/index.js";
 import { observationLineTokenCount } from "../../tokens.js";
 import { createAgentContext } from "../agent-context.js";
 
@@ -21,6 +20,7 @@ interface RunObserverArgs {
 	priorObservations: string[];
 	chunk: string;
 	allowedSourceEntryIds: string[];
+	sourceOffset?: number;
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
 	maxTurns?: number;
@@ -28,206 +28,121 @@ interface RunObserverArgs {
 	onUsage?: (message: unknown) => void;
 }
 
-const RelevanceSchema = Type.Union([
-	Type.Literal("low"),
-	Type.Literal("medium"),
-	Type.Literal("high"),
-	Type.Literal("critical"),
-]);
-
 export const OBSERVATION_TIMESTAMP_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$";
+const RecordObservationsSchema = Type.Object({ observations: Type.Array(Type.Object({
+	timestamp: Type.String({ pattern: OBSERVATION_TIMESTAMP_PATTERN, description: "源消息本地时间，YYYY-MM-DD HH:MM。" }),
+	content: Type.String({ minLength: 1, maxLength: MAX_RECORD_CONTENT_CHARS, description: "单行事实，保留适用范围与必要理由。" }),
+	relevance: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
+	sourceEntryIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: "直接支撑本观察的源条目 id。" }),
+}), { minItems: 1 }) });
+const FinishSchema = Type.Object({ processedSourceEntryIds: Type.Array(Type.String(), { minItems: 1 }) });
+const RECORD_TOOL = {
+	name: "record_observations", label: "记录观察",
+	description: "记录有直接源证据的新观察；完成审阅后调用 finish_observation。", parameters: RecordObservationsSchema,
+};
+const FINISH_TOOL = {
+	name: "finish_observation", label: "完成源片段审阅",
+	description: "确认本次提供的全部源片段均已审阅；允许零条观察。", parameters: FinishSchema,
+};
 
-const RecordObservationsSchema = Type.Object({
-	observations: Type.Array(
-		Type.Object({
-			timestamp: Type.String({
-				pattern: OBSERVATION_TIMESTAMP_PATTERN,
-				description: "观察时间，本地时间，格式 'YYYY-MM-DD HH:MM'。",
-			}),
-			content: Type.String({
-				minLength: 1,
-				description: "单行纯文本。不要 markdown、标签或内嵌时间戳。",
-			}),
-			relevance: RelevanceSchema,
-			sourceEntryIds: Type.Array(
-				Type.String({ minLength: 1 }),
-				{
-					minItems: 1,
-					description:
-						"分块中直接支持这条观察的精确源条目 id。" +
-						"只能使用 '[Source entry id: ...]' 标签中出现的 id，绝不编造 id。",
-				},
-			),
-		}),
-		{ description: "一批新观察。只有完全不调用该工具时才允许为空。" },
-	),
-});
-
-type RecordObservationsArgs = Static<typeof RecordObservationsSchema>;
-
-/**
- * 当 agent 循环以 API/流失败（`stopReason` 为 `"error"`/`"aborted"`）结束且没有记录任何
- * 内容时抛出。agent-core 会正常返回这类运行，因此没有这个错误时，调用方无法区分硬失败和
- * 刻意空结果（#32）。
- */
 export class ObserverStreamError extends Error {
-	readonly stopReason: string;
-	constructor(stopReason: string, errorMessage?: string) {
+	constructor(readonly stopReason: string, errorMessage?: string) {
 		super(`观察器流以 stopReason "${stopReason}" 结束${errorMessage ? `：${errorMessage}` : ""}`);
 		this.name = "ObserverStreamError";
-		this.stopReason = stopReason;
 	}
 }
 
-function joinOrEmpty(items: string[]): string {
-	return items.length ? items.join("\n") : "（暂无）";
+export function normalizeSourceEntryIds(ids: readonly string[] | undefined, allowedIds: readonly string[]): string[] | undefined {
+	if (!ids?.length) return undefined;
+	const unique = new Set(ids), allowed = new Set(allowedIds);
+	if (ids.some((id) => !allowed.has(id))) return undefined;
+	return [...allowed].filter((id) => unique.has(id));
 }
 
-export function normalizeSourceEntryIds(
-	sourceEntryIds: readonly string[] | undefined,
-	allowedSourceEntryIds: readonly string[],
-): string[] | undefined {
-	if (!sourceEntryIds || sourceEntryIds.length === 0) return undefined;
-	const allowedOrder = new Map<string, number>();
-	for (let i = 0; i < allowedSourceEntryIds.length; i++) allowedOrder.set(allowedSourceEntryIds[i], i);
+export type ObserverResult = { observations: Observation[]; complete: true };
 
-	const seen = new Set<string>();
-	for (const id of sourceEntryIds) {
-		if (!allowedOrder.has(id)) return undefined;
-		seen.add(id);
-	}
-	if (seen.size === 0) return undefined;
-	return Array.from(seen).sort((a, b) => (allowedOrder.get(a) ?? 0) - (allowedOrder.get(b) ?? 0));
+function observerUserText(priorReflections: string[], priorObservations: string[], chunk: string): string {
+	return `当前本地时间：${nowTimestamp()}\n\n当前反思：\n${priorReflections.join("\n") || "（暂无）"}\n\n当前观察：\n${priorObservations.join("\n") || "（暂无）"}\n\n新源片段：\n${chunk}`;
 }
 
-export async function runObserver(args: RunObserverArgs): Promise<Observation[] | undefined> {
-	const { model, apiKey, headers, env, priorReflections, priorObservations, chunk, allowedSourceEntryIds, signal } = args;
-	const conversation = chunk.trim();
-	if (!conversation) return undefined;
+export function observerChunkBudget(model: Model<any>, priorReflections: string[], priorObservations: string[], requested: number): number {
+	const system = createInitialSystemMessage(OBSERVER_SYSTEM, [toToolDeclaration(RECORD_TOOL), toToolDeclaration(FINISH_TOOL)]);
+	const prefix: Message = { role: "user", content: [{ type: "text", text: observerUserText(priorReflections, priorObservations, "") }], timestamp: Date.now() };
+	const remaining = remainingWorkerInputBytes(model, [system!, prefix]);
+	// 源预算用 4 字符/token；JSON 转义每个 UTF-16 字符至多 6 字节。
+	const budget = Math.min(requested, Math.floor(remaining / 24));
+	if (budget <= 0) throw new Error("已有记忆占满观察器输入预算；请使用更大上下文模型，处理进度未推进");
+	return budget;
+}
 
+export async function runObserver(args: RunObserverArgs): Promise<ObserverResult | undefined> {
+	if (!args.chunk.trim()) return undefined;
 	const accumulated = new Map<string, Observation>();
-
+	let complete = false;
+	let lastRejected = 0;
 	const recordObservations: AgentTool<typeof RecordObservationsSchema> = {
-		name: "record_observations",
-		label: "记录观察",
-		description:
-			"记录从对话分块中提炼的一批新观察。处理分块时可以多次调用；覆盖完成后停止调用，" +
-			"然后输出一句简短纯文本确认来结束本次运行。",
-		parameters: RecordObservationsSchema,
-		execute: async (_id, params: RecordObservationsArgs) => {
-			let added = 0;
-			let duplicates = 0;
-			let rejected = 0;
-			for (const obs of params.observations) {
-				const sourceEntryIds = normalizeSourceEntryIds(obs.sourceEntryIds, allowedSourceEntryIds);
-				if (!sourceEntryIds) {
-					rejected++;
-					continue;
-				}
-				const content = truncateRecordContent(obs.content);
-				const id = hashId(content);
-				if (accumulated.has(id)) {
-					duplicates++;
-					continue;
-				}
-				accumulated.set(id, {
-					id,
-					content,
-					timestamp: obs.timestamp,
-					relevance: obs.relevance as Relevance,
-					sourceEntryIds,
-					tokenCount: observationLineTokenCount({
-						id,
-						timestamp: obs.timestamp,
-						relevance: obs.relevance,
-						content,
-					}),
-				});
+		...RECORD_TOOL,
+		execute: async (_id, params: Static<typeof RecordObservationsSchema>) => {
+			if (complete) throw new Error("观察审阅已经完成");
+			let added = 0, duplicates = 0, rejected = 0;
+			for (const proposal of params.observations) {
+				const sourceEntryIds = normalizeSourceEntryIds(proposal.sourceEntryIds, args.allowedSourceEntryIds);
+				const content = proposal.content.trim();
+				if (!sourceEntryIds || !content || /\r|\n/.test(content) || content.length > MAX_RECORD_CONTENT_CHARS) { rejected++; continue; }
+				// 事件身份包含来源与片段位置；相同事实再次发生不会复用旧墓志铭。
+				const id = hashId(JSON.stringify([content, sourceEntryIds, args.sourceOffset ?? 0]));
+				if (accumulated.has(id)) { duplicates++; continue; }
+				const observation = { id, content, timestamp: proposal.timestamp, relevance: proposal.relevance, sourceEntryIds };
+				accumulated.set(id, { ...observation, tokenCount: observationLineTokenCount(observation) });
 				added++;
 			}
-			const rejectedPart = rejected > 0
-				? ` ${rejected} 条观察因 sourceEntryIds 缺失或非法被拒绝。`
-				: "";
-			const ack =
-				`已记录 ${added} 条新观察` +
-				(duplicates > 0 ? `（跳过 ${duplicates} 条重复）。` : "。") +
-				rejectedPart +
-				` 本次运行累计 ${accumulated.size} 条。` +
-				`如果分块仍有未覆盖内容，继续调用工具；否则停止调用并输出一句简短纯文本确认。`;
-			return { content: [{ type: "text", text: ack }], details: { added, duplicates, rejected, total: accumulated.size } };
+			lastRejected = rejected;
+			return {
+				content: [{ type: "text", text: `已记录 ${added} 条；重复 ${duplicates} 条；拒绝 ${rejected} 条（检查来源和单行内容）。审阅完全部片段后调用 finish_observation。` }],
+				details: { added, duplicates, rejected, total: accumulated.size },
+			};
 		},
 	};
-
-	const now = nowTimestamp();
-	const userText = `当前本地时间：${now}
-
-当前反思：
-${joinOrEmpty(priorReflections)}
-
-当前观察：
-${joinOrEmpty(priorObservations)}
-
-请调用 record_observations 一次或多次，把下面这段新对话分块压缩成观察。不要重复当前反思或当前观察中已有的事实。分配时间时优先使用对话内联时间戳；只有在没有消息时间戳可用时才回退到上面的当前本地时间。分块完全覆盖后停止调用工具，并回复一句简短纯文本确认。
-
-新对话分块：
-${conversation}`;
-
-	const prompts: Message[] = [
-		{
-			role: "user",
-			content: [{ type: "text", text: userText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	const context = createAgentContext(
-		OBSERVER_SYSTEM,
-		[recordObservations as AgentTool<any>],
-	);
-
-	const reasoning = (model as { reasoning?: unknown }).reasoning;
-	const thinkingLevel = args.thinkingLevel ?? "low";
-	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
-	let turnCount = 0;
-	const config: AgentLoopConfig = {
-		model,
-		apiKey,
-		headers,
-		env,
-		maxTokens: boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS),
-		convertToLlm: (msgs) => msgs as Message[],
-		toolExecution: "sequential",
-		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
-		...(effectiveMaxTurns !== undefined
-			? {
-				finishTurn: () => {
-					turnCount++;
-					return turnCount >= effectiveMaxTurns ? { action: "end" } as const : undefined;
-				},
+	const finishObservation: AgentTool<typeof FinishSchema> = {
+		...FINISH_TOOL,
+		execute: async (_id, params: Static<typeof FinishSchema>) => {
+			complete = false;
+			const ids = normalizeSourceEntryIds(params.processedSourceEntryIds, args.allowedSourceEntryIds);
+			if (lastRejected > 0 || !ids || ids.length !== new Set(args.allowedSourceEntryIds).size) {
+				throw new Error("完成回执必须包含全部已提供的源 id，且先修正被拒绝的观察");
 			}
-			: {}),
+			complete = true;
+			return { content: [{ type: "text", text: "本次源片段审阅完成。" }], details: undefined };
+		},
 	};
-
-	const loop = args.agentLoop ?? agentLoop;
-	const stream = loop(prompts, context, config, signal, streamSimple);
+	const userText = observerUserText(args.priorReflections, args.priorObservations, args.chunk);
+	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
+	const context = createAgentContext(OBSERVER_SYSTEM, [recordObservations, finishObservation] as AgentTool<any>[]);
+	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
+	let turns = 0;
+	const thinking = args.thinkingLevel ?? "low";
+	const config: AgentLoopConfig = {
+		model: args.model, apiKey: args.apiKey, headers: args.headers, env: args.env,
+		maxTokens: workerMaxTokens(args.model),
+		convertToLlm: (messages) => workerMessages(args.model, messages as Message[]), toolExecution: "sequential",
+		...(args.model.reasoning && thinking !== "off" ? { reasoning: thinking } : {}),
+		finishTurn: () => (++turns, complete || (effectiveMaxTurns !== undefined && turns >= effectiveMaxTurns) ? { action: "end" } as const : undefined),
+	};
+	const stream = (args.agentLoop ?? agentLoop)(prompts, context, config, args.signal, streamSimple);
 	let streamError: { stopReason: string; errorMessage?: string } | undefined;
 	for await (const event of stream) {
-		// 排空事件；工具执行已经收集了记录。
 		logAgentStreamError("observer", event);
+		if (event.type === "tool_execution_end" && event.isError) complete = false;
 		if (event.type === "message_end") {
-			try { args.onUsage?.(event.message); } catch { /* Failure: 可选统计不得改变 worker 结果。 */ }
+			try { args.onUsage?.(event.message); } catch { /* Failure: 统计不改变 worker 结果。 */ }
 		}
-		// 监测终止性 API/流失败，避免与刻意空结果混为一谈。
 		const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
 		if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
 			streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
 		}
 	}
 	await stream.result();
-
-	if (accumulated.size === 0) {
-		if (streamError) throw new ObserverStreamError(streamError.stopReason, streamError.errorMessage);
-		return undefined;
-	}
-	return Array.from(accumulated.values());
+	if (streamError) throw new ObserverStreamError(streamError.stopReason, streamError.errorMessage);
+	if (!complete) throw new Error("观察器缺少完成回执；不提交观察，也不推进处理进度");
+	return { observations: Array.from(accumulated.values()), complete: true };
 }

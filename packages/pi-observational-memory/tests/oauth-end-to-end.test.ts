@@ -39,6 +39,11 @@ function openAIToolUseStream(toolInput: unknown): string {
 					id: "toolu_e2e",
 					type: "function",
 					function: { name: "record_observations", arguments: JSON.stringify(toolInput) },
+				}, {
+					index: 1,
+					id: "toolu_finish",
+					type: "function",
+					function: { name: "finish_observation", arguments: JSON.stringify({ processedSourceEntryIds: ["raw-1"] }) },
 				}],
 			},
 			finish_reason: null,
@@ -157,11 +162,12 @@ describe("OAuth provider end-to-end consolidation", () => {
 		expect(requests[0].headers["x-opencode-session"]).toBe("session-opencode-e2e");
 		expect(requests[0].headers["x-opencode-client"]).toBe("pi");
 
-		// The observation reached the session ledger; nothing was skipped.
+		// Guarantee：只有两个工具完成原子协议后才提交观察与覆盖回执。
 		const recorded = appended.filter((entry) => entry.customType === OM_OBSERVATIONS_RECORDED);
 		expect(recorded).toHaveLength(1);
 		expect(recorded[0].data.observations[0].content).toContain("OAuth provider");
 		expect(recorded[0].data.coversUpToId).toBe("raw-1");
+		expect(recorded[0].data.processing).toEqual({ processedSourceEntryIds: ["raw-1"] });
 		expect(notices.filter((message) => message.includes("skipped"))).toEqual([]);
 
 		// eslint-disable-next-line no-console

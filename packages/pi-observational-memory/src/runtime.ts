@@ -1,6 +1,7 @@
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
 import { debugLog } from "./debug-log.js";
-import { JournalTokenProgress, type Entry, type StageProgress } from "./session-ledger/index.js";
+import { observationTokenSum } from "./agents/dropper/pool.js";
+import { foldLedger, JournalTokenProgress, type Entry, type StageProgress } from "./session-ledger/index.js";
 
 export type ResolveResult =
 	| { ok: true; model: unknown; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string>; baseUrl?: string }
@@ -128,17 +129,26 @@ export class Runtime {
 	lastDropperError: string | undefined;
 	/** provider -> 上次可用性复检的毫秒时间戳（见 `recheckProviderCredential`）。 */
 	availabilityRecheckedAt = new Map<string, number>();
-	/** 刻意空结果退避（#23）：同一区间内不再重复触发观察器，直到累计足够的新 token。 */
-	observerEmptyBackoff: {
-		sessionIdentity: string | undefined;
-		coverageId: string | undefined;
-		tokensAtEmpty: number;
-	} | undefined;
 	/**
 	 * 覆盖时钟的增量缓存：`turn_end` 每个回合都要判断阶段是否到期，逐轮重算整本账本会
 	 * 随会话长度线性变慢。缓存按分支前缀复用，会话替换时主动清空。
 	 */
 	readonly tokenProgress = new JournalTokenProgress();
+	private maintenanceState?: { revision: string; tokens: number };
+	private maintainedRevision?: string;
+
+	maintenanceDue(entries: Entry[]): boolean {
+		const revision = this.tokenProgress.memoryRevision(entries);
+		if (!revision || revision === this.maintainedRevision) return false;
+		if (this.maintenanceState?.revision !== revision) {
+			this.maintenanceState = { revision, tokens: observationTokenSum(foldLedger(entries).activeObservations) };
+		}
+		return this.maintenanceState.tokens > this.config.observationsPoolTargetTokens;
+	}
+
+	finishMaintenance(entries: Entry[]): void {
+		this.maintainedRevision = this.tokenProgress.memoryRevision(entries);
+	}
 
 	ensureConfig(cwd: string): void {
 		if (this.configLoaded) return;
@@ -164,8 +174,9 @@ export class Runtime {
 		this.consolidationPromise = null;
 		this.compactInFlight = false;
 		this.compactHookInFlight = false;
-		this.observerEmptyBackoff = undefined;
 		this.tokenProgress.reset();
+		this.maintenanceState = undefined;
+		this.maintainedRevision = undefined;
 	}
 
 	/** 代次仍匹配时，启动该任务时的 ctx/pi 才可用。 */

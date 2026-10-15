@@ -1,13 +1,13 @@
 import {
-	isObservationsDroppedEntry,
 	isObservationsRecordedEntry,
 	isReflectionsRecordedEntry,
 	type Entry,
 	type Observation,
 	type Reflection,
+	type ReflectionRetirement,
 } from "./types.js";
-
-const SOURCE_TYPES = new Set(["message", "custom_message", "branch_summary"]);
+import { foldLedger } from "./fold.js";
+import { isSourceEntry } from "./progress.js";
 
 export type { Entry, Observation, Reflection };
 
@@ -38,6 +38,8 @@ export type RecalledReflection = {
 	reflection: Reflection;
 	reflectionEntryId: string;
 	reflectionRecordIndex: number;
+	status: "active" | "retired";
+	retirement?: ReflectionRetirement;
 };
 
 export type RecallResult =
@@ -71,10 +73,6 @@ export type RecallResult =
 type IndexedObservation = ObservationLedgerLocation & { observation: Observation };
 type IndexedReflection = ReflectionLedgerLocation & { reflection: Reflection };
 
-function isSourceEntry(entry: Entry): boolean {
-	return SOURCE_TYPES.has(entry.type);
-}
-
 function uniqueById(entries: Entry[]): Entry[] {
 	const seen = new Set<string>();
 	const result: Entry[] = [];
@@ -93,11 +91,9 @@ function uniqueStrings(values: string[]): string[] {
 function indexLedger(entries: Entry[]): {
 	observations: IndexedObservation[];
 	reflections: IndexedReflection[];
-	droppedIds: Set<string>;
 } {
 	const observations: IndexedObservation[] = [];
 	const reflections: IndexedReflection[] = [];
-	const droppedIds = new Set<string>();
 
 	for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
 		const entry = entries[entryIndex];
@@ -113,12 +109,9 @@ function indexLedger(entries: Entry[]): {
 			});
 			continue;
 		}
-		if (isObservationsDroppedEntry(entry)) {
-			entry.data.observationIds.forEach((id) => droppedIds.add(id));
-		}
 	}
 
-	return { observations, reflections, droppedIds };
+	return { observations, reflections };
 }
 
 function resolveObservationSources(entries: Entry[], observation: Observation, location: ObservationLedgerLocation): RecalledObservation {
@@ -170,7 +163,9 @@ function notFound(memoryId: string): RecallResult {
 }
 
 export function recallMemorySources(entries: Entry[], memoryId: string): RecallResult {
-	const { observations: indexedObservations, reflections: indexedReflections, droppedIds } = indexLedger(entries);
+	const { observations: indexedObservations, reflections: indexedReflections } = indexLedger(entries);
+	const folded = foldLedger(entries);
+	const retirements = folded.reflectionRetirements;
 	const directObservationMatches = indexedObservations.filter(({ observation }) => observation.id === memoryId);
 	const reflectionMatches = indexedReflections.filter(({ reflection }) => reflection.id === memoryId);
 
@@ -188,14 +183,15 @@ export function recallMemorySources(entries: Entry[], memoryId: string): RecallR
 		const key = `${indexed.entryId}:${indexed.recordIndex}`;
 		if (recalledByKey.has(key)) return;
 		const recalled = resolveObservationSources(entries, indexed.observation, indexed);
-		recalled.status = droppedIds.has(indexed.observation.id) ? "dropped" : "active";
+		recalled.status = folded.droppedObservationIds.has(indexed.observation.id) ? "dropped" : "active";
 		recalledByKey.set(key, recalled);
 	}
 
 	for (const match of directObservationMatches) addObservation(match);
 
 	for (const { reflection } of reflectionMatches) {
-		for (const observationId of uniqueStrings(reflection.supportingObservationIds)) {
+		const evidenceIds = [...reflection.supportingObservationIds, ...(retirements.get(reflection.id)?.supportingObservationIds ?? [])];
+		for (const observationId of uniqueStrings(evidenceIds)) {
 			const indexed = observationsById.get(observationId);
 			if (!indexed) {
 				missingSupportingObservationIds.push(observationId);
@@ -210,6 +206,8 @@ export function recallMemorySources(entries: Entry[], memoryId: string): RecallR
 		reflection,
 		reflectionEntryId: entryId,
 		reflectionRecordIndex: recordIndex,
+		status: folded.retiredReflectionIds.has(reflection.id) ? "retired" : "active",
+		...(retirements.has(reflection.id) ? { retirement: retirements.get(reflection.id) } : {}),
 	}));
 	const sourceEntries = uniqueById(recalledObservations.flatMap((match) => match.sourceEntries));
 	const missingSourceEntryIds = uniqueStrings(recalledObservations.flatMap((match) => match.missingSourceEntryIds));

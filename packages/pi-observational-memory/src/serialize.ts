@@ -42,7 +42,7 @@ function textAndPlaceholders(
 			continue;
 		}
 		if (block.type === "thinking") {
-			if (options.omitRedactedThinking && block.redacted === true) continue;
+			if (!options.includeThinking || (options.omitRedactedThinking && block.redacted === true)) continue;
 			if (options.includeThinking && typeof block.thinking === "string") {
 				parts.push(`[思考：${block.thinking}]`);
 				continue;
@@ -74,14 +74,11 @@ export function serializeConversation(messages: Message[]): string {
 		.map((msg): string | null => {
 			const time = formatTimestamp(msg.timestamp);
 			if (msg.role === "user") {
-				const text = textOnly(msg.content);
+				const text = textAndPlaceholders(msg.content);
 				return `[用户 @ ${time}]：${text}`;
 			}
 			if (msg.role === "assistant") {
-				const body = textAndPlaceholders(msg.content, {
-					includeThinking: true,
-					omitRedactedThinking: true,
-				})
+				const body = textAndPlaceholders(msg.content)
 					.split("\n")
 					.filter(Boolean)
 					.join("\n");
@@ -162,46 +159,27 @@ export type SourceAddressedSerialization = {
 	text: string;
 	sourceEntryIds: string[];
 	estimatedTokens: number;
-	truncatedSourceEntryIds: string[];
+	nextSourceOffset?: number;
 };
 
 export type SourceAddressedSerializationOptions = {
-	/** 最终源寻址文本的最大估算 token 数。 */
 	maxTokens?: number;
+	/** 最旧未读源条目的连续字符位置；不是首尾摘录。 */
+	startOffset?: number;
 };
-
-const SOURCE_OMISSION_MARKER =
-	"\n\n[… 中间部分已省略：源内容超出观察器输入预算；原始源内容仍保留在会话账本中 …]\n\n";
-
-function truncateSourceBlockToTokenBudget(label: string, rendered: string, maxTokens: number): string | undefined {
-	const required = `${label}\n${SOURCE_OMISSION_MARKER}`;
-	if (estimateStringTokens(required) > maxTokens) return undefined;
-	const full = `${label}\n${rendered}`;
-	if (estimateStringTokens(full) <= maxTokens) return full;
-	const maxChars = Math.max(1, maxTokens * 4);
-	const fixed = `${label}\n${SOURCE_OMISSION_MARKER}`;
-	const retainedChars = maxChars - fixed.length;
-	const headChars = Math.ceil(retainedChars / 2);
-	const tailChars = retainedChars - headChars;
-	return `${label}\n${rendered.slice(0, headChars)}${SOURCE_OMISSION_MARKER}${tailChars > 0 ? rendered.slice(-tailChars) : ""}`;
-}
 
 function isSourceRenderableEntry(entry: RenderableEntry): boolean {
 	return entry.type === "message" || entry.type === "custom_message" || entry.type === "branch_summary";
 }
 
-/**
- * 在 token 预算内序列化完整的源条目。如果首个条目单独就超出预算，则包含一个带明显标记的
- * 首尾摘录，避免一个病态的工具结果永久阻断观察覆盖。
- * 原始 ledger 条目永不修改，且仍可按 id 召回。
- */
+/** 在预算内连续读取源条目；超长条目分段续读，只有最后一段才标记整条处理完成。 */
 export function serializeSourceAddressedBranchEntries(
 	entries: RenderableEntry[],
 	options: SourceAddressedSerializationOptions = {},
 ): SourceAddressedSerialization {
 	const blocks: string[] = [];
 	const sourceEntryIds: string[] = [];
-	const truncatedSourceEntryIds: string[] = [];
+	let nextSourceOffset: number | undefined;
 	let estimatedTokens = 0;
 
 	for (const entry of entries) {
@@ -209,19 +187,24 @@ export function serializeSourceAddressedBranchEntries(
 		const rendered = serializeBranchEntries([entry]);
 		if (!rendered.trim()) continue;
 		const label = `[Source entry id: ${entry.id}]`;
-		const block = `${label}\n${rendered}`;
+		const offset = blocks.length === 0 ? options.startOffset ?? 0 : 0;
+		if (offset < 0 || offset >= rendered.length) throw new Error(`源条目 ${entry.id} 的续读位置非法：${offset}`);
+		const block = `${label}\n${offset > 0 ? `[续读字符 ${offset}/${rendered.length}]\n` : ""}${rendered.slice(offset)}`;
 		const separator = blocks.length > 0 ? "\n\n" : "";
 		const blockTokens = estimateStringTokens(`${separator}${block}`);
 		const maxTokens = options.maxTokens;
 
 		if (maxTokens !== undefined && estimatedTokens + blockTokens > maxTokens) {
 			if (blocks.length > 0) break;
-			const excerpt = truncateSourceBlockToTokenBudget(label, rendered, maxTokens);
-			if (!excerpt) break;
-			blocks.push(excerpt);
+			const prefix = `${label}\n[源片段：从字符 ${offset} 连续读取；整条长度 ${rendered.length}；未到末尾]\n`;
+			const retainedChars = Math.floor(maxTokens * 4) - prefix.length;
+			if (retainedChars <= 0) break;
+			nextSourceOffset = Math.min(rendered.length, offset + retainedChars);
+			// UTF-16 代理对保持完整，避免在两个片段之间破坏非 BMP 字符。
+			if (nextSourceOffset < rendered.length && /[\uD800-\uDBFF]/.test(rendered[nextSourceOffset - 1])) nextSourceOffset--;
+			if (nextSourceOffset <= offset) break;
+			blocks.push(prefix + rendered.slice(offset, nextSourceOffset));
 			sourceEntryIds.push(entry.id);
-			truncatedSourceEntryIds.push(entry.id);
-			estimatedTokens = estimateStringTokens(excerpt);
 			break;
 		}
 
@@ -231,7 +214,7 @@ export function serializeSourceAddressedBranchEntries(
 	}
 
 	const text = blocks.join("\n\n");
-	return { text, sourceEntryIds, estimatedTokens: estimateStringTokens(text), truncatedSourceEntryIds };
+	return { text, sourceEntryIds, estimatedTokens: estimateStringTokens(text), ...(nextSourceOffset !== undefined ? { nextSourceOffset } : {}) };
 }
 
 function renderRecallMessage(entry: RenderableEntry): string | null {

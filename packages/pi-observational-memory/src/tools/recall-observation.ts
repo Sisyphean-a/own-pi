@@ -36,7 +36,7 @@ const RECALL_STATUS_LABELS: Record<RecallObservationToolStatus, string> = {
 };
 
 type ObservationDetails = Pick<Observation, "id" | "content" | "timestamp" | "relevance"> & { status?: "active" | "dropped" };
-type ReflectionDetails = Pick<Reflection, "id" | "content" | "supportingObservationIds"> & { reflectionIndex: number };
+type ReflectionDetails = Pick<Reflection, "id" | "content" | "supportingObservationIds"> & { reflectionIndex: number; status?: "active" | "retired"; retirementReason?: string };
 
 export type RecallSourceEntryDetails = {
 	id: string;
@@ -217,7 +217,7 @@ function friendlySourceUnavailableMessage(match: RecallObservationMatchDetails):
 }
 
 function reflectionLineText(reflection: ReflectionDetails): string {
-	return `[${reflection.id}] ${reflection.content}`;
+	return `[${reflection.id}]${reflection.status === "retired" ? ` [已撤回：${reflection.retirementReason}]` : ""} ${reflection.content}`;
 }
 
 function observationLineText(observation: ObservationDetails): string {
@@ -255,7 +255,7 @@ function unavailableSupportingLineText(item: RecallUnavailableSupportingObservat
 function renderMemoryText(result: Extract<RecallResult, { status: "found" }>): string {
 	const sections: string[] = [];
 	if (result.collision) sections.push(`记忆 id ${result.memoryId} 匹配到多条观察/反思；返回当前分支上所有可用证据。`);
-	if (result.reflections.length > 0) sections.push(`反思：\n${result.reflections.map((match) => reflectionLineText(reflectionDetails(match.reflection, match.reflectionRecordIndex))).join("\n")}`);
+	if (result.reflections.length > 0) sections.push(`反思：\n${result.reflections.map((match) => reflectionLineText({ ...reflectionDetails(match.reflection, match.reflectionRecordIndex), status: match.status, retirementReason: match.retirement?.reason })).join("\n")}`);
 	if (result.observations.length > 0) sections.push(`观察：\n${result.observations.map((match) => observationLineText(observationDetails(match.observation, match.status))).join("\n")}`);
 	if (result.missingSupportingObservationIds.length > 0) sections.push(`不可用的支撑观察：\n${result.missingSupportingObservationIds.map((id) => unavailableSupportingLineText({ observationId: id })).join("\n")}`);
 	if (result.missingSourceEntryIds.length > 0 || result.nonSourceEntryIds.length > 0) {
@@ -271,7 +271,7 @@ function renderMemoryText(result: Extract<RecallResult, { status: "found" }>): s
 }
 
 function resultDetails(result: Extract<RecallResult, { status: "found" }>, includeSourceContent = true): RecallObservationToolDetails {
-	const reflections = result.reflections.map((match) => reflectionDetails(match.reflection, match.reflectionRecordIndex));
+	const reflections = result.reflections.map((match) => ({ ...reflectionDetails(match.reflection, match.reflectionRecordIndex), status: match.status, retirementReason: match.retirement?.reason }));
 	const observations = result.observations.map((match) => observationMatchDetails(match, includeSourceContent));
 	const directMatches = directObservationMatches(result).map((match) => observationMatchDetails(match, includeSourceContent));
 	const sourceEntries = result.sourceEntries.map((entry) => sourceEntryDetails(entry, includeSourceContent));
@@ -365,7 +365,7 @@ function observationLine(observation: ObservationDetails): string {
 }
 
 function reflectionLine(reflection: ReflectionDetails): string {
-	return alignedRow("✓ 反思", "", reflection.content);
+	return alignedRow("✓ 反思", reflection.status === "retired" ? "已撤回" : "", reflection.content);
 }
 
 function noteLine(kind: string, text: string): string {
@@ -449,21 +449,16 @@ export const recallObservationTool = defineTool({
 	name: RECALL_OBSERVATION_TOOL_NAME,
 	label: "召回记忆证据",
 	description:
-		"恢复当前分支上某条已压缩的观察式记忆观察或反思背后的精确证据与源上下文。" +
-		"当压缩记忆很重要、行动前需要原始源上下文时使用。",
-	promptSnippet: "需要精确性时，用 recall(<id>) 恢复已压缩记忆观察/反思背后的精确源上下文。",
+		"按已知记忆 id 恢复当前分支的原始证据，包括已精简观察与已撤回反思；不按主题搜索。",
+	promptSnippet: "recall(<id>)：展开压缩记忆的原始证据。",
 	promptGuidelines: [
-		"当重要决定依赖某条细节不清的已压缩观察或反思时，先用 recall 再决定。",
-		"当需要记忆声明的精确措辞、理由、文件路径、命令、错误、提交、用户约束或来源时，使用 recall。",
-		"当某条宽泛反思相关、但需要它的支撑观察或原始源内容才能安全继续时，使用 recall。",
-		"当用户询问你为什么相信某事、某条记忆的依据，或之前决定了什么时，使用 recall。",
-		"不要把 recall 当作语义搜索或会话浏览；必须已经有具体的 12 字符记忆 id。",
-		"不要预先召回每个 id。只在精确源上下文能实质改善下一步行动时使用 recall。",
+		"决策依赖压缩记忆的缺失细节，或用户要求核验历史依据时，先调用 recall。",
+		"只展开当前判断必需的已知 id；已撤回反思是历史，不是现行约束。",
 	],
 	parameters: Type.Object({
 		id: Type.String({
 			pattern: "^[a-f0-9]{12}$",
-			description: "压缩记忆、/om:view 或之前召回结果中显示的 12 位小写十六进制观察或反思 id。必须是具体 id；本工具不按主题搜索。",
+			description: "压缩记忆、/om:view 或召回结果中的 12 位小写十六进制 id。",
 		}),
 	}),
 	renderCall(args) {

@@ -24,7 +24,7 @@ import {
 } from "../src/session-ledger/index.js";
 import {
 	observation,
-	observationsDroppedEntry,
+	rawMessage,
 	observationsRecordedEntry,
 	reflection,
 	reflectionsRecordedEntry,
@@ -36,9 +36,9 @@ beforeEach(() => {
 	mockAgents.runObserver.mockReset();
 	mockAgents.runReflector.mockReset();
 	mockAgents.runDropper.mockReset();
-	mockAgents.runObserver.mockResolvedValue(undefined);
-	mockAgents.runReflector.mockResolvedValue(undefined);
-	mockAgents.runDropper.mockResolvedValue(undefined);
+	mockAgents.runObserver.mockResolvedValue({ observations: [], complete: true });
+	mockAgents.runReflector.mockImplementation(async (args) => ({ reflections: [], retirements: [], reviewedObservationIds: args.observations.map((item: any) => item.id) }));
+	mockAgents.runDropper.mockResolvedValue([]);
 });
 
 function setup(args: {
@@ -53,6 +53,7 @@ function setup(args: {
 	consolidationInFlight?: boolean;
 	appendEntryReturnsId?: boolean;
 	sessionId?: string;
+	contextTokens?: number;
 }) {
 	let entries = [...args.entries];
 	let sessionId = args.sessionId ?? "session-1";
@@ -101,6 +102,10 @@ function setup(args: {
 	// 使用真实实现，保证 stale 会话的失败处理与生产路径一致。
 	runtime.recordConsolidationStageError = Runtime.prototype.recordConsolidationStageError.bind(runtime);
 	runtime.endSession = Runtime.prototype.endSession.bind(runtime);
+	runtime.observationProgress = Runtime.prototype.observationProgress.bind(runtime);
+	runtime.reflectionProgress = Runtime.prototype.reflectionProgress.bind(runtime);
+	runtime.maintenanceDue = Runtime.prototype.maintenanceDue.bind(runtime);
+	runtime.finishMaintenance = Runtime.prototype.finishMaintenance.bind(runtime);
 	registerConsolidationTrigger(pi as any, runtime as any);
 	if (!handlers.agent_start) throw new Error("agent_start consolidation handler not registered");
 	if (!handlers.turn_end) throw new Error("turn_end consolidation handler not registered");
@@ -110,6 +115,7 @@ function setup(args: {
 		ui: { notify: vi.fn() },
 		model: { provider: "session" },
 		modelRegistry: {},
+		getContextUsage: () => ({ tokens: args.contextTokens }),
 		sessionManager: {
 			getBranch: () => entries,
 			getSessionId: () => sessionId,
@@ -133,670 +139,180 @@ function setup(args: {
 	};
 }
 
-describe("V3 consolidation trigger", () => {
-	const obsA = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"], tokenCount: 10 });
-	const obsB = observation("bbbbbbbbbbbb", { sourceEntryIds: ["raw-2"], tokenCount: 10 });
-	const refA = reflection("eeeeeeeeeeee", ["aaaaaaaaaaaa"]);
+describe("记忆整理编排", () => {
+	const obsA = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"] });
+	const refA = reflection("eeeeeeeeeeee", [obsA.id]);
 
-	it("does not launch below all thresholds from either entrypoint", () => {
-		const entries = [
-			textCustomMessage("raw-1", "aaaa"),
-			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
-			reflectionsRecordedEntry("om-ref", { reflections: [refA], coversUpToId: "raw-1" }),
-			observationsDroppedEntry("om-drop", { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "raw-1" }),
-		];
-		const { fireAgentStart, fireTurnEnd, runtime } = setup({ entries, observeAfterTokens: 10, reflectAfterTokens: 10 });
-
-		fireAgentStart();
-		fireTurnEnd();
-
-		expect(runtime.launchConsolidationTask).not.toHaveBeenCalled();
+	it.each(["agent_start", "turn_end"])("阈值以下不启动 worker：%s", (event) => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaa")], observeAfterTokens: 100, reflectAfterTokens: 100 });
+		run.fire(event);
+		expect(run.runtime.launchConsolidationTask).not.toHaveBeenCalled();
 	});
-
-	it("does not launch from either entrypoint in passive mode", () => {
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const passive = setup({ entries, passive: true });
-
-		passive.fireAgentStart();
-		passive.fireTurnEnd();
-
-		expect(passive.runtime.launchConsolidationTask).not.toHaveBeenCalled();
+	it.each([{ passive: true }, { consolidationInFlight: true }])("禁用或已运行时不重复启动 %#", (options) => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], ...options });
+		run.fire();
+		expect(run.runtime.launchConsolidationTask).not.toHaveBeenCalled();
 	});
-
-	it("does not launch from either entrypoint while consolidation is already in flight", () => {
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const locked = setup({ entries, consolidationInFlight: true });
-
-		locked.fireAgentStart();
-		locked.fireTurnEnd();
-
-		expect(locked.runtime.launchConsolidationTask).not.toHaveBeenCalled();
+	it.each([["agent_start", "turn_end"], ["turn_end", "agent_start"]])("两个入口共享运行锁：%s → %s", (first, second) => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
+		run.fire(first); run.fire(second);
+		expect(run.runtime.launchConsolidationTask).toHaveBeenCalledOnce();
 	});
-
-	it("uses the shared lock when agent_start fires before turn_end", () => {
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fireAgentStart, fireTurnEnd, runtime } = setup({ entries });
-
-		fireAgentStart();
-		fireTurnEnd();
-
-		expect(runtime.launchConsolidationTask).toHaveBeenCalledTimes(1);
+	it("原子写入观察与显式处理回执，并向 worker 传递运行参数", async () => {
+		mockAgents.runObserver.mockResolvedValueOnce({ observations: [obsA], complete: true });
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], reflectAfterTokens: 999 });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({ allowedSourceEntryIds: ["raw-1"], maxTurns: 9, thinkingLevel: "minimal" }));
+		expect(run.pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obsA], coversUpToId: "raw-1", processing: { processedSourceEntryIds: ["raw-1"] } });
 	});
-
-	it("uses the shared lock when turn_end fires before agent_start", () => {
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fireAgentStart, fireTurnEnd, runtime } = setup({ entries });
-
-		fireTurnEnd();
-		fireAgentStart();
-
-		expect(runtime.launchConsolidationTask).toHaveBeenCalledTimes(1);
+	it("仅 headers 的 OAuth 认证仍完整透传", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], reflectAfterTokens: 999 });
+		run.runtime.resolveModel.mockResolvedValue({ ok: true, model: {}, headers: { Authorization: "Bearer oauth-token" } });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({ apiKey: undefined, headers: { Authorization: "Bearer oauth-token" } }));
 	});
-
-	it("runs observer first and appends source-addressed observations", async () => {
-		const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
-		mockAgents.runObserver.mockResolvedValueOnce([obs]);
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, pi, runtime } = setup({ entries, reflectAfterTokens: 999 });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(runtime.launchConsolidationTask).toHaveBeenCalled();
-		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({
-			allowedSourceEntryIds: ["raw-1"],
-			maxTurns: 9,
-			thinkingLevel: "minimal",
-		}));
-		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
+	it.each([{ provider: "opencode-go" }, { provider: "custom", baseUrl: "https://opencode.ai/zen" }])("保留 OpenCode 会话头 %#", async (model) => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], reflectAfterTokens: 999 });
+		run.runtime.resolveModel.mockResolvedValue({ ok: true, model, headers: { Authorization: "Bearer oauth" } });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver.mock.calls[0][0].headers).toEqual({ Authorization: "Bearer oauth", "x-opencode-session": "session-1", "x-opencode-client": "pi" });
 	});
-
-	it("forwards OAuth-shaped auth (headers, no apiKey) to the observer agent", async () => {
-		const obs = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
-		mockAgents.runObserver.mockResolvedValueOnce([obs]);
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, pi, runtime } = setup({ entries, reflectAfterTokens: 999 });
-		runtime.resolveModel.mockResolvedValueOnce({
-			ok: true,
-			model: { provider: "kimi-coding" },
-			apiKey: undefined,
-			headers: { Authorization: "Bearer oauth-token" },
-		});
-
-		fire();
-		await runLaunchedWork();
-
-		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({
-			apiKey: undefined,
-			headers: { Authorization: "Bearer oauth-token" },
-		}));
-		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obs], coversUpToId: "raw-1" });
+	it("无会话 id 时保持认证头不变", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], reflectAfterTokens: 999 });
+		delete (run.ctx.sessionManager as any).getSessionId;
+		run.runtime.resolveModel.mockResolvedValue({ ok: true, model: { provider: "opencode-go" }, headers: { h: "v" } });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver.mock.calls[0][0].headers).toEqual({ h: "v" });
 	});
-
-	it.each([
-		["provider", { provider: "opencode-go", baseUrl: "https://example.invalid/v1" }],
-		["host", { provider: "custom", baseUrl: "https://opencode.ai/zen/go/v1" }],
-	])("adds OpenCode worker session headers for a matching %s", async (_match, model) => {
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, runtime } = setup({ entries, reflectAfterTokens: 999, sessionId: "session-opencode" });
-		runtime.resolveModel.mockResolvedValueOnce({
-			ok: true,
-			model,
-			apiKey: undefined,
-			headers: { Authorization: "Bearer oauth-token" },
-		});
-
-		fire();
-		await runLaunchedWork();
-
-		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({
-			apiKey: undefined,
-			headers: {
-				Authorization: "Bearer oauth-token",
-				"x-opencode-session": "session-opencode",
-				"x-opencode-client": "pi",
-			},
-		}));
+	it("零观察推进处理游标，后续运行只检查新增源消息", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], reflectAfterTokens: 999 });
+		run.fire(); await run.runLaunchedWork();
+		expect(run.pi.appendEntry.mock.calls[0][1]).toMatchObject({ observations: [], processing: { processedSourceEntryIds: ["raw-1"] } });
+		run.runtime.consolidationInFlight = false;
+		run.addEntries(textCustomMessage("raw-2", "新的重要约束"));
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver.mock.calls[1][0].allowedSourceEntryIds).toEqual(["raw-2"]);
 	});
-
-	it("leaves OpenCode headers unchanged when the session id is unavailable", async () => {
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, runtime, ctx } = setup({ entries, reflectAfterTokens: 999 });
-		delete (ctx.sessionManager as { getSessionId?: () => string }).getSessionId;
-		runtime.resolveModel.mockResolvedValueOnce({
-			ok: true,
-			model: { provider: "opencode-go" },
-			apiKey: undefined,
-			headers: { Authorization: "Bearer oauth-token" },
-		});
-
-		fire();
-		await runLaunchedWork();
-
-		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({
-			headers: { Authorization: "Bearer oauth-token" },
-		}));
-	});
-
-	it("uses existing observation coverage and retries larger ranges after no-output", async () => {
-		const prior = observation("cccccccccccc", { sourceEntryIds: ["raw-1"] });
-		const newObs = observation("dddddddddddd", { sourceEntryIds: ["raw-2"] });
-		mockAgents.runObserver.mockResolvedValueOnce([newObs]);
-		const entries = [
-			textCustomMessage("raw-1", "aaaa"),
-			observationsRecordedEntry("om-prior", { observations: [prior], coversUpToId: "raw-1" }),
-			textCustomMessage("raw-2", "bbbbbbbb"),
-			textCustomMessage("raw-3", "cccccccc"),
-		];
-		const { fire, runLaunchedWork, pi } = setup({ entries, reflectAfterTokens: 999 });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({ allowedSourceEntryIds: ["raw-2", "raw-3"] }));
-		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [newObs], coversUpToId: "raw-3" });
-	});
-
-	it("observer no-output appends nothing and does not fake observation coverage", async () => {
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, pi } = setup({ entries });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(pi.appendEntry).not.toHaveBeenCalled();
-		expect(mockAgents.runReflector).not.toHaveBeenCalled();
-		expect(mockAgents.runDropper).not.toHaveBeenCalled();
-	});
-
-	it("shows routine worker notifications by default", async () => {
-		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
-		mockAgents.runObserver.mockResolvedValueOnce([obsA]);
-		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
-		mockAgents.runDropper.mockResolvedValueOnce(["aaaaaaaaaaaa"]);
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, ctx } = setup({ entries, observationsPoolTargetTokens: 5 });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(ctx.ui.notify.mock.calls).toEqual([
-			[expect.stringMatching(/^观察式记忆：观察器正在处理约 \d+ token 的分块$/), "info"],
-			["观察式记忆：已记录 1 条观察", "info"],
-			["观察式记忆：反思器正在处理（约 2 token）", "info"],
-			["观察式记忆：精简器在反思后运行——活跃观察池约 19 / 5 目标 token（380%）", "info"],
-		]);
-	});
-
-	it("suppresses routine worker notifications without hiding warnings", async () => {
-		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
-		mockAgents.runObserver.mockResolvedValueOnce([obsA]);
-		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
-		mockAgents.runDropper.mockResolvedValueOnce(["aaaaaaaaaaaa"]);
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const quiet = setup({ entries, observationsPoolTargetTokens: 5, showWorkerNotifications: false });
-
-		quiet.fire();
-		await quiet.runLaunchedWork();
-
-		expect(mockAgents.runObserver).toHaveBeenCalledOnce();
-		expect(mockAgents.runReflector).toHaveBeenCalledOnce();
-		expect(mockAgents.runDropper).toHaveBeenCalledOnce();
-		expect(quiet.ctx.ui.notify).not.toHaveBeenCalled();
-
-		// Deliberate empty is routine info: also hidden when quiet.
-		mockAgents.runObserver.mockReset();
+	it("没有完成回执不写任何内容，也不启动后续阶段", async () => {
 		mockAgents.runObserver.mockResolvedValueOnce(undefined);
-		const noOutput = setup({ entries, reflectAfterTokens: 999, showWorkerNotifications: false });
-
-		noOutput.fire();
-		await noOutput.runLaunchedWork();
-
-		expect(noOutput.ctx.ui.notify).not.toHaveBeenCalled();
-
-		// Real failures still surface as warnings when quiet.
-		mockAgents.runObserver.mockReset();
-		mockAgents.runObserver.mockRejectedValueOnce(new ObserverStreamError("error", "prompt is too long"));
-		const failed = setup({ entries, reflectAfterTokens: 999, showWorkerNotifications: false });
-
-		failed.fire();
-		await failed.runLaunchedWork();
-
-		expect(failed.ctx.ui.notify).toHaveBeenCalledOnce();
-		expect(failed.ctx.ui.notify.mock.calls[0][1]).toBe("warning");
-		expect(failed.ctx.ui.notify.mock.calls[0][0]).toContain("观察阶段失败");
-	});
-
-	it("reports deliberate empty as info, not a warning", async () => {
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, ctx } = setup({ entries, reflectAfterTokens: 999 });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(ctx.ui.notify.mock.calls).toEqual([
-			[expect.stringMatching(/^观察式记忆：观察器正在处理约 \d+ token 的分块$/), "info"],
-			["观察式记忆：观察器未在本分块发现新内容（覆盖范围不变，稍后重试）", "info"],
-		]);
-	});
-
-	it("backs off observer re-fires after a deliberate empty until enough new tokens arrive", async () => {
-		const entries = [textCustomMessage("raw-1", "a".repeat(40))]; // 10 tokens
-		const { fire, runLaunchedWork, addEntries, runtime } = setup({ entries, observeAfterTokens: 10, reflectAfterTokens: 999 });
-
-		fire();
-		await runLaunchedWork();
-		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
-		expect(runtime.observerEmptyBackoff).toEqual({
-			sessionIdentity: "session-1",
-			coverageId: undefined,
-			tokensAtEmpty: 10,
-		});
-
-		// Same span, only 5 new tokens (< observeAfterTokens more): no re-fire.
-		addEntries(textCustomMessage("raw-2", "b".repeat(20)));
-		runtime.consolidationInFlight = false;
-		fire();
-		expect(runtime.launchConsolidationTask).toHaveBeenCalledTimes(2);
-		await runLaunchedWork();
-		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
-
-		// 10 more new tokens: backoff satisfied, observer re-fires over the grown span.
-		addEntries(textCustomMessage("raw-3", "c".repeat(40)));
-		runtime.consolidationInFlight = false;
-		mockAgents.runObserver.mockResolvedValueOnce([obsA]);
-		fire();
-		await runLaunchedWork();
-		expect(mockAgents.runObserver).toHaveBeenCalledTimes(2);
-		expect(runtime.observerEmptyBackoff).toBeUndefined();
-	});
-
-	it("does not apply deliberate-empty backoff to another session", async () => {
-		const entries = [textCustomMessage("raw-1", "a".repeat(40))];
-		const { fire, runLaunchedWork, runtime, setSessionId } = setup({
-			entries,
-			observeAfterTokens: 10,
-			reflectAfterTokens: 999,
-		});
-
-		fire();
-		await runLaunchedWork();
-		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
-
-		runtime.consolidationInFlight = false;
-		setSessionId("session-2");
-		fire();
-		await runLaunchedWork();
-
-		expect(mockAgents.runObserver).toHaveBeenCalledTimes(2);
-	});
-
-	it("surfaces API stream errors as observer failure, never as empty", async () => {
-		mockAgents.runObserver.mockRejectedValueOnce(new ObserverStreamError("error", "prompt is too long: 5198507 tokens > 1000000 maximum"));
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, pi, runtime, ctx } = setup({ entries, reflectAfterTokens: 999 });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(runtime.lastObserverError).toContain("prompt is too long");
-		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			'观察式记忆：观察阶段失败：观察器流以 stopReason "error" 结束：prompt is too long: 5198507 tokens > 1000000 maximum',
-			"warning",
-		);
-		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("no observations"), expect.anything());
-		expect(pi.appendEntry).not.toHaveBeenCalled();
-		expect(runtime.observerEmptyBackoff).toBeUndefined();
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
+		run.fire(); await run.runLaunchedWork();
+		expect(run.pi.appendEntry).not.toHaveBeenCalled();
+		expect(run.runtime.lastObserverError).toContain("完成回执");
 		expect(mockAgents.runReflector).not.toHaveBeenCalled();
 	});
-
-
-	it("model resolution failure skips appending and notifies once", async () => {
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, pi, runtime, ctx } = setup({ entries });
-		runtime.resolveModel.mockResolvedValueOnce({ ok: false, reason: "no model" });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(pi.appendEntry).not.toHaveBeenCalled();
-		expect(ctx.ui.notify).toHaveBeenCalledWith("观察式记忆：观察已跳过——no model", "warning");
-	});
-
-	it("re-reads branch so observer append can unblock reflector in the same consolidation run", async () => {
-		mockAgents.runObserver.mockResolvedValueOnce([obsA]);
-		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
-		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, pi } = setup({ entries });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(mockAgents.runObserver).toHaveBeenCalled();
+	it("同轮重新读取观察后原子提交反思及旧结论撤回", async () => {
+		mockAgents.runObserver.mockResolvedValueOnce({ observations: [obsA], complete: true });
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
+		run.fire(); await run.runLaunchedWork();
 		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ observations: [obsA] }));
-		expect(mockAgents.runObserver.mock.invocationCallOrder[0]).toBeLessThan(mockAgents.runReflector.mock.invocationCallOrder[0]);
-		expect(pi.appendEntry.mock.calls[0]).toEqual([OM_OBSERVATIONS_RECORDED, { observations: [obsA], coversUpToId: "raw-1" }]);
-		expect(pi.appendEntry.mock.calls[1]).toEqual([OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" }]);
+		expect(run.pi.appendEntry.mock.calls[1][1]).toMatchObject({ reflections: [], reviewedObservationIds: [obsA.id] });
 	});
-
-	it("runs reflector-only and appends non-empty reflections", async () => {
-		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
-		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
-		const entries = [
-			textCustomMessage("raw-1", "aaaaaaaa"),
-			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
-			textCustomMessage("raw-2", "bbbbbbbb"),
-			observationsDroppedEntry("om-drop", { observationIds: ["bbbbbbbbbbbb"], coversUpToId: "raw-2" }),
-		];
-		const { fire, runLaunchedWork, pi } = setup({ entries, observeAfterTokens: 999 });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ observations: [obsA], maxTurns: 9, thinkingLevel: "minimal" }));
-		expect(mockAgents.runDropper).not.toHaveBeenCalled();
-		expect(pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" });
-	});
-
-	it("runs dropper after same-run non-empty reflector output and appends non-empty drops", async () => {
-		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
-		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
-		mockAgents.runDropper.mockResolvedValueOnce(["aaaaaaaaaaaa"]);
-		const entries = [
-			textCustomMessage("raw-1", "aaaaaaaa"),
-			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
-			textCustomMessage("raw-2", "bbbbbbbb"),
-		];
-		const { fire, runLaunchedWork, pi } = setup({ entries, observeAfterTokens: 999, observationsPoolTargetTokens: 5 });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(mockAgents.runReflector).toHaveBeenCalled();
-		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [newRef], observations: [obsA] }));
-		expect(pi.appendEntry.mock.calls[0]).toEqual([OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" }]);
-		expect(pi.appendEntry.mock.calls[1]).toEqual([OM_OBSERVATIONS_DROPPED, { observationIds: ["aaaaaaaaaaaa"], coversUpToId: "raw-1" }]);
-	});
-
-	it("does not launch dropper-only work when active pool is over target", () => {
-		const entries = [
-			textCustomMessage("raw-1", "aaaaaaaa"),
-			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
-			reflectionsRecordedEntry("om-ref", { reflections: [refA], coversUpToId: "raw-1" }),
-		];
-		const { fire, runtime } = setup({ entries, observeAfterTokens: 999, reflectAfterTokens: 999, observationsPoolTargetTokens: 5 });
-
-		fire();
-
-		expect(runtime.launchConsolidationTask).not.toHaveBeenCalled();
-	});
-
-	it("waits for successful reflection even when active observation pool is over target", async () => {
-		const entries = [
-			textCustomMessage("raw-1", "aaaaaaaa"),
-			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
-			textCustomMessage("raw-2", "bbbbbbbb"),
-		];
-		const { fire, runLaunchedWork, runtime } = setup({ entries, observeAfterTokens: 999, reflectAfterTokens: 1, observationsPoolTargetTokens: 5 });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(runtime.launchConsolidationTask).toHaveBeenCalledTimes(1);
-		expect(mockAgents.runReflector).toHaveBeenCalled();
-		expect(mockAgents.runDropper).not.toHaveBeenCalled();
-	});
-
-	it("does not launch dropper-only work when dropped tombstones reduce active pool below budget", () => {
-		const heavy = observation("cccccccccccc", { sourceEntryIds: ["raw-1"], tokenCount: 100 });
-		const entries = [
-			textCustomMessage("raw-1", "aaaaaaaa"),
-			observationsRecordedEntry("om-obs", { observations: [heavy], coversUpToId: "raw-1" }),
-			observationsDroppedEntry("om-drop", { observationIds: ["cccccccccccc"], coversUpToId: "raw-1" }),
-			textCustomMessage("raw-2", "bbbbbbbb"),
-			reflectionsRecordedEntry("om-ref", { reflections: [refA], coversUpToId: "raw-2" }),
-		];
-		const { fire, runtime } = setup({ entries, observeAfterTokens: 999, reflectAfterTokens: 1, observationsPoolMaxTokens: 100 });
-
-		fire();
-
-		expect(runtime.launchConsolidationTask).not.toHaveBeenCalled();
-	});
-
-	it("does not bootstrap dropper without same-run reflection output", async () => {
-		mockAgents.runDropper.mockResolvedValueOnce(["aaaaaaaaaaaa"]);
-		const entries = [
-			textCustomMessage("raw-1", "aaaaaaaa"),
-			observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" }),
-			textCustomMessage("raw-2", "bbbbbbbb"),
-		];
-		const { fire, runLaunchedWork, pi } = setup({ entries, observeAfterTokens: 999, observationsPoolMaxTokens: 10 });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(mockAgents.runReflector).toHaveBeenCalled();
-		expect(mockAgents.runDropper).not.toHaveBeenCalled();
-		expect(pi.appendEntry).not.toHaveBeenCalled();
-	});
-
-	it("does not append reflect/drop entries without observation coverage", async () => {
-		mockAgents.runReflector.mockResolvedValueOnce([reflection("ffffffffffff", ["aaaaaaaaaaaa"])]);
-		mockAgents.runDropper.mockResolvedValueOnce(["aaaaaaaaaaaa"]);
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, pi } = setup({ entries, observeAfterTokens: 999 });
-
-		fire();
-		await runLaunchedWork();
-
+	it("即使没有新反思，压力下仍可运行精简器", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa"), observationsRecordedEntry("obs", { observations: [obsA], coversUpToId: "raw-1" })], observeAfterTokens: 999, reflectAfterTokens: 999, observationsPoolTargetTokens: 5 });
+		run.fire(); await run.runLaunchedWork();
 		expect(mockAgents.runReflector).not.toHaveBeenCalled();
-		expect(mockAgents.runDropper).not.toHaveBeenCalled();
-		expect(pi.appendEntry).not.toHaveBeenCalled();
+		expect(mockAgents.runDropper).toHaveBeenCalled();
 	});
-
-	it("runs reflector before dropper and covers drops through same-run reflection coverage", async () => {
-		const newRef = reflection("ffffffffffff", ["bbbbbbbbbbbb"]);
-		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
-		mockAgents.runDropper.mockResolvedValueOnce(["bbbbbbbbbbbb"]);
-		const entries = [
-			textCustomMessage("raw-1", "aaaaaaaa"),
-			observationsRecordedEntry("om-obs-a", { observations: [obsA], coversUpToId: "raw-1" }),
-			textCustomMessage("raw-2", "bbbbbbbb"),
-			observationsRecordedEntry("om-obs-b", { observations: [obsB], coversUpToId: "raw-2" }),
-		];
-		const { fire, runLaunchedWork, pi } = setup({ entries, observeAfterTokens: 999, observationsPoolMaxTokens: 10 });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(mockAgents.runDropper).toHaveBeenCalledWith(expect.objectContaining({ reflections: [newRef] }));
-		expect(pi.appendEntry.mock.calls[0]).toEqual([OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-2" }]);
-		expect(pi.appendEntry.mock.calls[1]).toEqual([OM_OBSERVATIONS_DROPPED, { observationIds: ["bbbbbbbbbbbb"], coversUpToId: "raw-2" }]);
+	it("池压力达到上限时提前维护反思", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa"), observationsRecordedEntry("obs", { observations: [obsA], coversUpToId: "raw-1" })], observeAfterTokens: 999, reflectAfterTokens: 999, observationsPoolMaxTokens: 10 });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runReflector).toHaveBeenCalled();
+		expect(mockAgents.runDropper).toHaveBeenCalled();
 	});
-
-	it("does not use appended reflection entry id for drop coverage when appendEntry returns no id", async () => {
-		const newRef = reflection("ffffffffffff", ["bbbbbbbbbbbb"]);
-		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
-		mockAgents.runDropper.mockResolvedValueOnce(["bbbbbbbbbbbb"]);
-		const entries = [
-			textCustomMessage("raw-1", "aaaaaaaa"),
-			observationsRecordedEntry("om-obs-a", { observations: [obsA], coversUpToId: "raw-1" }),
-			textCustomMessage("raw-2", "bbbbbbbb"),
-			observationsRecordedEntry("om-obs-b", { observations: [obsB], coversUpToId: "raw-2" }),
-		];
-		const { fire, runLaunchedWork, pi } = setup({ entries, observeAfterTokens: 999, appendEntryReturnsId: false, observationsPoolMaxTokens: 10 });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(pi.appendEntry.mock.calls[1]).toEqual([OM_OBSERVATIONS_DROPPED, { observationIds: ["bbbbbbbbbbbb"], coversUpToId: "raw-2" }]);
+	it("没有安全候选时同一记忆修订不反复启动精简", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa"), observationsRecordedEntry("obs", { observations: [obsA], coversUpToId: "raw-1" })], observeAfterTokens: 999, reflectAfterTokens: 999, observationsPoolTargetTokens: 5 });
+		run.fire(); await run.runLaunchedWork();
+		run.runtime.consolidationInFlight = false;
+		run.fire();
+		expect(run.runtime.launchConsolidationTask).toHaveBeenCalledOnce();
 	});
-
-	it("appends no empty reflection or drop entries", async () => {
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa"), observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" })];
-		const { fire, runLaunchedWork, pi, ctx } = setup({ entries, observeAfterTokens: 999 });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(pi.appendEntry).not.toHaveBeenCalled();
-		expect(mockAgents.runDropper).not.toHaveBeenCalled();
-		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("dropper running"), "info");
+	it("精简结果保留每条替代证据，且不依赖 appendEntry 返回 id", async () => {
+		const drop = { observationId: obsA.id, reason: "redundant", replacementIds: [refA.id] };
+		mockAgents.runDropper.mockResolvedValueOnce([drop]);
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa"), observationsRecordedEntry("obs", { observations: [obsA], coversUpToId: "raw-1" }), reflectionsRecordedEntry("ref", { reflections: [refA], coversUpToId: "raw-1" })], observeAfterTokens: 999, reflectAfterTokens: 999, observationsPoolTargetTokens: 5, appendEntryReturnsId: false });
+		run.fire(); await run.runLaunchedWork();
+		expect(run.pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_DROPPED, { observationIds: [obsA.id], coversUpToId: "raw-1", evidence: [drop] });
 	});
-
-	it("preserves stage failure boundaries", async () => {
-		mockAgents.runObserver.mockRejectedValueOnce(new Error("observe failed"));
-		const observerFailure = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
-		observerFailure.fire();
-		await observerFailure.runLaunchedWork();
-		expect(observerFailure.runtime.lastObserverError).toBe("observe failed");
-		expect(mockAgents.runReflector).not.toHaveBeenCalled();
-		expect(mockAgents.runDropper).not.toHaveBeenCalled();
-
-		mockAgents.runObserver.mockReset();
-		mockAgents.runObserver.mockResolvedValue(undefined);
-		mockAgents.runReflector.mockReset();
-		mockAgents.runReflector.mockRejectedValueOnce(new Error("reflect failed"));
-		const reflectorFailure = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa"), observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" })], observeAfterTokens: 999 });
-		reflectorFailure.fire();
-		await reflectorFailure.runLaunchedWork();
-		expect(reflectorFailure.runtime.lastReflectorError).toBe("reflect failed");
-		expect(mockAgents.runDropper).not.toHaveBeenCalled();
-		expect(reflectorFailure.pi.appendEntry).not.toHaveBeenCalled();
-
-		mockAgents.runReflector.mockReset();
-		const newRef = reflection("ffffffffffff", ["aaaaaaaaaaaa"]);
-		mockAgents.runReflector.mockResolvedValueOnce([newRef]);
-		mockAgents.runDropper.mockReset();
-		mockAgents.runDropper.mockRejectedValueOnce(new Error("drop failed"));
-		const dropperFailure = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa"), observationsRecordedEntry("om-obs", { observations: [obsA], coversUpToId: "raw-1" })], observeAfterTokens: 999, observationsPoolMaxTokens: 10 });
-		dropperFailure.fire();
-		await dropperFailure.runLaunchedWork();
-		expect(dropperFailure.runtime.lastDropperError).toBe("drop failed");
-		expect(dropperFailure.pi.appendEntry).toHaveBeenCalledTimes(1);
-		expect(dropperFailure.pi.appendEntry).toHaveBeenCalledWith(OM_REFLECTIONS_RECORDED, { reflections: [newRef], coversUpToId: "raw-1" });
+	it("缺少观察覆盖时不凭空维护或精简", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], observeAfterTokens: 999 });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runReflector).not.toHaveBeenCalled(); expect(mockAgents.runDropper).not.toHaveBeenCalled();
 	});
-});
-
-describe("observer chunk cap", () => {
-	it("caps an oversized backlog and drains it incrementally across runs", async () => {
-		const first = observation("111111111111", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
-		const second = observation("222222222222", { sourceEntryIds: ["raw-2"], tokenCount: 4 });
-		mockAgents.runObserver.mockResolvedValueOnce([first]).mockResolvedValueOnce([second]);
-		const entries = [
-			textCustomMessage("raw-1", "a".repeat(800)),
-			textCustomMessage("raw-2", "b".repeat(800)),
-			textCustomMessage("raw-3", "c".repeat(800)),
-		];
-		const { fire, runLaunchedWork, pi, runtime } = setup({ entries, observerChunkMaxTokens: 256, reflectAfterTokens: 999 });
-
-		fire();
-		await runLaunchedWork();
-
-		// Only the oldest entry fits under the cap; coverage advances to it, not to the backlog tail.
-		expect(mockAgents.runObserver).toHaveBeenNthCalledWith(1, expect.objectContaining({ allowedSourceEntryIds: ["raw-1"] }));
-		expect(pi.appendEntry).toHaveBeenNthCalledWith(1, OM_OBSERVATIONS_RECORDED, { observations: [first], coversUpToId: "raw-1" });
-
-		// The next run continues from the advanced coverage.
-		runtime.consolidationInFlight = false;
-		fire();
-		await runLaunchedWork();
-
-		expect(mockAgents.runObserver).toHaveBeenNthCalledWith(2, expect.objectContaining({ allowedSourceEntryIds: ["raw-2"] }));
-		expect(pi.appendEntry).toHaveBeenNthCalledWith(2, OM_OBSERVATIONS_RECORDED, { observations: [second], coversUpToId: "raw-2" });
+	it.each([true, false])("例行通知遵守设置，错误始终报告：%s", async (showWorkerNotifications) => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], reflectAfterTokens: 999, showWorkerNotifications });
+		run.fire(); await run.runLaunchedWork();
+		expect(run.ctx.ui.notify.mock.calls.length > 0).toBe(showWorkerNotifications);
+		mockAgents.runObserver.mockRejectedValueOnce(new ObserverStreamError("error", "gateway timeout"));
+		const failed = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], showWorkerNotifications });
+		failed.fire(); await failed.runLaunchedWork();
+		expect(failed.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("gateway timeout"), "warning");
 	});
-
-	it("bounds one oversized tool result, preserves provenance, and continues on the next run", async () => {
-		const first = observation("333333333333", { sourceEntryIds: ["raw-huge"], tokenCount: 4 });
-		const second = observation("555555555555", { sourceEntryIds: ["raw-next"], tokenCount: 4 });
-		mockAgents.runObserver.mockResolvedValueOnce([first]).mockResolvedValueOnce([second]);
-		const hugeText = `HEAD:${"m".repeat(2_000)}:TAIL`;
-		const entries: TestEntry[] = [
-			{
-				type: "message",
-				id: "raw-huge",
-				parentId: null,
-				timestamp: "2026-05-02T10:00:00.000Z",
-				message: {
-					role: "toolResult",
-					toolCallId: "tool-1",
-					toolName: "bash",
-					content: [{ type: "text", text: hugeText }],
-					isError: false,
-					timestamp: Date.parse("2026-05-02T10:00:00.000Z"),
-				},
-			},
-			textCustomMessage("raw-next", "later"),
-		];
-		const { fire, runLaunchedWork, pi, runtime } = setup({ entries, observerChunkMaxTokens: 100, reflectAfterTokens: 999 });
-
-		fire();
-		await runLaunchedWork();
-
-		const firstCall = mockAgents.runObserver.mock.calls[0][0];
-		expect(firstCall.allowedSourceEntryIds).toEqual(["raw-huge"]);
-		expect(firstCall.chunk).toContain("HEAD:");
-		expect(firstCall.chunk).toContain(":TAIL");
-		expect(firstCall.chunk).toContain("中间部分已省略：源内容超出观察器输入预算");
-		expect(firstCall.chunk).not.toContain("raw-next");
-		expect(pi.appendEntry).toHaveBeenNthCalledWith(1, OM_OBSERVATIONS_RECORDED, { observations: [first], coversUpToId: "raw-huge" });
-
-		// The source id still points at the full ledger entry; the next run starts
-		// after it instead of retrying the oversized input forever.
-		runtime.consolidationInFlight = false;
-		fire();
-		await runLaunchedWork();
-
-		expect(mockAgents.runObserver).toHaveBeenNthCalledWith(2, expect.objectContaining({ allowedSourceEntryIds: ["raw-next"] }));
-		expect(pi.appendEntry).toHaveBeenNthCalledWith(2, OM_OBSERVATIONS_RECORDED, { observations: [second], coversUpToId: "raw-next" });
+	it("模型不可用只提示一次且不写伪记忆", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
+		run.runtime.resolveModel.mockResolvedValue({ ok: false, reason: "no model" });
+		run.fire(); await run.runLaunchedWork(); run.runtime.consolidationInFlight = false;
+		run.fire(); await run.runLaunchedWork();
+		expect(run.pi.appendEntry).not.toHaveBeenCalled();
+		expect(run.ctx.ui.notify.mock.calls.filter((call) => call[1] === "warning")).toHaveLength(1);
 	});
-
-	it("derives the cap from the resolved model's context window when not configured", async () => {
-		const obs = observation("444444444444", { sourceEntryIds: ["raw-1"], tokenCount: 4 });
-		mockAgents.runObserver.mockResolvedValueOnce([obs]);
-		const entries = [
-			textCustomMessage("raw-1", "a".repeat(800)),
-			textCustomMessage("raw-2", "b".repeat(800)),
-		];
-		const { fire, runLaunchedWork, pi, runtime } = setup({ entries, reflectAfterTokens: 999 });
-		// contextWindow 1,280 -> cap = floor(1,280 * 0.2) = 256, so only raw-1 fits.
-		runtime.resolveModel.mockResolvedValue({ ok: true, model: { reasoning: true, contextWindow: 1_280 }, apiKey: "key", headers: { h: "v" } } as any);
-
-		fire();
-		await runLaunchedWork();
-
-		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({ allowedSourceEntryIds: ["raw-1"] }));
-		expect(pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, expect.objectContaining({ coversUpToId: "raw-1" }));
+	it.each(["observer", "reflector", "dropper"] as const)("阶段失败保持先前已提交记录，停止后续阶段：%s", async (stage) => {
+		mockAgents.runObserver.mockResolvedValue({ observations: [obsA], complete: true });
+		mockAgents.runReflector.mockImplementation(async (args) => ({ reflections: [refA], retirements: [], reviewedObservationIds: args.observations.map((item: any) => item.id) }));
+		mockAgents[stage === "observer" ? "runObserver" : stage === "reflector" ? "runReflector" : "runDropper"].mockRejectedValueOnce(new Error(stage + " failed"));
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], observationsPoolTargetTokens: 5 });
+		run.fire(); await run.runLaunchedWork();
+		expect(run.runtime["last" + stage[0].toUpperCase() + stage.slice(1) + "Error"]).toContain("failed");
+		expect(run.pi.appendEntry).toHaveBeenCalledTimes(stage === "observer" ? 0 : stage === "reflector" ? 1 : 2);
 	});
-
-	it("abandons an in-flight consolidation when the session is replaced", async () => {
-		mockAgents.runObserver.mockResolvedValueOnce([observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"], tokenCount: 10 })]);
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, pi, runtime, ctx } = setup({ entries, reflectAfterTokens: 999 });
-
-		fire();
-		// 模拟 Pi 在会话替换/重载前触发 session_shutdown。
-		runtime.endSession();
-		await runLaunchedWork();
-
-		expect(pi.appendEntry).not.toHaveBeenCalled();
-		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	it("provider 真实增量到期时，阶段内准入与入口使用相同口径", async () => {
+		const first = rawMessage("raw-1", "done", { message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 1_000 } } });
+		const run = setup({ entries: [first, observationsRecordedEntry("obs", { observations: [], coversUpToId: "raw-1" }), textCustomMessage("raw-2", "short")], contextTokens: 1_100, observeAfterTokens: 50, reflectAfterTokens: 999 });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver).toHaveBeenCalledOnce();
 	});
-
-	it("treats a stale-ctx failure as a benign cancellation instead of a warning", async () => {
-		mockAgents.runObserver.mockRejectedValueOnce(
-			new Error("This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession()."),
-		);
-		const entries = [textCustomMessage("raw-1", "aaaaaaaa")];
-		const { fire, runLaunchedWork, pi, runtime, ctx } = setup({ entries, reflectAfterTokens: 999 });
-
-		fire();
-		await runLaunchedWork();
-
-		expect(runtime.lastObserverError).toContain("stale");
-		expect(pi.appendEntry).not.toHaveBeenCalled();
-		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("stale"), expect.anything());
-		expect(ctx.ui.notify.mock.calls.every((call) => call[1] !== "warning")).toBe(true);
+	it("记忆前缀已超预算时显式报错，不推进进度", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "原始事实"), observationsRecordedEntry("obs", { observations: [observation("aaaaaaaaaaaa", { content: "中文".repeat(20_000) })], coversUpToId: "raw-1" }), textCustomMessage("raw-2", "新要求")], reflectAfterTokens: 999 });
+		run.runtime.resolveModel.mockResolvedValue({ ok: true, model: { contextWindow: 32_000, maxTokens: 8_000 } });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver).not.toHaveBeenCalled();
+		expect(run.pi.appendEntry).not.toHaveBeenCalled();
+		expect(run.runtime.lastObserverError).toContain("预算");
+	});
+	it("预算内的完整分块从旧到新逐次排空", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "a".repeat(800)), textCustomMessage("raw-2", "b".repeat(800))], observerChunkMaxTokens: 256, reflectAfterTokens: 999 });
+		run.fire(); await run.runLaunchedWork(); run.runtime.consolidationInFlight = false;
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver.mock.calls.map((call) => call[0].allowedSourceEntryIds)).toEqual([["raw-1"], ["raw-2"]]);
+	});
+	it("超长源条目跨轮续读，处理完尾部后才读取下一条", async () => {
+		const run = setup({ entries: [textCustomMessage("huge", "HEAD:" + "x".repeat(2_000) + ":MIDDLE:" + "y".repeat(2_000) + ":TAIL"), textCustomMessage("next", "下一条")], observerChunkMaxTokens: 256, reflectAfterTokens: 999 });
+		for (let i = 0; i < 20; i++) {
+			run.runtime.consolidationInFlight = false; run.fire(); await run.runLaunchedWork();
+			if (mockAgents.runObserver.mock.calls.at(-1)?.[0].allowedSourceEntryIds.includes("next")) break;
+		}
+		const calls = mockAgents.runObserver.mock.calls.map((call) => call[0]);
+		expect(calls[1].sourceOffset).toBeGreaterThan(0);
+		expect(calls.map((call) => call.chunk).join("")).toContain(":MIDDLE:");
+		expect(calls.at(-1).allowedSourceEntryIds).toContain("next");
+		expect((run.pi.appendEntry.mock.calls[0][1] as any).processing.nextSourceOffset).toBeGreaterThan(0);
+	});
+	it("会话代次变化后放弃已排队的后台任务", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
+		run.fire(); run.runtime.endSession(); await run.runLaunchedWork();
+		expect(run.pi.appendEntry).not.toHaveBeenCalled(); expect(run.ctx.ui.notify).not.toHaveBeenCalled();
+	});
+	it("会话在模型执行期间被替换时不写回旧结果", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
+		mockAgents.runObserver.mockImplementationOnce(async () => { run.runtime.endSession(); return { observations: [obsA], complete: true }; });
+		run.fire(); await run.runLaunchedWork();
+		expect(run.pi.appendEntry).not.toHaveBeenCalled();
+	});
+	it("stale-ctx 作为取消处理，不打扰用户", async () => {
+		mockAgents.runObserver.mockRejectedValueOnce(new Error("This extension ctx is stale after session replacement or reload."));
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
+		run.fire(); await run.runLaunchedWork();
+		expect(run.ctx.ui.notify.mock.calls.every((call) => call[1] !== "warning")).toBe(true);
+		expect(run.pi.appendEntry).not.toHaveBeenCalled();
 	});
 });

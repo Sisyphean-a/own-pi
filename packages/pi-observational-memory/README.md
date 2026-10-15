@@ -7,9 +7,9 @@ Pi 的观察式记忆扩展。它在后台把会话中的重要信息整理成 o
 ## 功能
 
 - **Observation**：从对话和工具结果中提取带时间、相关性和来源的事实；
-- **Reflection**：把 observations 归纳为用户偏好、项目决策、约束和长期事实；
-- **Dropper**：在观察池超过目标后，清理已被 reflection 充分覆盖的冗余 observation；
-- **快速压缩**：已有 V3 记忆时，`session_before_compact` 只做确定性的 ledger 折叠和摘要渲染，不等待模型；
+- **Reflection**：提炼带作用域的持久结论，并在证据明确变化时撤回旧结论，历史仍可召回；
+- **Dropper**：观察池超过目标时，按替代证据精简冗余、已取代或已解决的观察；
+- **快速压缩**：待移除历史均已处理时，确定性折叠 ledger 并渲染摘要；否则交给 Pi 原生压缩，不用旧记忆冒充完整历史；
 - **来源追溯**：`recall(<memory-id>)` 可以从记忆恢复支持它的 observation 和原始会话条目；
 - **状态查看**：提供 `/om:status`、`/om:view` 和 `/om:view full`。
 
@@ -61,7 +61,7 @@ Pi 会话事件
 - `om.reflections.recorded`
 - `om.observations.dropped`
 
-`coversUpToId` 是各 worker 的进度水位，不是来源证明。来源关系分别保存在 observation 的 `sourceEntryIds` 和 reflection 的 `supportingObservationIds` 中。被 drop 的 observation 仍保留在 ledger 中，可以通过 ID recall。
+`coversUpToId` 是进度水位，不是来源或完整处理的证明；Observer 另存显式处理回执，超长源连续分片读取。来源关系分别保存在 observation 的 `sourceEntryIds` 和 reflection 的 `supportingObservationIds` 中。被精简的观察、被撤回的反思及撤回理由仍可按 ID recall，撤回内容不再作为当前结论。
 
 ## 配置
 
@@ -100,7 +100,7 @@ Pi 会话事件
 | `compactAfterTokens` | `81000` | 主动触发 Pi 压缩的源文本估算阈值 |
 | `compactAfterTokensMode` | `calibrated` | `calibrated` 使用固定阈值，`ratio` 按模型上下文窗口计算 |
 | `compactAfterTokensRatio` | `0.68` | `ratio` 模式下使用的上下文窗口比例，必须在 `0` 和 `1` 之间 |
-| `observationsPoolMaxTokens` | `20000` | 压缩时触发 full fold 的 observation 上限 |
+| `observationsPoolMaxTokens` | `20000` | 活跃观察达到此压力时提前维护反思；每次压缩都会应用当前维护结果 |
 | `observationsPoolTargetTokens` | 最大值的一半 | Dropper 维护的活动 observation 目标 |
 | `agentMaxTurns` | `16` | 三类后台 memory agent 的共同回合上限 |
 | `model` | 当前会话模型 | 可为 memory worker 指定更快或更便宜的模型 |
@@ -121,10 +121,11 @@ PI_OBSERVATIONAL_MEMORY_PASSIVE=true pi
 - Observer、Reflector、Dropper 都是后台模型调用，会受模型认证、额度和上下文窗口影响；
 - 没有可用模型或认证时，后台阶段会跳过或报告错误，不会伪造记忆；
 - 记忆 worker 失败不会阻塞 Pi 的主回合；
-- 压缩时只使用已经写入 ledger 的记忆，不等待正在运行的 worker；
+- 记忆摘要不等待 worker；指定摘要重点、历史尚未完整处理或记忆为空时，由 Pi 原生摘要器处理；
 - 会话替换、重载或退出时，在途后台整理会被作废，旧会话的 worker 结果不会写入新会话；
 - `passive: true` 仍保留手动/Pi 压缩、状态命令、查看命令和 recall；
-- V3 不迁移 V2 的设置或记忆条目。升级后建议使用新会话。
+- 保留旧 V3 记忆读取，不改写既有会话；旧水位不充当新处理回执。V2 设置和记忆条目仍不迁移；
+- 不支持用旧版插件解释新增的撤回语义；回退版本时应新建会话，避免旧结论重新出现。
 
 ## 代码入口
 

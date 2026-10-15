@@ -13,8 +13,8 @@ describe("session-ledger V3 summary rendering", () => {
 
 		const summary = renderSummary([ref], []);
 
-		expect(summary).toContain("这些是本次会话早些时候的压缩记忆。");
-		expect(summary).toContain("调用 recall 工具");
+		expect(summary).toContain("压缩历史");
+		expect(summary).toContain("recall");
 	});
 
 	it("renders V3 reflections with ids", () => {
