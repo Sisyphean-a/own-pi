@@ -5,7 +5,11 @@ import { createInterface } from "node:readline";
 import type { DatabaseSync } from "node:sqlite";
 import { day, object, recordFromEntry, validRecord, type UsageRecord } from "./record.ts";
 
-export type Aggregate = { day: string; model: string; requests: number; input: number; hit: number; output: number; cost: number; unpriced: number; incomplete: number; historical: number; durationMs: number; timed: number };
+export type Aggregate = {
+  day: string; model: string; requests: number; input: number; hit: number; output: number; cost: number; unpriced: number;
+  inputUnknown: number; hitUnknown: number; outputUnknown: number; cacheInput: number; cacheHit: number; unreported: number;
+  historical: number; durationMs: number; timed: number;
+};
 export type IndexResult<T> = { value: T; warnings: string[] };
 export async function withIndex<T>(root: string, task: (db: DatabaseSync, warnings: string[]) => Promise<T> | T): Promise<IndexResult<T>> {
   // Rule: SQLite 是命令阶段的可重建冷索引，不出现在模型采集路径或常驻内存中。
@@ -71,32 +75,47 @@ async function updateIndex(db: DatabaseSync, root: string, warnings: string[]): 
 }
 export function aggregates(db: DatabaseSync, daily = false): Aggregate[] {
   const dateExpr = daily ? "strftime('%Y-%m-%d',time/1000,'unixepoch','localtime')" : "''";
-  return db.prepare(`SELECT ${dateExpr} AS day,model,COUNT(*) AS requests,
-    COALESCE(SUM(COALESCE(json_extract(data,'$.counts.input'),0)+COALESCE(json_extract(data,'$.counts.cacheWrite'),0)),0) AS input,
-    COALESCE(SUM(json_extract(data,'$.counts.cacheRead')),0) AS hit,
-    COALESCE(SUM(json_extract(data,'$.counts.output')),0) AS output,
-    COALESCE(SUM(json_extract(data,'$.cost')),0) AS cost,
-    SUM(json_extract(data,'$.cost') IS NULL) AS unpriced,
-    SUM(json_extract(data,'$.counts.input') IS NULL OR json_extract(data,'$.counts.cacheRead') IS NULL OR json_extract(data,'$.counts.cacheWrite') IS NULL OR json_extract(data,'$.counts.output') IS NULL) AS incomplete,
-    SUM(json_extract(data,'$.historicalEstimate')=1) AS historical,
-    COALESCE(SUM(json_extract(data,'$.durationMs')),0) AS durationMs,
-    SUM(json_extract(data,'$.durationMs') IS NOT NULL) AS timed
-    FROM records GROUP BY ${daily ? 'day,' : ''}model ORDER BY ${daily ? 'day,' : ''}model`).all() as unknown as Aggregate[];
+  // Rule: 比例只累加输入三项齐全的请求；不能把部分已知计数拼成分子、分母。
+  return db.prepare(`WITH usage AS (SELECT time,model,
+    json_extract(data,'$.counts.input') AS ordinary,json_extract(data,'$.counts.cacheWrite') AS writes,
+    json_extract(data,'$.counts.cacheRead') AS hits,json_extract(data,'$.counts.output') AS outputs,
+    json_extract(data,'$.cost') AS cost,json_extract(data,'$.stopReason') AS stop,
+    json_extract(data,'$.historicalEstimate') AS historical,json_extract(data,'$.durationMs') AS duration
+    FROM records)
+    SELECT ${dateExpr} AS day,model,COUNT(*) AS requests,
+    SUM(COALESCE(ordinary,0)+COALESCE(writes,0)) AS input,COALESCE(SUM(hits),0) AS hit,COALESCE(SUM(outputs),0) AS output,
+    COALESCE(SUM(cost),0) AS cost,SUM(cost IS NULL) AS unpriced,
+    SUM(ordinary IS NULL OR writes IS NULL) AS inputUnknown,SUM(hits IS NULL) AS hitUnknown,SUM(outputs IS NULL) AS outputUnknown,
+    COALESCE(SUM(CASE WHEN ordinary IS NOT NULL AND writes IS NOT NULL AND hits IS NOT NULL THEN ordinary+writes END),0) AS cacheInput,
+    COALESCE(SUM(CASE WHEN ordinary IS NOT NULL AND writes IS NOT NULL AND hits IS NOT NULL THEN hits END),0) AS cacheHit,
+    SUM(CASE WHEN stop IN ('error','aborted') AND ordinary IS NULL AND writes IS NULL AND hits IS NULL AND outputs IS NULL THEN 1 ELSE 0 END) AS unreported,
+    SUM(historical=1) AS historical,COALESCE(SUM(duration),0) AS durationMs,SUM(duration IS NOT NULL) AS timed
+    FROM usage GROUP BY ${daily ? 'day,' : ''}model ORDER BY ${daily ? 'day,' : ''}model`).all() as unknown as Aggregate[];
 }
 export function overview(db: DatabaseSync): string {
   const now = new Date(), today = day(now.getTime()), month = today.slice(0, 7);
   const summaries = aggregates(db, true);
   const tokens = (n: number): string => n >= 1_000_000 ? `${Number((n / 1_000_000).toFixed(1))}百万` : n >= 10_000 ? `${Number((n / 10_000).toFixed(1))}万` : n.toLocaleString();
+  const count = (n: number, missing: number, requests: number): string => missing === requests && n === 0 ? "未知" : `${missing ? "≥" : ""}${tokens(n)}`;
+  const rate = (rows: Aggregate[]): string => {
+    const input = rows.reduce((n, r) => n + r.cacheInput, 0), hit = rows.reduce((n, r) => n + r.cacheHit, 0);
+    const partial = rows.some(r => r.inputUnknown || r.hitUnknown);
+    return input + hit === 0 ? partial ? "未知" : "—" : `${(100 * hit / (input + hit)).toFixed(1)}%${partial ? "（仅已知输入）" : ""}`;
+  };
   const sections = [["今日", (r: Aggregate) => r.day === today], ["本月", (r: Aggregate) => r.day.startsWith(month)], ["累计", (_r: Aggregate) => true]] as const;
   return sections.map(([title, select]) => {
     const map = new Map<string, Aggregate>();
     for (const r of summaries.filter(select)) {
-      const total = map.get(r.model) ?? { day: "", model: r.model, requests: 0, input: 0, hit: 0, output: 0, cost: 0, unpriced: 0, incomplete: 0, historical: 0, durationMs: 0, timed: 0 };
-      for (const key of ["requests", "input", "hit", "output", "cost", "unpriced", "incomplete", "historical", "durationMs", "timed"] as const) total[key] += r[key];
-      map.set(r.model, total);
+      const total = map.get(r.model);
+      if (!total) { map.set(r.model, { ...r }); continue; }
+      for (const key of ["requests", "input", "hit", "output", "cost", "unpriced", "inputUnknown", "hitUnknown", "outputUnknown", "cacheInput", "cacheHit", "unreported", "historical", "durationMs", "timed"] as const) total[key] += r[key];
     }
-    const lines = [...map.values()].map(r => `${r.model} · ${r.requests} 条\n  未命中 ${r.incomplete ? "≥" : ""}${tokens(r.input)} / 命中 ${r.incomplete ? "≥" : ""}${tokens(r.hit)} / 输出 ${r.incomplete ? "≥" : ""}${tokens(r.output)} / 官方价估算 $${r.cost.toFixed(6)}${r.unpriced ? ` + ${r.unpriced} 条费用未知` : ""}${r.historical ? ` / ${r.historical} 条历史估算` : ""}`);
-    return `${title}\n${lines.join("\n") || "暂无数据"}`;
+    const rows = [...map.values()];
+    const lines = rows.map(r => {
+      const notes = [r.unreported ? `失败/取消未返回用量 ${r.unreported} 条（费用未知）` : "", r.unpriced > r.unreported ? `${r.unpriced - r.unreported} 条费用未知` : "", r.historical ? `${r.historical} 条历史估算` : ""].filter(Boolean);
+      return `${r.model} · ${r.requests} 条\n  未命中 ${count(r.input, r.inputUnknown, r.requests)} / 命中 ${count(r.hit, r.hitUnknown, r.requests)} / 输出 ${count(r.output, r.outputUnknown, r.requests)} / 命中率 ${rate([r])} / 官方价估算 ${r.unpriced === r.requests ? "未知" : `$${r.cost.toFixed(6)}`}${notes.length ? `\n  ${notes.join("；")}` : ""}`;
+    });
+    return `${title}${rows.length ? ` · 整体命中率 ${rate(rows)}` : ""}\n${lines.join("\n") || "暂无数据"}`;
   }).join("\n\n");
 }
 export async function importSessions(db: DatabaseSync, root: string, directory: string, aliases: Record<string, string>): Promise<{ imported: number; missing: number; malformed: number }> {
@@ -135,17 +154,24 @@ export async function persistedWarnings(root: string): Promise<string[]> {
   let entries: string[];
   try { entries = await readdir(root); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return warnings; throw e; }
   const { readFile } = await import("node:fs/promises");
-  let dropped = 0, failures = 0, unclosed = 0;
+  let dropped = 0, failures = 0, unclosed = 0, pending = 0, unchecked = 0;
   for (const name of entries.filter(n => /^state-[a-f0-9-]+\.json$/.test(n))) {
     try {
       const state = JSON.parse(await readFile(join(root, name), "utf8"));
       dropped += Number(state.dropped) || 0; if (state.failure) failures++;
-      if (!state.clean) { try { process.kill(state.pid, 0); } catch { unclosed++; } }
+      if (!state.clean) {
+        try { process.kill(state.pid, 0); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") { unclosed++; if (state.pendingBytes > 0) pending++; }
+          else unchecked++;
+        }
+      }
     } catch { warnings.push("统计状态文件损坏或无法读取"); }
   }
   if (dropped) warnings.push(`已知丢弃 ${dropped} 条；不能量化未上报或强杀丢失的请求`);
   if (failures) warnings.push(`${failures} 次统计运行发生写入失败`);
-  if (unclosed) warnings.push(`${unclosed} 次运行未正常标记结束，尾部可能缺失`);
+  if (unclosed) warnings.push(`${unclosed} 次历史退出未确认（${pending} 次最后状态仍有待写）；这不是请求失败数，无法据此确认尾部是否丢失`);
+  if (unchecked) warnings.push(`${unchecked} 次运行无法检查进程状态`);
   return warnings;
 }
 export function validateRange(from?: string, to?: string): void {

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { makeRecord, recordFromEntry, day, type UsageRecord } from "../src/record.ts";
 import { JournalWriter, BUFFER_BYTES } from "../src/writer.ts";
-import { withIndex, importSessions, overview, aggregates } from "../src/query.ts";
+import { withIndex, importSessions, overview, aggregates, persistedWarnings } from "../src/query.ts";
 import { writeReport } from "../src/report.ts";
 import { register } from "../src/index.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -146,6 +146,86 @@ test("命令与离线报表统一按万/百万显示，原始计数、费用和�
   assert.equal(detail[5], "12,345"); assert.equal(detail[6], "$" + priced.cost!.toFixed(6));
   const unknown = document.getElementById("details").children.find((row: any) => row.children[0].textContent.includes("format-unknown")).children;
   assert.equal(unknown[1].textContent, "未知"); assert.equal(unknown[2].textContent, "未知");
+}));
+test("命中率按已知输入 token 加权，失败无用量与部分缺项不污染比例", async () => sandbox(async root => {
+  const writer = new JournalWriter(root);
+  writer.enqueue(record({ model: "gpt-5.3-codex", usage: { input: 100, cacheRead: 900, cacheWrite: 0, output: 20 } }));
+  writer.enqueue(record({ model: "deepseek-flash", usage: { input: 1800, cacheRead: 100, cacheWrite: 100, output: 20 } }));
+  writer.enqueue(record({ model: "gpt-5.3-codex", usage: { cacheRead: 9999, output: 10 } }));
+  writer.enqueue(record({ model: "gpt-5.3-codex", stopReason: "error", usage: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 } }));
+  writer.enqueue(record({ model: "only-failed", stopReason: "aborted", usage: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 } }));
+  writer.enqueue(record({ model: "zero-input", usage: { input: 0, cacheRead: 0, cacheWrite: 0, output: 1 } }));
+  writer.enqueue(record({ model: "no-output", usage: { input: 0, cacheRead: 0, cacheWrite: 0 } }));
+  await writer.close();
+  const file = join(root, "rates.html");
+  const text = (await withIndex(root, async db => { await writeReport(db, file, []); return overview(db); })).value;
+  assert.match(text, /整体命中率 33\.3%（仅已知输入）/);
+  assert.match(text, /gpt-5\.3-codex · 3 条\n[^\n]*命中率 90\.0%（仅已知输入）/);
+  assert.match(text, /deepseek-flash · 1 条\n[^\n]*命中率 5\.0%/);
+  assert.match(text, /only-failed · 1 条\n  未命中 未知 \/ 命中 未知 \/ 输出 未知/);
+  assert.match(text, /失败\/取消未返回用量 1 条（费用未知）/);
+  assert.match(text, /zero-input · 1 条\n[^\n]*命中率 —/);
+
+  const html = await readFile(file, "utf8"), nodes = new Map<string, any>();
+  const node = () => ({ textContent: "", value: "", children: [] as any[], append(...n: any[]) { this.children.push(...n); }, replaceChildren() { this.children = []; }, addEventListener() {} });
+  const document = { getElementById(id: string) { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); }, createElement: node };
+  document.getElementById("data").textContent = html.match(/id="data">([\s\S]*?)<\/script>/)![1]!;
+  const script = html.match(/<script>\n([\s\S]*?)<\/script>/)![1]!;
+  vm.runInNewContext(script, { document, Intl, Date, Map, Set, Number, String });
+  assert.match(document.getElementById("totals").textContent, /整体命中率 33\.3%（仅已知输入）/);
+  const cells = (model: string) => document.getElementById("summary").children.find((r: any) => r.children[0].textContent === model).children.map((c: any) => c.textContent);
+  assert.equal(cells("gpt-5.3-codex")[5], "90.0%（仅已知输入）");
+  assert.equal(cells("only-failed")[2], "未知"); assert.equal(cells("only-failed")[6], "未知");
+  assert.equal(cells("no-output")[2], "0"); assert.equal(cells("no-output")[4], "未知");
+  document.getElementById("model").value = "deepseek-flash";
+  vm.runInNewContext(script, { document, Intl, Date, Map, Set, Number, String });
+  assert.match(document.getElementById("totals").textContent, /整体命中率 5\.0%/);
+}));
+test("历史退出未确认与已知丢失分开，存活进程及权限错误不误报退出", async t => sandbox(async root => {
+  const states = [
+    { pid: 101, clean: false, pendingBytes: 0 },
+    { pid: 102, clean: false, pendingBytes: 100 },
+    { pid: 103, clean: false, pendingBytes: 100 },
+    { pid: 104, clean: false, pendingBytes: 0 },
+    { pid: 105, clean: true, pendingBytes: 0, dropped: 2, failure: "disk" },
+  ];
+  t.mock.method(process, "kill", (pid: number) => {
+    if (pid === 101 || pid === 102) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+    if (pid === 104) throw Object.assign(new Error("denied"), { code: "EPERM" });
+    return true;
+  });
+  for (const [i, s] of states.entries()) await writeFile(join(root, `state-${i}.json`), JSON.stringify(s));
+  const warnings = await persistedWarnings(root);
+  assert.ok(warnings.some(s => /2 次历史退出未确认/.test(s) && /1 次最后状态仍有待写/.test(s)));
+  assert.ok(warnings.some(s => /1 次运行无法检查进程状态/.test(s)));
+  assert.ok(warnings.some(s => /已知丢弃 2 条/.test(s)));
+  assert.ok(warnings.some(s => /1 次统计运行发生写入失败/.test(s)));
+}));
+test("A 切到 B 后迟到的 A 响应、后台模型及预热仍按各自模型计入", async () => sandbox(async root => {
+  const handlers = new Map<string, (...args: any[]) => any>(), listeners = new Map<string, (v: unknown) => void>();
+  const pi = { on(name: string, fn: any) { handlers.set(name, fn); }, registerCommand() {}, events: { on(name: string, fn: any) { listeners.set(name, fn); return () => listeners.delete(name); } } } as unknown as ExtensionAPI;
+  let leaf: string | null = null;
+  const entries = new Map<string, any>();
+  const ctx = { model: { id: "gpt-5.3-codex" }, sessionManager: { getLeafId: () => leaf, getEntry: (id: string) => entries.get(id) } } as unknown as ExtensionContext;
+  register(pi, root); await handlers.get("session_start")!({}, ctx);
+  const a = message({ responseId: "a-1" });
+  await handlers.get("message_end")!({ message: a }, ctx);
+  (ctx as any).model = { id: "deepseek-flash" };
+  await handlers.get("model_select")?.({ model: ctx.model }, ctx);
+  await handlers.get("message_end")!({ message: message({ responseId: "a-late" }) }, ctx);
+  const b = message({ model: "deepseek-flash", responseId: "b-1" });
+  await handlers.get("message_end")!({ message: b }, ctx);
+  listeners.get("pi:model-usage:v1")!(message({ model: "claude-opus-4-6", responseId: "background" }));
+  entries.set("warm", { id: "warm", parentId: null, type: "usage", timestamp: new Date().toISOString(), model: "gpt-5.3-codex", usage: a.usage }); leaf = "warm";
+  await handlers.get("agent_settled")!({}, ctx);
+  await handlers.get("session_shutdown")!({}, ctx);
+  // Guarantee: 重载只采集新增请求；旧响应重放仍由冷索引去重。
+  await handlers.get("session_start")!({}, ctx);
+  await handlers.get("message_end")!({ message: b }, ctx);
+  await handlers.get("session_shutdown")!({}, ctx);
+  const rows = (await withIndex(root, db => aggregates(db))).value;
+  assert.deepEqual(Object.fromEntries(rows.map(r => [r.model, r.requests])), { "claude-opus-4-6": 1, "deepseek-flash": 1, "gpt-5.3-codex": 3 });
+  assert.deepEqual(await persistedWarnings(root), []);
 }));
 test("真实注册路径捕获主请求/后台/预热，退出释放订阅，不修改模型上下文", async () => sandbox(async root => {
   const handlers = new Map<string, (...args: any[]) => any>(), listeners = new Map<string, (v: unknown) => void>(), messages: string[] = [];

@@ -134,7 +134,7 @@ export function register(pi: ExtensionAPI, dataRoot?: string): void {
             return overview(db);
           });
           const warnings = [...new Set([...stateWarnings, ...result.warnings])];
-          notify(result.value + (warnings.length ? "\n\n统计异常：\n" + warnings.join("\n") : ""));
+          notify(result.value + (warnings.length ? "\n\n统计提示：\n" + warnings.join("\n") : ""));
         } catch (error) { notify(`Token 统计失败：${error instanceof Error ? error.message : String(error)}`, "error"); }
       };
       commandQueue = commandQueue.then(run, run); return commandQueue;
