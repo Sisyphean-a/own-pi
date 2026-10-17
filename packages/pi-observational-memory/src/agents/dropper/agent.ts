@@ -4,6 +4,7 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { createAgentContext } from "../agent-context.js";
 import { logAgentStreamError } from "../stream-errors.js";
+import { WorkerStreamError } from "../worker-retry.js";
 import { workerMaxTokens, workerMessages } from "../../model-budget.js";
 import { observationToSummaryLine, reflectionToSummaryLine, type Observation, type Reflection, type ObservationDrop } from "../../session-ledger/index.js";
 import { observationPoolMetrics } from "./pool.js";
@@ -89,18 +90,26 @@ export async function runDropper(args: RunDropperArgs): Promise<ObservationDrop[
 		finishTurn: () => (++turns, result !== undefined || (args.maxTurns && turns >= args.maxTurns) ? { action: "end" } as const : undefined),
 	};
 	const stream = (args.agentLoop ?? agentLoop)(prompts, context, config, args.signal, streamSimple);
-	let failure: string | undefined;
+	let streamError: { stopReason: string; errorMessage?: string } | undefined;
 	for await (const event of stream) {
 		logAgentStreamError("dropper", event);
 		if (event.type === "tool_execution_end" && event.isError) result = undefined;
 		if (event.type === "message_end") {
 			try { args.onUsage?.(event.message); } catch { /* Failure: 统计不改变精简结果。 */ }
 			const message = event.message as { stopReason?: string; errorMessage?: string };
-			if (message.stopReason === "error" || message.stopReason === "aborted") failure = message.errorMessage ?? message.stopReason;
+			if (message.stopReason === "error" || message.stopReason === "aborted") {
+				streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+			}
 		}
 	}
 	await stream.result();
-	if (failure) throw new Error(`精简器流失败，未提交删除结果：${failure}`);
+	if (streamError) {
+		throw new WorkerStreamError(
+			streamError.stopReason,
+			streamError.errorMessage,
+			`精简器流失败，未提交删除结果：${streamError.errorMessage ?? streamError.stopReason}`,
+		);
+	}
 	if (result === undefined) throw new Error("精简器缺少完成回执");
 	return result;
 }

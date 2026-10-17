@@ -4,6 +4,7 @@ import { runDropper } from "../agents/dropper/agent.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { observerChunkBudget, runObserver } from "../agents/observer/agent.js";
 import { runReflector } from "../agents/reflector/agent.js";
+import { runWorkerWithRetry } from "../agents/worker-retry.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
 import { resolveObserverChunkMaxTokens } from "../config.js";
 import { CONSOLIDATION_PHASE_LABELS, type ResolveResult, type Runtime } from "../runtime.js";
@@ -195,6 +196,8 @@ export async function runConsolidationPipeline(pi: ExtensionAPI, runtime: Runtim
 			if (outcome === "abort") return;
 			if (stage === "dropper" && sessionActive(runtime, ctx)) runtime.finishMaintenance(ctx.sessionManager.getBranch() as Entry[]);
 		} catch (error) {
+			// 会话已切换时，任何失败都属于正常收尾，不再触碰失效的 ctx 或提示用户。
+			if (!sessionActive(runtime, ctx)) return;
 			debugLog(`${stage}.error`, { errorMessage: runtime.recordConsolidationStageError(ctx, stage, error) });
 			return;
 		}
@@ -223,12 +226,12 @@ async function runObserverStage(
 	if (!chunk.text || !chunk.sourceEntryIds.length) throw new Error("观察器输入预算不足，无法读取下一个源片段");
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`观察式记忆：观察器正在处理约 ${chunk.estimatedTokens.toLocaleString()} token 的分块`, "info");
 	debugLog("observer.start", { sourceEntryIds: chunk.sourceEntryIds, startSourceOffset: cursor.startOffset, chunkTokens: chunk.estimatedTokens });
-	const result = await runObserver({
+	const result = await runWorkerWithRetry("observer", () => runObserver({
 		onUsage: (message) => { try { publishUsage(pi.events, message); } catch { /* Failure: 旧会话已失效。 */ } },
 		model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, env: resolved.env,
 		priorReflections, priorObservations, chunk: chunk.text, allowedSourceEntryIds: chunk.sourceEntryIds,
 		sourceOffset: cursor.startOffset, maxTurns: runtime.config.agentMaxTurns, thinkingLevel: runtime.config.model?.thinking ?? "low",
-	});
+	}), { shouldContinue: () => sessionActive(runtime, ctx) });
 	if (!result?.complete) throw new Error("观察器缺少完成回执，处理进度保持不变");
 	const coversUpToId = chunk.sourceEntryIds.at(-1)!;
 	const data = buildObservationsRecordedData(result.observations, coversUpToId, {
@@ -260,12 +263,12 @@ async function runReflectorStage(
 	if (!resolved || !sessionActive(runtime, ctx)) return "abort";
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`观察式记忆：反思器正在维护 ${folded.activeObservations.length} 条观察与 ${folded.reflections.length} 条当前结论`, "info");
 	debugLog("reflector.start", { observations: folded.activeObservations.length, reflections: folded.reflections.length, pressure });
-	const result = await runReflector({
+	const result = await runWorkerWithRetry("reflector", () => runReflector({
 		onUsage: (message) => { try { publishUsage(pi.events, message); } catch { /* Failure: 旧会话已失效。 */ } },
 		model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, env: resolved.env,
 		reflections: folded.reflections, observations: folded.activeObservations,
 		maxTurns: runtime.config.agentMaxTurns, thinkingLevel: runtime.config.model?.thinking ?? "low",
-	});
+	}), { shouldContinue: () => sessionActive(runtime, ctx) });
 	if (!result) throw new Error("反思器未返回审阅结果");
 	const data = buildReflectionsRecordedData(result.reflections, observationCoverageId, result.retirements, result.reviewedObservationIds);
 	if (!data) throw new Error("反思维护记录非法");
@@ -290,12 +293,12 @@ async function runDropperStage(
 	if (!resolved || !sessionActive(runtime, ctx)) return "abort";
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`观察式记忆：精简器正在检查——活跃观察池约 ${metrics.observationTokens.toLocaleString()} / ${metrics.targetTokens.toLocaleString()} 目标 token`, "info");
 	debugLog("dropper.start", metrics);
-	const drops = await runDropper({
+	const drops = await runWorkerWithRetry("dropper", () => runDropper({
 		onUsage: (message) => { try { publishUsage(pi.events, message); } catch { /* Failure: 旧会话已失效。 */ } },
 		model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, env: resolved.env,
 		reflections: folded.reflections, observations: folded.activeObservations, targetTokens: runtime.config.observationsPoolTargetTokens,
 		maxTurns: runtime.config.agentMaxTurns, thinkingLevel: runtime.config.model?.thinking ?? "low",
-	});
+	}), { shouldContinue: () => sessionActive(runtime, ctx) });
 	if (!drops) throw new Error("精简器缺少完成回执");
 	if (!drops.length) return "continue";
 	const data = buildObservationsDroppedData(drops.map((item) => item.observationId), coverageId, drops);

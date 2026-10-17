@@ -12,6 +12,18 @@ vi.mock("../src/agents/observer/agent.js", async (importOriginal) => ({
 }));
 vi.mock("../src/agents/reflector/agent.js", () => ({ runReflector: mockAgents.runReflector }));
 vi.mock("../src/agents/dropper/agent.js", () => ({ runDropper: mockAgents.runDropper }));
+// 保留真实重试实现，只把退避延迟压到 0；重试策略本身由 worker-retry.test.ts 覆盖。
+vi.mock("../src/agents/worker-retry.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/agents/worker-retry.js")>();
+	return {
+		...actual,
+		runWorkerWithRetry: (
+			label: string,
+			run: () => Promise<unknown>,
+			options: Parameters<typeof actual.runWorkerWithRetry>[2] = {},
+		) => actual.runWorkerWithRetry(label, run, { ...options, baseDelayMs: 0 }),
+	};
+});
 
 import { ObserverStreamError } from "../src/agents/observer/agent.js";
 import { registerConsolidationTrigger } from "../src/hooks/consolidation-trigger.js";
@@ -243,7 +255,7 @@ describe("记忆整理编排", () => {
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], reflectAfterTokens: 999, showWorkerNotifications });
 		run.fire(); await run.runLaunchedWork();
 		expect(run.ctx.ui.notify.mock.calls.length > 0).toBe(showWorkerNotifications);
-		mockAgents.runObserver.mockRejectedValueOnce(new ObserverStreamError("error", "gateway timeout"));
+		mockAgents.runObserver.mockRejectedValue(new ObserverStreamError("error", "gateway timeout"));
 		const failed = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], showWorkerNotifications });
 		failed.fire(); await failed.runLaunchedWork();
 		expect(failed.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("gateway timeout"), "warning");
@@ -264,6 +276,23 @@ describe("记忆整理编排", () => {
 		run.fire(); await run.runLaunchedWork();
 		expect(run.runtime["last" + stage[0].toUpperCase() + stage.slice(1) + "Error"]).toContain("failed");
 		expect(run.pi.appendEntry).toHaveBeenCalledTimes(stage === "observer" ? 0 : stage === "reflector" ? 1 : 2);
+	});
+	it("瞬态失败重试成功后只提交一次，且不记录失败", async () => {
+		mockAgents.runObserver.mockRejectedValueOnce(new ObserverStreamError("error", "Connection error."));
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(2);
+		expect(run.pi.appendEntry).toHaveBeenCalledTimes(1);
+		expect(run.runtime.lastObserverError).toBeUndefined();
+	});
+	it("瞬态失败重试耗尽后不提交，也不启动后续阶段", async () => {
+		mockAgents.runObserver.mockRejectedValue(new ObserverStreamError("error", "Connection error."));
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(3);
+		expect(run.pi.appendEntry).not.toHaveBeenCalled();
+		expect(mockAgents.runReflector).not.toHaveBeenCalled();
+		expect(run.runtime.lastObserverError).toContain("Connection error.");
 	});
 	it("provider 真实增量到期时，阶段内准入与入口使用相同口径", async () => {
 		const first = rawMessage("raw-1", "done", { message: { role: "assistant", content: "done", stopReason: "end_turn", usage: { totalTokens: 1_000 } } });

@@ -4,6 +4,7 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
 import { logAgentStreamError } from "../stream-errors.js";
+import { WorkerStreamError } from "../worker-retry.js";
 import { remainingWorkerInputBytes, workerMaxTokens, workerMessages } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
 import { MAX_RECORD_CONTENT_CHARS, nowTimestamp } from "../../serialize.js";
@@ -45,9 +46,13 @@ const FINISH_TOOL = {
 	description: "确认本次提供的全部源片段均已审阅；允许零条观察。", parameters: FinishSchema,
 };
 
-export class ObserverStreamError extends Error {
-	constructor(readonly stopReason: string, errorMessage?: string) {
-		super(`观察器流以 stopReason "${stopReason}" 结束${errorMessage ? `：${errorMessage}` : ""}`);
+export class ObserverStreamError extends WorkerStreamError {
+	constructor(stopReason: string, errorMessage?: string) {
+		super(
+			stopReason,
+			errorMessage,
+			`观察器流以 stopReason "${stopReason}" 结束${errorMessage ? `：${errorMessage}` : ""}`,
+		);
 		this.name = "ObserverStreamError";
 	}
 }

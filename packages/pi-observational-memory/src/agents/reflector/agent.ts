@@ -6,6 +6,7 @@ import { debugLog } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { createAgentContext } from "../agent-context.js";
 import { logAgentStreamError } from "../stream-errors.js";
+import { WorkerStreamError } from "../worker-retry.js";
 import { workerMaxTokens, workerMessages } from "../../model-budget.js";
 import { MAX_RECORD_CONTENT_CHARS } from "../../serialize.js";
 import { REFLECTOR_SYSTEM } from "./prompts.js";
@@ -100,18 +101,26 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
 		finishTurn: () => (++turns, result || (args.maxTurns && turns >= args.maxTurns) ? { action: "end" } as const : undefined),
 	};
 	const stream = (args.agentLoop ?? agentLoop)(prompts, context, config, args.signal, streamSimple);
-	let failure: string | undefined;
+	let streamError: { stopReason: string; errorMessage?: string } | undefined;
 	for await (const event of stream) {
 		logAgentStreamError("reflector", event);
 		if (event.type === "tool_execution_end" && event.isError) result = undefined;
 		if (event.type === "message_end") {
 			try { args.onUsage?.(event.message); } catch { /* Failure: 统计不改变维护结果。 */ }
 			const message = event.message as { stopReason?: string; errorMessage?: string };
-			if (message.stopReason === "error" || message.stopReason === "aborted") failure = message.errorMessage ?? message.stopReason;
+			if (message.stopReason === "error" || message.stopReason === "aborted") {
+				streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+			}
 		}
 	}
 	await stream.result();
-	if (failure) throw new Error(`反思器流失败，未提交维护结果：${failure}`);
+	if (streamError) {
+		throw new WorkerStreamError(
+			streamError.stopReason,
+			streamError.errorMessage,
+			`反思器流失败，未提交维护结果：${streamError.errorMessage ?? streamError.stopReason}`,
+		);
+	}
 	if (!result) throw new Error("反思器缺少审阅完成回执");
 	debugLog("reflector.result", { reflections: result.reflections.length, retirements: result.retirements.length });
 	return result;

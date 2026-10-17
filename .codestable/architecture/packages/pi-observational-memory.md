@@ -23,6 +23,7 @@
 - `Runtime` 在首次使用时加载配置；模型认证判定不得比 Pi 自身的门禁更严格。
 
 - 请求完成处可选发布轻量用量通知；只发送计数、隔离消费者/旧上下文错误，不改变模型结果。协议唯一依据见 [pi-token-stats 可选计量协议](pi-token-stats.md#可选计量协议)，本包不拥有统计或定价规则。
+- worker 的瞬态失败由 `src/agents/worker-retry.ts` 判定并重跑整个 worker 调用；`WorkerStreamError` 保留 `stopReason`/`errorMessage`，重试判定复用 Pi 的 `isRetryableAssistantError`。会话代次变化后立即放弃重试，确定性失败不重试。
 
 ## 代码锚点
 
@@ -33,7 +34,7 @@
 - 压缩摘要：`packages/pi-observational-memory/src/hooks/compaction-hook.ts`
 - ledger 折叠、进度与来源解析：`packages/pi-observational-memory/src/session-ledger/`
 - 覆盖进度的增量水位：`packages/pi-observational-memory/src/session-ledger/token-progress.ts`（`JournalTokenProgress`）
-- 后台 worker：`packages/pi-observational-memory/src/agents/observer/`、`src/agents/reflector/`、`src/agents/dropper/`
+- 后台 worker：`packages/pi-observational-memory/src/agents/observer/`、`src/agents/reflector/`、`src/agents/dropper/`；瞬态失败重试：`src/agents/worker-retry.ts`
 - 完整输入与输出预算：`packages/pi-observational-memory/src/model-budget.ts`；连续源分片：`src/serialize.ts`
 - 召回工具：`packages/pi-observational-memory/src/tools/recall-observation.ts`
 - 配置：`packages/pi-observational-memory/src/config.ts`
