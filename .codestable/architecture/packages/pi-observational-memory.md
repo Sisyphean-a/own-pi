@@ -10,6 +10,7 @@
 - 用户命令：`/om:status`、`/om:view`、`/om:view full`；代理工具：`recall`。
 - 生命周期入口：`agent_start` / `turn_end` 触发后台整理，`turn_end` 可直接提议已准备好的前缀压缩，`agent_settled` 保留 idle 主动压缩，`session_before_compact` 同步构建压缩摘要，`session_shutdown` 作废在途后台任务。
 - 配置：全局 `~/.pi/agent/settings.json` 与项目 `.pi/settings.json` 的 `observational-memory` 段；`PI_OBSERVATIONAL_MEMORY_PASSIVE` 只覆盖 `passive`。
+- 诊断输出：`/om:status` 提供日志路径与最近诊断编号；本地 NDJSON 与记忆存储分离，行为和隐私约束由领域上下文拥有。
 - 记忆存储：当前 Pi session branch 的自定义条目 `om.observations.recorded`、`om.reflections.recorded`、`om.observations.dropped`；不使用单独数据库。
 
 ## 架构规则
@@ -22,6 +23,7 @@
 - 压缩 Hook 用 `hasProcessedSourcePrefix()` 校验完整覆盖，观察按逐条来源位置而非整批水位选入摘要；维护结果每次都应用，避免旧结论因延迟全量折叠再次出现。
 - 池压力缓存按记忆条目的修订 id 失效；同一修订已完成精简检查后不逐轮重复调用，源消息追加仍使用增量阶段时钟。
 - `Runtime` 在首次使用时加载配置；模型认证判定不得比 Pi 自身的门禁更严格。
+- `src/diagnostic-boundary.ts` 统一包装事件、命令和工具执行，保留同步返回、原始异常及 Promise 语义；`src/agents/worker-diagnostics.ts` 只观测 worker，不接管循环或提交。`src/debug-log.ts` 按会话文件写入、轮转并按运行/worker 作用域关联同一异常的诊断编号。
 
 - 请求完成处可选发布轻量用量通知；只发送计数、隔离消费者/旧上下文错误，不改变模型结果。协议唯一依据见 [pi-token-stats 可选计量协议](pi-token-stats.md#可选计量协议)，本包不拥有统计或定价规则。
 - worker 的瞬态失败由 `src/agents/worker-retry.ts` 判定并重跑整个 worker 调用；`WorkerStreamError` 保留 `stopReason`/`errorMessage`，重试判定复用 Pi 的 `isRetryableAssistantError`。会话代次变化后立即放弃重试，确定性失败不重试。
@@ -36,6 +38,7 @@
 - ledger 折叠、进度与来源解析：`packages/pi-observational-memory/src/session-ledger/`
 - 覆盖进度的增量水位：`packages/pi-observational-memory/src/session-ledger/token-progress.ts`（`JournalTokenProgress`）
 - 后台 worker：`packages/pi-observational-memory/src/agents/observer/`、`src/agents/reflector/`、`src/agents/dropper/`；瞬态失败重试：`src/agents/worker-retry.ts`
+- 自动诊断与错误边界：`src/debug-log.ts`、`src/diagnostic-boundary.ts`、`src/agents/worker-diagnostics.ts`
 - 完整输入与输出预算：`packages/pi-observational-memory/src/model-budget.ts`；连续源分片：`src/serialize.ts`
 - 召回工具：`packages/pi-observational-memory/src/tools/recall-observation.ts`
 - 配置：`packages/pi-observational-memory/src/config.ts`

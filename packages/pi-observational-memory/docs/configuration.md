@@ -67,7 +67,7 @@
 | `model.thinking` | 枚举 | `low` | `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
 | `showWorkerNotifications` | 布尔值 | `true` | 是否显示普通 worker 进度通知 |
 | `passive` | 布尔值 | `false` | 是否停用后台记忆和主动压缩 |
-| `debugLog` | 布尔值 | `false` | 是否写入本地调试日志 |
+| `debugLog` | 布尔值 | `false` | 是否增加详细调试事件；关闭不影响自动诊断 |
 
 无效值会被忽略。`observationsPoolTargetTokens` 无效或未设置时，自动取 `floor(observationsPoolMaxTokens / 2)`。
 
@@ -171,15 +171,37 @@ PI_OBSERVATIONAL_MEMORY_PASSIVE=true pi
 
 ### `debugLog`
 
-开启后在 Pi agent 目录写入 NDJSON 调试文件，通常位于：
+基本运行摘要与错误始终自动采集，`debugLog: false` 不会关闭它们。设为 `true` 会增加分块启动、账本提交、凭据检查等详细事件；`showWorkerNotifications: false` 只隐藏普通进度提示，不影响诊断。
+
+文件位于 Pi agent 目录，通常为：
 
 ```text
 observational-memory/debug/<session-id>.ndjson
 ```
 
-没有可用 session ID 时回退到 `observational-memory/debug.ndjson`。日志记录阶段、数量、token、ID、错误和运行上下文，默认不记录 prompt、模型响应或记忆正文。日志文件可能包含敏感的项目路径和 ID，应按本地诊断文件处理。
+没有可用 session ID 时使用 `observational-memory/debug.ndjson`。每个文件达到 10 MiB 后轮转，保留一份 `.1` 备份。`/om:status` 显示当前路径、最近诊断编号及已知写入失败；普通错误通知只保留短原因和编号，不展开堆栈。
 
-日志写失败不会改变记忆行为。
+排查顺序：
+
+1. 用通知中的 `diagnosticId` 在当前文件和 `.1` 中查找错误。
+2. 用该记录的 `data.workerId` 关联 `worker.started`、`worker.tool_failed`、`worker.validation_rejected`、`worker.finished` / `worker.failed`；同一 `runId` 关联模型解析与外层阶段错误。重试会产生新的 `workerId`。
+3. 查看 `data.failureCode`、实际 `turns`、`maxTurns`、`lastStopReason`、工具统计、校验字段及错误栈，而不是根据耗时猜测。
+4. 必要时利用 `sessionFile`、内部来源 ID 和字符偏移，只读取关联的源片段进行复现；不要整份转储会话或日志到模型上下文。
+
+| `failureCode` | 可观察事实 |
+| --- | --- |
+| `max_turns` | 达到 worker 轮数上限，仍无有效完成回执 |
+| `output_limit` | 最后模型响应以 `length` 截断 |
+| `tool_rejected` | 工具调用被拒绝或校验失败；按 `executionPhase` 区分执行前、执行中、执行后 |
+| `missing_completion` | 没有有效完成回执；结束原因未上报时明确标为未知 |
+| `stream_error` / `cancelled` | 模型流报错或调用取消 |
+| `exception` | 流创建、预算检查或执行中的其他异常，查看原始错误摘要与栈 |
+
+`worker.model_resolved` 记录实际选择的模型；输入只保存数量、长度、token 预算、内部来源 ID 和偏移。SDK 校验仅提取字段路径与规则，不抄录附带的原始参数。`worker.completion_invalidated` 表示曾经有效的完成状态被后续工具错误作废。`worker.finished` 只表示 worker 返回成功，是否写入记忆仍以会话账本为准。
+
+未捕获的事件、命令和 `recall` 异常统一记录为 `extension.error`；配置、认证复检、上下文探测、压缩、用量通知与剪贴板等已处理失败也会自动留痕，保留原有行为。不会把诊断作为会话消息或观察/反思保存，也不会改变重试与完整回执要求。
+
+日志不主动保存提示词、响应正文、记忆正文或工具参数；错误文本限制长度并遮蔽常见凭据，但仍包含项目路径、ID、厂商错误摘要和文件栈，应按私有诊断文件处理。写入失败不会替换原始异常；错误通知会说明日志未能落盘。进程被强制结束、代码尚未加载时的错误无法靠此运行时采集器追溯。
 
 ## V2 迁移
 

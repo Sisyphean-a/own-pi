@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { recordDiagnosticError } from "./debug-log.js";
 
 export interface ConfiguredModel {
 	provider: string;
@@ -210,7 +211,9 @@ function readNamespacedConfig(path: string): Partial<Config> {
 		const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
 		const nested = raw[SETTINGS_KEY];
 		return isRecord(nested) ? normalizeSettingsConfig(nested) : {};
-	} catch {
+	} catch (error) {
+		// JSON 解析异常可能包含配置片段，不抄录原文或潜在凭据。
+		recordDiagnosticError("config.error", new Error("观察式记忆配置读取或解析失败"), { settingsPath: path, errorType: error instanceof Error ? error.name : typeof error, behavior: "ignored_invalid_settings" });
 		return {};
 	}
 }

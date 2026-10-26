@@ -1,5 +1,5 @@
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
-import { debugLog } from "./debug-log.js";
+import { debugLog, diagnosticError, diagnosticNotice, recordDiagnosticError, type DiagnosticReference } from "./debug-log.js";
 import { observationTokenSum } from "./agents/dropper/pool.js";
 import { foldLedger, JournalTokenProgress, type Entry, type StageProgress } from "./session-ledger/index.js";
 
@@ -93,7 +93,8 @@ export function isStaleSessionError(error: unknown): boolean {
 function hasConfiguredProviderCredential(registry: unknown, model: unknown): boolean {
 	try {
 		return (registry as { hasConfiguredAuth?: (m: unknown) => unknown }).hasConfiguredAuth?.(model) === true;
-	} catch {
+	} catch (error) {
+		recordDiagnosticError("resolve.credential_probe_error", error);
 		return false;
 	}
 }
@@ -127,6 +128,7 @@ export class Runtime {
 	lastObserverError: string | undefined;
 	lastReflectorError: string | undefined;
 	lastDropperError: string | undefined;
+	lastDiagnostic: DiagnosticReference | undefined;
 	/** provider -> 上次可用性复检的毫秒时间戳（见 `recheckProviderCredential`）。 */
 	availabilityRecheckedAt = new Map<string, number>();
 	/**
@@ -174,6 +176,7 @@ export class Runtime {
 		this.consolidationPromise = null;
 		this.compactInFlight = false;
 		this.compactHookInFlight = false;
+		this.lastDiagnostic = undefined;
 		this.tokenProgress.reset();
 		this.maintenanceState = undefined;
 		this.maintainedRevision = undefined;
@@ -311,7 +314,8 @@ export class Runtime {
 				}),
 			]);
 		} catch (error) {
-			refreshError = error instanceof Error ? error.message : String(error);
+			recordDiagnosticError("resolve.refresh_error", error, { provider });
+			refreshError = diagnosticError(error).message;
 		} finally {
 			clearTimeout(timer);
 		}
@@ -319,6 +323,7 @@ export class Runtime {
 		// 即使 refresh 报错或超时也重新读取：限定范围的检查可能已更新该 provider 的快照，
 		// 却在别处失败。
 		const recovered = hasConfiguredProviderCredential(registry, model);
+		if (timedOut) recordDiagnosticError("resolve.refresh_timeout", new Error("模型凭据复检超时"), { provider, elapsedMs: Date.now() - now });
 		debugLog("resolve.availability_recheck", {
 			provider,
 			refreshed: refreshError === undefined && !timedOut,
@@ -345,14 +350,16 @@ export class Runtime {
 		return promise;
 	}
 
-	recordConsolidationStageError(ctx: LaunchCtx, phase: ConsolidationPhase, error: unknown): string {
-		const message = error instanceof Error ? error.message : String(error);
+	recordConsolidationStageError(ctx: LaunchCtx, phase: ConsolidationPhase, error: unknown, evidence: Record<string, unknown> = {}): string {
+		const reference = recordDiagnosticError(`${phase}.error`, error, { phase, failureCode: "stage_exception", evidence, configuredModel: this.config.model ? { provider: this.config.model.provider, id: this.config.model.id } : undefined, agentMaxTurns: this.config.agentMaxTurns });
+		this.lastDiagnostic = reference;
+		const message = diagnosticError(error).message;
 		if (phase === "observer") this.lastObserverError = message;
 		if (phase === "reflector") this.lastReflectorError = message;
 		if (phase === "dropper") this.lastDropperError = message;
 		// 会话已被替换/重载时，旧 ctx 已失效：这不是需要提醒用户的失败。
 		if (isStaleSessionError(error)) return message;
-		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`观察式记忆：${CONSOLIDATION_PHASE_LABELS[phase]}阶段失败：${message}`, "warning");
+		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`观察式记忆：${CONSOLIDATION_PHASE_LABELS[phase]}阶段失败：${diagnosticNotice(error, reference)}`, "warning");
 		return message;
 	}
 
@@ -369,10 +376,12 @@ export class Runtime {
 			try {
 				await work();
 			} catch (error) {
-				errorMessage = error instanceof Error ? error.message : String(error);
+				const reference = recordDiagnosticError("task.error", error, { task: label });
+				this.lastDiagnostic = reference;
+				errorMessage = diagnosticError(error).message;
 				// 会话替换/重载导致的 stale 错误属于正常收尾，不打扰用户。
 				if (!isStaleSessionError(error) && hasUI && ui) {
-					ui.notify(`观察式记忆：${label} 任务失败：${errorMessage}`, "warning");
+					ui.notify(`观察式记忆：${label} 任务失败：${diagnosticNotice(error, reference)}`, "warning");
 				}
 			} finally {
 				onFinally(errorMessage);

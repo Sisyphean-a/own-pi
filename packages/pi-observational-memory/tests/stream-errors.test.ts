@@ -118,7 +118,7 @@ describe("agent stream error logging", () => {
 			})).rejects.toBeInstanceOf(ObserverStreamError);
 		});
 
-		const events = readLoggedEvents("session-stream-4");
+		const events = readLoggedEvents("session-stream-4").filter((row) => row.event === "observer.stream_error");
 		expect(events).toHaveLength(1);
 		expect(events[0].event).toBe("observer.stream_error");
 		expect(events[0].data).toMatchObject({ stopReason: "error", errorMessage: "upstream 400" });

@@ -1,5 +1,5 @@
 import { isRetryableAssistantError, type AssistantMessage } from "@earendil-works/pi-ai";
-import { debugLog } from "../debug-log.js";
+import { diagnosticLog, diagnosticText } from "../debug-log.js";
 
 /** 单次 worker 调用之外的额外重试次数；总尝试次数为该值加一。 */
 export const WORKER_MAX_RETRIES = 2;
@@ -69,12 +69,12 @@ export async function runWorkerWithRetry<T>(
 			if (options.shouldContinue && !options.shouldContinue()) throw error;
 			const delayMs = baseDelayMs * 2 ** attempt;
 			const failure = error as WorkerStreamError;
-			debugLog(`${label}.retry`, {
+			diagnosticLog(`${label}.retry`, {
 				attempt: attempt + 1,
 				maxRetries,
 				delayMs,
 				stopReason: failure.stopReason,
-				errorMessage: failure.errorMessage,
+				errorMessage: failure.errorMessage ? diagnosticText(failure.errorMessage) : undefined,
 			});
 			await delay(delayMs);
 			// 退避期间会话可能已被替换：醒来后不得再用旧 ctx 发起调用。

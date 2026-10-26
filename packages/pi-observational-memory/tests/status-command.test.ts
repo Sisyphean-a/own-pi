@@ -100,7 +100,8 @@ describe("V3 /om:status", () => {
 		expect(output).not.toContain("Drift:");
 		expect(output).not.toContain("full truth");
 		expect(output).not.toContain("v2-obs");
-		expect(output).not.toContain("observational-memory");
+		expect(output).toContain("自动收集：已启用");
+		expect(output).toContain("日志：");
 	});
 
 	it("显示已撤回结论及压缩上下文中尚未移除的反思漂移", async () => {

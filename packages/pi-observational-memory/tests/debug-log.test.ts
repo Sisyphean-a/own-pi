@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +11,10 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 
 import {
 	DEBUG_LOG_RELATIVE_PATH,
+	DEBUG_LOG_MAX_BYTES,
+	diagnosticLog,
+	diagnosticNotice,
+	recordDiagnosticError,
 	debugLog,
 	debugLogRelativePath,
 	safeDebugLogSessionId,
@@ -97,6 +101,72 @@ describe("debug logging", () => {
 		expect(safeDebugLogSessionId(" session/../id:value ")).toBe("session_.._id_value");
 		expect(debugLogRelativePath({ sessionId: " session/../id:value " })).toBe(join("observational-memory", "debug", "session_.._id_value.ndjson"));
 		expect(debugLogRelativePath({ sessionId: "---" })).toBe(DEBUG_LOG_RELATIVE_PATH);
+	});
+
+	it("基本诊断不依赖 debug，分层捕获同一异常只生成一个诊断编号", () => {
+		const error = new Error("缺少完成确认");
+		withDebugLogContext({ enabled: false, sessionId: "auto" }, () => {
+			const first = recordDiagnosticError("worker.failed", error, { failureCode: "missing_completion" });
+			const second = recordDiagnosticError("extension.error", error);
+			expect(second).toBe(first);
+			expect(readJsonLines(first.path)).toHaveLength(1);
+			expect(readJsonLines(first.path)[0]).toMatchObject({ diagnosticId: first.id, data: { failureCode: "missing_completion" } });
+		});
+	});
+
+	it("重试复用同一个异常对象时每次调用仍分别留痕，外层捕获只复用本轮编号", () => {
+		withDebugLogContext({ enabled: false, sessionId: "retry", runId: "pipeline" }, () => {
+			const error = new Error("shared failure");
+			const first = recordDiagnosticError("worker.failed", error, { workerId: "attempt-1" });
+			const second = recordDiagnosticError("worker.failed", error, { workerId: "attempt-2" });
+			expect(first.id).not.toBe(second.id);
+			expect(recordDiagnosticError("stage.error", error)).toBe(second);
+			expect(readJsonLines(second.path)).toHaveLength(2);
+		});
+	});
+
+	it("同一个异常对象跨会话复用时不会串到旧日志", () => {
+		const error = new Error("shared failure");
+		const first = withDebugLogContext({ enabled: false, sessionId: "first" }, () => recordDiagnosticError("error", error));
+		const second = withDebugLogContext({ enabled: false, sessionId: "second" }, () => recordDiagnosticError("error", error));
+		expect(first.path).not.toBe(second.path);
+		expect(readJsonLines(second.path)[0].sessionId).toBe("second");
+	});
+
+	it("错误中的常见凭据和 SDK 原始参数不会进入诊断，通知不展开堆栈", () => {
+		const error = new Error('Authorization: Bearer SUPER_SECRET apiKey=PRIVATE_KEY sk-private123\n\nReceived arguments:\nPRIVATE_ARGUMENT');
+		const reference = recordDiagnosticError("error", error);
+		const text = readFileSync(reference.path, "utf8");
+		for (const secret of ["SUPER_SECRET", "PRIVATE_KEY", "sk-private123", "PRIVATE_ARGUMENT"]) expect(text).not.toContain(secret);
+		expect(diagnosticNotice(error, reference)).toContain(reference.id);
+		expect(diagnosticNotice(error, reference)).not.toContain(" at ");
+		expect(diagnosticNotice(new Error("x".repeat(10_000)), reference).length).toBeLessThan(240);
+	});
+
+	it("异常对象本身无法读取时，采集器不会再抛出新异常", () => {
+		const error = { get message() { throw new Error("getter failed"); } };
+		const reference = recordDiagnosticError("error", error);
+		expect(readJsonLines(reference.path)[0].data.error.name).toBe("UnreadableError");
+	});
+
+	it("写入失败显式可见，但不替换原始异常", () => {
+		const blocked = join(root, "blocked");
+		writeFileSync(blocked, "not a directory");
+		mock.agentDir = blocked;
+		const reference = recordDiagnosticError("error", new Error("original failure"));
+		expect(reference.writeError).toBeTruthy();
+		expect(diagnosticNotice(new Error("original failure"), reference)).toContain("日志写入失败");
+	});
+
+	it("自动诊断复用既有轮转上限，只保留一个备份", () => {
+		const first = diagnosticLog("first");
+		writeFileSync(first.path, "a".repeat(DEBUG_LOG_MAX_BYTES));
+		diagnosticLog("second");
+		expect(existsSync(first.path + ".1")).toBe(true);
+		writeFileSync(first.path, "b".repeat(DEBUG_LOG_MAX_BYTES));
+		diagnosticLog("third");
+		expect(readFileSync(first.path + ".1", "utf8")[0]).toBe("b");
+		expect(existsSync(first.path + ".2")).toBe(false);
 	});
 
 	it("does not write logs when disabled", () => {

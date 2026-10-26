@@ -1,5 +1,6 @@
 import { estimateTokens, findCutPoint, SettingsManager, type ExtensionAPI, type SessionEntry, type TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { resolveCompactAfterTokens } from "../config.js";
+import { diagnosticNotice, recordDiagnosticError } from "../debug-log.js";
 import { isStaleSessionError } from "../runtime.js";
 import { buildCompactionProjection, hasProcessedSourcePrefix, observationProcessingState, renderSummary, type Entry } from "../session-ledger/index.js";
 import type { Runtime } from "../runtime.js";
@@ -21,7 +22,9 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 			if (ctx.hasUI) ctx.ui.notify("观察式记忆：已在回合边界折叠已处理历史，未处理消息原样保留", "info");
 			return { entries: [compaction] };
 		} catch (error) {
-			if (ctx.hasUI) ctx.ui.notify(`观察式记忆：回合边界压缩失败：${error instanceof Error ? error.message : String(error)}`, "warning");
+			const reference = recordDiagnosticError("compaction.error", error, { boundary: "turn_end" });
+			runtime.lastDiagnostic = reference;
+			if (ctx.hasUI) ctx.ui.notify(`观察式记忆：回合边界压缩失败：${diagnosticNotice(error, reference)}`, "warning");
 		}
 	});
 
@@ -95,12 +98,16 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 							// 返回 { cancel: true } 之前已用真实原因通知过用户。
 							return;
 						}
-						if (hasUI && sessionCurrent()) ui?.notify(`观察式记忆：${error.message}`, "error");
+						const reference = recordDiagnosticError("compaction.error", error, { boundary: "idle" });
+						runtime.lastDiagnostic = reference;
+						if (hasUI && sessionCurrent()) ui?.notify(`观察式记忆：${diagnosticNotice(error, reference)}`, "error");
 					},
 				});
 			} catch (error) {
+				const reference = recordDiagnosticError("compaction.error", error, { boundary: "deferred" });
+				runtime.lastDiagnostic = reference;
 				runtime.compactInFlight = false;
-				const msg = error instanceof Error ? error.message : String(error);
+				const msg = diagnosticNotice(error, reference);
 				// 会话替换/重载导致的 stale 错误属于正常收尾，不打扰用户。
 				if (!isStaleSessionError(error) && hasUI && sessionCurrent()) {
 					ui?.notify(`观察式记忆：压缩调用抛出异常：${msg}`, "error");

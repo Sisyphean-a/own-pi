@@ -147,9 +147,9 @@ describe("Runtime V3 behavior", () => {
 		expect(runtime.lastObserverError).toBe("observe failed");
 		expect(runtime.lastReflectorError).toBe("reflect failed");
 		expect(runtime.lastDropperError).toBe("drop failed");
-		expect(notify).toHaveBeenCalledWith("观察式记忆：观察阶段失败：observe failed", "warning");
-		expect(notify).toHaveBeenCalledWith("观察式记忆：反思阶段失败：reflect failed", "warning");
-		expect(notify).toHaveBeenCalledWith("观察式记忆：精简阶段失败：drop failed", "warning");
+		expect(notify).toHaveBeenCalledWith(expect.stringMatching(/^观察式记忆：观察阶段失败：observe failed（诊断 [a-f0-9]+）$/), "warning");
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("观察式记忆：反思阶段失败：reflect failed（诊断 "), "warning");
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("观察式记忆：精简阶段失败：drop failed（诊断 "), "warning");
 	});
 
 	it("keeps compaction flags independent", () => {

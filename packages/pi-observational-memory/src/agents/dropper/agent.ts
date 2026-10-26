@@ -3,8 +3,10 @@ import { Type, type Message, type Model, type ModelThinkingLevel, type ProviderH
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { createAgentContext } from "../agent-context.js";
+import { recordDiagnosticError } from "../../debug-log.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { WorkerStreamError } from "../worker-retry.js";
+import { WorkerDiagnostics } from "../worker-diagnostics.js";
 import { workerMaxTokens, workerMessages } from "../../model-budget.js";
 import { observationToSummaryLine, reflectionToSummaryLine, type Observation, type Reflection, type ObservationDrop } from "../../session-ledger/index.js";
 import { observationPoolMetrics } from "./pool.js";
@@ -66,6 +68,7 @@ export function selectDropCandidates(
 export async function runDropper(args: RunDropperArgs): Promise<ObservationDrop[] | undefined> {
 	const metrics = observationPoolMetrics(args.observations, args.targetTokens);
 	if (!metrics.ready) return undefined;
+	const diagnostics = new WorkerDiagnostics("dropper", args, { observations: args.observations.length, reflections: args.reflections.length, observationTokens: metrics.observationTokens, targetTokens: args.targetTokens, outputTokenBudget: workerMaxTokens(args.model) });
 	let result: ObservationDrop[] | undefined;
 	const dropObservations: AgentTool<typeof DropSchema> = {
 		name: "drop_observations", label: "精简观察",
@@ -79,7 +82,7 @@ export async function runDropper(args: RunDropperArgs): Promise<ObservationDrop[
 	};
 	const text = `当前有效反思：\n${args.reflections.map(reflectionToSummaryLine).join("\n") || "（暂无）"}\n\n当前观察：\n${args.observations.map(observationToSummaryLine).join("\n")}\n\n活跃观察约 ${metrics.observationTokens} token，目标约 ${args.targetTokens} token。`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text }], timestamp: Date.now() }];
-	const context = createAgentContext(DROPPER_SYSTEM, [dropObservations as AgentTool<any>]);
+	const context = createAgentContext(DROPPER_SYSTEM, diagnostics.tools([dropObservations as AgentTool<any>]));
 	let turns = 0;
 	const thinking = args.thinkingLevel ?? "low";
 	const config: AgentLoopConfig = {
@@ -87,29 +90,32 @@ export async function runDropper(args: RunDropperArgs): Promise<ObservationDrop[
 		maxTokens: workerMaxTokens(args.model),
 		convertToLlm: (messages) => workerMessages(args.model, messages as Message[]), toolExecution: "sequential",
 		...(args.model.reasoning && thinking !== "off" ? { reasoning: thinking } : {}),
-		finishTurn: () => (++turns, result !== undefined || (args.maxTurns && turns >= args.maxTurns) ? { action: "end" } as const : undefined),
+		finishTurn: () => { diagnostics.turns = ++turns; return result !== undefined || (args.maxTurns && turns >= args.maxTurns) ? { action: "end" } as const : undefined; },
 	};
-	const stream = (args.agentLoop ?? agentLoop)(prompts, context, config, args.signal, streamSimple);
-	let streamError: { stopReason: string; errorMessage?: string } | undefined;
-	for await (const event of stream) {
-		logAgentStreamError("dropper", event);
-		if (event.type === "tool_execution_end" && event.isError) result = undefined;
-		if (event.type === "message_end") {
-			try { args.onUsage?.(event.message); } catch { /* Failure: 统计不改变精简结果。 */ }
-			const message = event.message as { stopReason?: string; errorMessage?: string };
-			if (message.stopReason === "error" || message.stopReason === "aborted") {
-				streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+	return diagnostics.run(async () => {
+		const stream = (args.agentLoop ?? agentLoop)(prompts, context, config, args.signal, streamSimple);
+		let streamError: { stopReason: string; errorMessage?: string } | undefined;
+		for await (const event of stream) {
+			diagnostics.observe(event);
+			logAgentStreamError("dropper", event);
+			if (event.type === "tool_execution_end" && event.isError) { if (result !== undefined) diagnostics.invalidated(); result = undefined; }
+			if (event.type === "message_end") {
+				try { args.onUsage?.(event.message); } catch (error) { recordDiagnosticError("usage.callback_error", error, { stage: "dropper" }); }
+				const message = event.message as { stopReason?: string; errorMessage?: string };
+				if (message.stopReason === "error" || message.stopReason === "aborted") {
+					streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+				}
 			}
 		}
-	}
-	await stream.result();
-	if (streamError) {
-		throw new WorkerStreamError(
-			streamError.stopReason,
-			streamError.errorMessage,
-			`精简器流失败，未提交删除结果：${streamError.errorMessage ?? streamError.stopReason}`,
-		);
-	}
-	if (result === undefined) throw new Error("精简器缺少完成回执");
-	return result;
+		await stream.result();
+		if (streamError) {
+			throw new WorkerStreamError(
+				streamError.stopReason,
+				streamError.errorMessage,
+				`精简器流失败，未提交删除结果：${streamError.errorMessage ?? streamError.stopReason}`,
+			);
+		}
+		if (result === undefined) throw diagnostics.completionError("精简器缺少完成回执");
+		return result;
+	});
 }

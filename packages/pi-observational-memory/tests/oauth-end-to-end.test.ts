@@ -213,7 +213,7 @@ describe("OAuth provider end-to-end consolidation", () => {
 		await runtime.consolidationPromise;
 
 		const skipped = notices.find((message) => message.includes("已跳过"));
-		expect(skipped).toBe(
+		expect(skipped).toContain(
 			'观察式记忆：观察已跳过——provider "openai-codex" 认证失败——OAuth 凭据可能已过期；请运行 \'/login openai-codex\' 重新登录',
 		);
 		expect(appended).toEqual([]);

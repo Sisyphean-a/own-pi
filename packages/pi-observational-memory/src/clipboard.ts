@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { diagnosticLog } from "./debug-log.js";
 
 export interface ClipboardCommand {
 	command: string;
@@ -39,10 +40,11 @@ export function runClipboardCommand(command: ClipboardCommand, text: string): Pr
 		let settled = false;
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 
-		const finish = (ok: boolean) => {
+		const finish = (ok: boolean, evidence: Record<string, unknown> = {}) => {
 			if (settled) return;
 			settled = true;
 			if (timeout) clearTimeout(timeout);
+			if (!ok) diagnosticLog("clipboard.failed", { command: command.command, ...evidence });
 			resolve(ok);
 		};
 
@@ -52,12 +54,12 @@ export function runClipboardCommand(command: ClipboardCommand, text: string): Pr
 
 		timeout = setTimeout(() => {
 			child.kill();
-			finish(false);
+			finish(false, { reason: "timeout", timeoutMs: 2_000 });
 		}, 2_000);
 
-		child.on("error", () => finish(false));
-		child.on("close", (code) => finish(code === 0));
-		child.stdin.on("error", () => undefined);
+		child.on("error", (error: NodeJS.ErrnoException) => finish(false, { reason: "spawn_error", code: error.code }));
+		child.on("close", (code, signal) => finish(code === 0, { reason: "exit", code, signal }));
+		child.stdin.on("error", (error: NodeJS.ErrnoException) => { diagnosticLog("clipboard.stdin_error", { command: command.command, code: error.code }); });
 		child.stdin.end(text, "utf8");
 	});
 }

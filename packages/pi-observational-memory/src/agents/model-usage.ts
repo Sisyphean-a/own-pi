@@ -1,3 +1,5 @@
+import { recordDiagnosticError } from "../debug-log.js";
+
 type UsageEvents = { emit(channel: string, data: unknown): void };
 export function publishUsage(events: UsageEvents | undefined, value: unknown): void {
   try {
@@ -11,7 +13,8 @@ export function publishUsage(events: UsageEvents | undefined, value: unknown): v
       timestamp: m.timestamp, durationMs: m.durationMs, stopReason: m.stopReason,
       usage: u && { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite, cacheWrite1h: u.cacheWrite1h, totalTokens: u.totalTokens },
     });
-  } catch {
-    // Failure: 可选统计消费者失败不得改变模型结果或业务流程。
+  } catch (error) {
+    // Failure: 可选统计消费者失败只记诊断，不改变模型结果或业务流程。
+    recordDiagnosticError("usage.consumer_error", error);
   }
 }

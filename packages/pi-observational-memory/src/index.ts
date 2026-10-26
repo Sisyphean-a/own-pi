@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { withDiagnosticBoundary } from "./diagnostic-boundary.js";
+import { diagnosticLog, diagnosticText } from "./debug-log.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerViewCommand } from "./commands/view.js";
 import { registerCompactionHook } from "./hooks/compaction-hook.js";
@@ -9,12 +11,17 @@ import { registerRecallTool } from "./tools/recall-observation.js";
 
 export default function observationalMemory(pi: ExtensionAPI) {
 	const runtime = new Runtime();
+	pi = withDiagnosticBoundary(pi, () => runtime.sessionEpoch);
 
 	// Rule: Pi 在会话替换（new/resume/fork）、重载或退出时先触发 session_shutdown，
 	// 再让旧 ctx/pi 失效。这里先作废在途后台任务并释放运行标志，避免后台任务
 	// 在失效后继续触碰 ctx/pi 并弹出 stale 警告。
 	pi.on("session_shutdown", () => {
 		runtime.endSession();
+	});
+
+	pi.on("session_compact_failed", (event) => {
+		runtime.lastDiagnostic = diagnosticLog("compaction.failed", { reason: event.reason, aborted: event.aborted, willRetry: event.willRetry, fromExtension: event.fromExtension, errorMessage: event.errorMessage ? diagnosticText(event.errorMessage) : undefined });
 	});
 
 	registerConsolidationTrigger(pi, runtime);

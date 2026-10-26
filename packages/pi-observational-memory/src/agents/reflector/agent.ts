@@ -2,11 +2,12 @@ import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works
 import { Type, type Message, type Model, type ModelThinkingLevel, type ProviderHeaders } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
-import { debugLog } from "../../debug-log.js";
+import { debugLog, recordDiagnosticError } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { createAgentContext } from "../agent-context.js";
 import { logAgentStreamError } from "../stream-errors.js";
 import { WorkerStreamError } from "../worker-retry.js";
+import { WorkerDiagnostics } from "../worker-diagnostics.js";
 import { workerMaxTokens, workerMessages } from "../../model-budget.js";
 import { MAX_RECORD_CONTENT_CHARS } from "../../serialize.js";
 import { REFLECTOR_SYSTEM } from "./prompts.js";
@@ -45,6 +46,7 @@ function singleLine(content: string): string {
 
 export async function runReflector(args: RunReflectorArgs): Promise<ReflectorResult | undefined> {
 	if (!args.observations.length) return undefined;
+	const diagnostics = new WorkerDiagnostics("reflector", args, { observations: args.observations.length, reflections: args.reflections.length, outputTokenBudget: workerMaxTokens(args.model) });
 	const allowedIds = args.observations.map((observation) => observation.id);
 	const existingIds = new Set(args.reflections.map((reflection) => reflection.id));
 	let result: ReflectorResult | undefined;
@@ -55,7 +57,10 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
 		execute: async (_id, params: Static<typeof RecordReflectionsSchema>) => {
 			if (result) throw new Error("本次反思维护已完成");
 			const reviewed = normalizeSupportingObservationIds(params.reviewedObservationIds, allowedIds);
-			if (!reviewed || reviewed.length !== new Set(allowedIds).size) throw new Error("审阅回执必须包含全部当前观察 id");
+			if (!reviewed || reviewed.length !== new Set(allowedIds).size) {
+				diagnostics.validation("record_reflections", { expectedCount: new Set(allowedIds).size, receivedCount: params.reviewedObservationIds.length, missingIds: allowedIds.filter((id) => !params.reviewedObservationIds.includes(id)) });
+				throw new Error("审阅回执必须包含全部当前观察 id");
+			}
 			const support = (ids: string[]) => {
 				const normalized = normalizeSupportingObservationIds(ids, allowedIds);
 				if (!normalized) throw new Error("支撑 id 必须来自当前观察");
@@ -90,7 +95,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
 	};
 	const userText = `当前有效反思：\n${args.reflections.map(reflectionToSummaryLine).join("\n") || "（暂无）"}\n\n当前观察：\n${args.observations.map(observationToSummaryLine).join("\n")}`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
-	const context = createAgentContext(REFLECTOR_SYSTEM, [recordReflections as AgentTool<any>]);
+	const context = createAgentContext(REFLECTOR_SYSTEM, diagnostics.tools([recordReflections as AgentTool<any>]));
 	let turns = 0;
 	const thinking = args.thinkingLevel ?? "low";
 	const config: AgentLoopConfig = {
@@ -98,30 +103,33 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
 		maxTokens: workerMaxTokens(args.model),
 		convertToLlm: (messages) => workerMessages(args.model, messages as Message[]), toolExecution: "sequential",
 		...(args.model.reasoning && thinking !== "off" ? { reasoning: thinking } : {}),
-		finishTurn: () => (++turns, result || (args.maxTurns && turns >= args.maxTurns) ? { action: "end" } as const : undefined),
+		finishTurn: () => { diagnostics.turns = ++turns; return result || (args.maxTurns && turns >= args.maxTurns) ? { action: "end" } as const : undefined; },
 	};
-	const stream = (args.agentLoop ?? agentLoop)(prompts, context, config, args.signal, streamSimple);
-	let streamError: { stopReason: string; errorMessage?: string } | undefined;
-	for await (const event of stream) {
-		logAgentStreamError("reflector", event);
-		if (event.type === "tool_execution_end" && event.isError) result = undefined;
-		if (event.type === "message_end") {
-			try { args.onUsage?.(event.message); } catch { /* Failure: 统计不改变维护结果。 */ }
-			const message = event.message as { stopReason?: string; errorMessage?: string };
-			if (message.stopReason === "error" || message.stopReason === "aborted") {
-				streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+	return diagnostics.run(async () => {
+		const stream = (args.agentLoop ?? agentLoop)(prompts, context, config, args.signal, streamSimple);
+		let streamError: { stopReason: string; errorMessage?: string } | undefined;
+		for await (const event of stream) {
+			diagnostics.observe(event);
+			logAgentStreamError("reflector", event);
+			if (event.type === "tool_execution_end" && event.isError) { if (result) diagnostics.invalidated(); result = undefined; }
+			if (event.type === "message_end") {
+				try { args.onUsage?.(event.message); } catch (error) { recordDiagnosticError("usage.callback_error", error, { stage: "reflector" }); }
+				const message = event.message as { stopReason?: string; errorMessage?: string };
+				if (message.stopReason === "error" || message.stopReason === "aborted") {
+					streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+				}
 			}
 		}
-	}
-	await stream.result();
-	if (streamError) {
-		throw new WorkerStreamError(
-			streamError.stopReason,
-			streamError.errorMessage,
-			`反思器流失败，未提交维护结果：${streamError.errorMessage ?? streamError.stopReason}`,
-		);
-	}
-	if (!result) throw new Error("反思器缺少审阅完成回执");
-	debugLog("reflector.result", { reflections: result.reflections.length, retirements: result.retirements.length });
-	return result;
+		await stream.result();
+		if (streamError) {
+			throw new WorkerStreamError(
+				streamError.stopReason,
+				streamError.errorMessage,
+				`反思器流失败，未提交维护结果：${streamError.errorMessage ?? streamError.stopReason}`,
+			);
+		}
+		if (!result) throw diagnostics.completionError("反思器缺少审阅完成回执");
+		debugLog("reflector.result", { reflections: result.reflections.length, retirements: result.retirements.length });
+		return result;
+	});
 }

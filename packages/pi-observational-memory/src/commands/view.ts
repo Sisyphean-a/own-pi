@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Runtime } from "../runtime.js";
 import { copyTextToClipboard } from "../clipboard.js";
+import { recordDiagnosticError } from "../debug-log.js";
 import {
 	fullProjection,
 	observationToSummaryLine,
@@ -50,7 +51,7 @@ export function registerViewCommand(pi: ExtensionAPI, runtime: Runtime, options:
 			const mode = firstArg(args);
 
 			const notifyWithCopy = async (output: string) => {
-				const copied = await copyToClipboard(output).catch(() => false);
+				const copied = await copyToClipboard(output).catch((error) => { recordDiagnosticError("clipboard.error", error); return false; });
 				ctx.ui.notify(
 					copied
 						? `${output}\n\n已复制 /om:view 输出到剪贴板。`

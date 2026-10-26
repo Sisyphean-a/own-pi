@@ -1,5 +1,5 @@
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
-import { debugLog } from "../debug-log.js";
+import { debugLog, diagnosticText } from "../debug-log.js";
 
 /**
  * 把 agent 循环事件流中的 LLM 失败暴露出来。
@@ -15,6 +15,6 @@ export function logAgentStreamError(stage: "observer" | "reflector" | "dropper",
 	if (message.stopReason !== "error" && message.stopReason !== "aborted") return;
 	debugLog(`${stage}.stream_error`, {
 		stopReason: message.stopReason,
-		errorMessage: message.errorMessage,
+		errorMessage: message.errorMessage ? diagnosticText(message.errorMessage) : undefined,
 	});
 }

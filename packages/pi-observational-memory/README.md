@@ -106,7 +106,7 @@ Pi 会话事件
 | `model` | 当前会话模型 | 可为 memory worker 指定更快或更便宜的模型 |
 | `showWorkerNotifications` | `true` | 是否显示普通 worker 进度提示 |
 | `passive` | `false` | 是否关闭后台记忆工作和主动压缩 |
-| `debugLog` | `false` | 是否写入本地 NDJSON 调试日志 |
+| `debugLog` | `false` | 是否增加详细调试事件；基本运行摘要与错误始终自动记录 |
 
 `passive` 也可以用环境变量临时覆盖：
 
@@ -115,6 +115,14 @@ PI_OBSERVATIONAL_MEMORY_PASSIVE=true pi
 ```
 
 更多配置语义、V2 配置迁移和调优取舍见 [`docs/configuration.md`](docs/configuration.md)。
+
+## 自动诊断
+
+无需先开启调试。worker 的模型、思考等级、实际轮数、结束原因、工具校验失败及成功/失败摘要会自动写入本地 NDJSON；配置、认证、压缩、命令/工具及可选功能的运行时失败也会留痕。
+
+错误提示只显示短原因和诊断编号。运行 `/om:status` 可查看当前会话日志路径和最近编号；排查时先按编号找到 `workerId`，再关联该 worker 或同一 `runId` 的事件，不必把整份日志贴进对话。分类、字段与排查顺序见[诊断日志](docs/configuration.md#debuglog)。
+
+诊断不写入 Pi 会话条目、观察/反思或模型提示词，不收集原始提示词、响应正文和工具参数。错误文本有界并遮蔽常见凭据；本地日志仍包含项目路径、内部 ID 和厂商错误摘要，应按私有文件处理。
 
 ## 运行边界
 

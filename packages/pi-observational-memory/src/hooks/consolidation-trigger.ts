@@ -5,7 +5,7 @@ import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { observerChunkBudget, runObserver } from "../agents/observer/agent.js";
 import { runReflector } from "../agents/reflector/agent.js";
 import { runWorkerWithRetry } from "../agents/worker-retry.js";
-import { debugLog, withDebugLogContext } from "../debug-log.js";
+import { debugLog, diagnosticLog, diagnosticNotice, recordDiagnosticError, withDebugLogContext } from "../debug-log.js";
 import { resolveCompactAfterTokens, resolveObserverChunkMaxTokens } from "../config.js";
 import { CONSOLIDATION_PHASE_LABELS, type ResolveResult, type Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
@@ -62,7 +62,8 @@ function rawContextTokens(ctx: LiveCtx): number | undefined {
 		const usage = typeof ctx.getContextUsage === "function" ? ctx.getContextUsage() : undefined;
 		const tokens = usage?.tokens;
 		return typeof tokens === "number" && Number.isFinite(tokens) ? tokens : undefined;
-	} catch {
+	} catch (error) {
+		recordDiagnosticError("context.usage_error", error);
 		return undefined;
 	}
 }
@@ -105,7 +106,10 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "ob
 			hasUI: ctx.hasUI,
 			ui: ctx.ui,
 		});
+		if (!sessionActive(runtime, ctx)) return undefined;
 		if (cached.ok) {
+			const selected = cached.model as { provider?: string; id?: string; contextWindow?: number };
+			diagnosticLog("worker.model_resolved", { stage, model: { provider: selected?.provider, id: selected?.id, contextWindow: selected?.contextWindow }, thinking: runtime.config.model?.thinking ?? "low" });
 			runtime.resolveFailureNotified = false;
 			// OpenCode Go 要求 worker 请求携带稳定会话头；同时保留已有认证头。
 			const model = (cached.model ?? {}) as { provider?: string; baseUrl?: string };
@@ -124,9 +128,11 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "ob
 			}
 			return cached;
 		}
-		debugLog(`${stage}.model_unavailable`, { reason: cached.reason });
+		const error = new Error(cached.reason);
+		const reference = recordDiagnosticError(`${stage}.model_unavailable`, error, { stage, failureCode: "model_unavailable" });
+		runtime.lastDiagnostic = reference;
 		if (!runtime.resolveFailureNotified && ctx.hasUI && ctx.ui && sessionActive(runtime, ctx)) {
-			ctx.ui.notify(`观察式记忆：${CONSOLIDATION_PHASE_LABELS[stage]}已跳过——${cached.reason}`, "warning");
+			ctx.ui.notify(`观察式记忆：${CONSOLIDATION_PHASE_LABELS[stage]}已跳过——${diagnosticNotice(error, reference)}`, "warning");
 			runtime.resolveFailureNotified = true;
 		}
 		return undefined;
@@ -147,7 +153,8 @@ function debugSessionMetadata(ctx: LiveCtx): { sessionId?: string; sessionFile?:
 			sessionId: ctx.sessionManager.getSessionId?.(),
 			sessionFile: ctx.sessionManager.getSessionFile?.(),
 		};
-	} catch {
+	} catch (error) {
+		recordDiagnosticError("context.metadata_error", error);
 		return {};
 	}
 }
@@ -229,7 +236,13 @@ export async function runConsolidationPipeline(pi: ExtensionAPI, runtime: Runtim
 			// 会话已切换时，任何失败都属于正常收尾，不再触碰失效的 ctx 或提示用户。
 			if (!sessionActive(runtime, ctx)) return;
 			const failedStage = runtime.consolidationPhase ?? stage;
-			debugLog(`${failedStage}.error`, { errorMessage: runtime.recordConsolidationStageError(ctx, failedStage, error) });
+			let evidence: Record<string, unknown>;
+			try {
+				const entries = ctx.sessionManager.getBranch() as Entry[];
+				const folded = foldLedger(entries);
+				evidence = { branchEntries: entries.length, branchLeafId: entries.at(-1)?.id, activeObservations: folded.activeObservations.length, reflections: folded.reflections.length, observationTokens: observationPoolMetrics(folded.activeObservations, runtime.config.observationsPoolTargetTokens).observationTokens, cursor: observationProcessingState(entries), observerChunkMaxTokens: runtime.config.observerChunkMaxTokens };
+			} catch { evidence = { contextCaptureFailed: true }; }
+			debugLog(`${failedStage}.error`, { errorMessage: runtime.recordConsolidationStageError(ctx, failedStage, error, evidence) });
 			return;
 		}
 	}
@@ -260,7 +273,7 @@ async function runObserverStage(
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`观察式记忆：观察器正在处理约 ${chunk.estimatedTokens.toLocaleString()} token 的分块`, "info");
 	debugLog("observer.start", { sourceEntryIds: chunk.sourceEntryIds, startSourceOffset: cursor.startOffset, chunkTokens: chunk.estimatedTokens });
 	const result = await runWorkerWithRetry("observer", () => runObserver({
-		onUsage: (message) => { try { publishUsage(pi.events, message); } catch { /* Failure: 旧会话已失效。 */ } },
+		onUsage: (message) => { try { publishUsage(pi.events, message); } catch (error) { recordDiagnosticError("usage.publish_error", error); } },
 		model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, env: resolved.env,
 		priorReflections, priorObservations, chunk: chunk.text, allowedSourceEntryIds: chunk.sourceEntryIds,
 		sourceOffset: cursor.startOffset, maxTurns: runtime.config.agentMaxTurns, thinkingLevel: runtime.config.model?.thinking ?? "low",
@@ -297,7 +310,7 @@ async function runReflectorStage(
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`观察式记忆：反思器正在维护 ${folded.activeObservations.length} 条观察与 ${folded.reflections.length} 条当前结论`, "info");
 	debugLog("reflector.start", { observations: folded.activeObservations.length, reflections: folded.reflections.length, pressure });
 	const result = await runWorkerWithRetry("reflector", () => runReflector({
-		onUsage: (message) => { try { publishUsage(pi.events, message); } catch { /* Failure: 旧会话已失效。 */ } },
+		onUsage: (message) => { try { publishUsage(pi.events, message); } catch (error) { recordDiagnosticError("usage.publish_error", error); } },
 		model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, env: resolved.env,
 		reflections: folded.reflections, observations: folded.activeObservations,
 		maxTurns: runtime.config.agentMaxTurns, thinkingLevel: runtime.config.model?.thinking ?? "low",
@@ -327,7 +340,7 @@ async function runDropperStage(
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`观察式记忆：精简器正在检查——活跃观察池约 ${metrics.observationTokens.toLocaleString()} / ${metrics.targetTokens.toLocaleString()} 目标 token`, "info");
 	debugLog("dropper.start", metrics);
 	const drops = await runWorkerWithRetry("dropper", () => runDropper({
-		onUsage: (message) => { try { publishUsage(pi.events, message); } catch { /* Failure: 旧会话已失效。 */ } },
+		onUsage: (message) => { try { publishUsage(pi.events, message); } catch (error) { recordDiagnosticError("usage.publish_error", error); } },
 		model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, env: resolved.env,
 		reflections: folded.reflections, observations: folded.activeObservations, targetTokens: runtime.config.observationsPoolTargetTokens,
 		maxTurns: runtime.config.agentMaxTurns, thinkingLevel: runtime.config.model?.thinking ?? "low",

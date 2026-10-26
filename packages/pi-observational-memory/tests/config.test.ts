@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -86,6 +86,17 @@ describe("V3 config", () => {
 			passive: true,
 			debugLog: true,
 		});
+	});
+
+	it("配置解析失败自动留痕，但不抄录配置正文或潜在凭据", () => {
+		const file = join(cwd, ".pi", "settings.json");
+		writeJson(file, {});
+		writeFileSync(file, '{ "observational-memory": "PRIVATE_JSON_SECRET"');
+		expect(loadConfig(cwd, {})).toEqual(DEFAULTS);
+		const log = readFileSync(join(agentDir, "observational-memory", "debug.ndjson"), "utf8");
+		expect(log).toContain("config.error");
+		expect(log).toContain("SyntaxError");
+		expect(log).not.toContain("PRIVATE_JSON_SECRET");
 	});
 
 	it("accepts max as a valid model thinking level", () => {

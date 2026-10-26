@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { resolveCompactAfterTokens } from "../config.js";
+import { diagnosticLogPath } from "../debug-log.js";
 import { CONSOLIDATION_PHASE_LABELS, type Runtime } from "../runtime.js";
 import {
 	diffProjection,
@@ -86,6 +87,10 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				`可见观察池：~${visibleObservationTokens.toLocaleString()} token`,
 				`活跃观察池：~${activeObservationPool.observationTokens.toLocaleString()} / ${runtime.config.observationsPoolTargetTokens.toLocaleString()} 目标 token（${pct(activeObservationPool.observationTokens, runtime.config.observationsPoolTargetTokens)}%）`,
 				`反思池：~${visibleReflectionTokens.toLocaleString()} token`,
+				"", "── 诊断 ──",
+				`自动收集：已启用；详细调试：${runtime.config.debugLog ? "已启用" : "未启用"}`,
+				`日志：${diagnosticLogPath(ctx.sessionManager.getSessionId?.())}`,
+				...(runtime.lastDiagnostic ? [`最近诊断：${runtime.lastDiagnostic.id}${runtime.lastDiagnostic.writeError ? `（日志写入失败：${runtime.lastDiagnostic.writeError}）` : ""}`] : []),
 			];
 
 			if (runtime.consolidationInFlight || runtime.compactInFlight || runtime.compactHookInFlight) {
