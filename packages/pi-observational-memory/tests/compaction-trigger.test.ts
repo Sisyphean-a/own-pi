@@ -8,8 +8,7 @@ function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensM
 	let handler: ((event: unknown, ctx: unknown) => void) | undefined;
 	const pi = {
 		on: vi.fn((name: string, cb: typeof handler) => {
-			expect(name).toBe("agent_settled");
-			handler = cb;
+			if (name === "agent_settled") handler = cb;
 		}),
 	};
 	const runtime = {

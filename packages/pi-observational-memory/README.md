@@ -9,11 +9,11 @@ Pi 的观察式记忆扩展。它在后台把会话中的重要信息整理成 o
 - **Observation**：从对话和工具结果中提取带时间、相关性和来源的事实；
 - **Reflection**：提炼带作用域的持久结论，并在证据明确变化时撤回旧结论，历史仍可召回；
 - **Dropper**：观察池超过目标时，按替代证据精简冗余、已取代或已解决的观察；
-- **快速压缩**：待移除历史均已处理时，确定性折叠 ledger 并渲染摘要；否则交给 Pi 原生压缩，不用旧记忆冒充完整历史；
+- **快速压缩**：达到阈值后，在回合边界直接折叠已处理的旧历史，未处理的新消息原样保留；Pi 请求压缩时仍严格校验覆盖，不用旧记忆冒充完整历史；
 - **来源追溯**：`recall(<memory-id>)` 可以从记忆恢复支持它的 observation 和原始会话条目；
 - **状态查看**：提供 `/om:status`、`/om:view` 和 `/om:view full`。
 
-后台记忆工作会调用模型，因此会产生额外模型请求。压缩本身不等待后台 worker。
+后台记忆工作会调用模型，因此会产生额外模型请求。接近压缩阈值且有积压时，优先观察、暂缓反思和精简；追赶只针对固定快照。记忆压缩路径不等待后台 worker，也不新增摘要模型调用；后台追不上时仍可能由 Pi 原生摘要器处理。
 
 ## 安装
 
@@ -97,7 +97,7 @@ Pi 会话事件
 | `observeAfterTokens` | `10000` | 累积多少源文本后运行 Observer |
 | `reflectAfterTokens` | `20000` | 累积多少源文本后运行 Reflector |
 | `observerChunkMaxTokens` | 自动计算 | 单次送给 Observer 的源文本上限；默认取记忆模型上下文窗口的 20%，未知时为 `60000` |
-| `compactAfterTokens` | `81000` | 主动触发 Pi 压缩的源文本估算阈值 |
+| `compactAfterTokens` | `81000` | 尝试回合边界记忆压缩及 idle 主动压缩的源文本估算阈值 |
 | `compactAfterTokensMode` | `calibrated` | `calibrated` 使用固定阈值，`ratio` 按模型上下文窗口计算 |
 | `compactAfterTokensRatio` | `0.68` | `ratio` 模式下使用的上下文窗口比例，必须在 `0` 和 `1` 之间 |
 | `observationsPoolMaxTokens` | `20000` | 活跃观察达到此压力时提前维护反思；每次压缩都会应用当前维护结果 |
@@ -131,7 +131,7 @@ PI_OBSERVATIONAL_MEMORY_PASSIVE=true pi
 
 - `src/index.ts`：注册 Pi 事件、命令和 `recall` 工具；
 - `src/hooks/consolidation-trigger.ts`：编排 Observer → Reflector → Dropper；
-- `src/hooks/compaction-trigger.ts`：按阈值请求主动压缩；
+- `src/hooks/compaction-trigger.ts`：回合边界折叠已处理前缀，并保留 idle 主动压缩路径；
 - `src/hooks/compaction-hook.ts`：构建确定性的 V3 压缩摘要；
 - `src/session-ledger/`：类型校验、折叠、进度、projection 和来源解析；
 - `src/agents/`：三个后台 memory agent；

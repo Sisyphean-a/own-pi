@@ -8,7 +8,7 @@
 
 | 入口 | 作用 |
 | --- | --- |
-| `agent_start`、`turn_end` | 检查是否需要后台 Observer/Reflector/Dropper |
+| `agent_start`、`turn_end` | 检查是否需要后台 Observer/Reflector/Dropper；`turn_end` 还可直接提交已准备好的压缩结果 |
 | `agent_settled` | 在 Pi 完成重试和排队续跑后，检查主动压缩阈值 |
 | `session_before_compact` | 同步构建 V3 压缩结果 |
 | `/om:status` | 查看 ledger、进度、漂移和 worker 状态 |
@@ -34,7 +34,7 @@ agent_settled
   → 确定性渲染摘要
 ```
 
-Observer 在 pipeline 中先执行。后台 worker 不会阻塞主回合，压缩也不会等待正在运行的 worker。
+Observer 在 pipeline 中先执行。距离主动压缩阈值不足一轮 `observeAfterTokens` 预算，且存在未处理历史时，当前 pipeline 优先分块追赶该时刻的固定快照，暂缓 Reflector/Dropper；快照之后新增的源留给下次整理。追赶中观察池达到维护压力时，允许反思/精简先插入，避免记忆池增长挤掉后续 worker 的输入预算；追赶完成且不再积压时恢复普通维护。后台 worker 不会阻塞主回合，压缩也不会等待正在运行的 worker。
 
 ## 进度计数
 
@@ -92,7 +92,19 @@ Observer 的完整覆盖须有连续源片段的 `processing` 回执；零观察
 
 ## 主动压缩
 
-`src/hooks/compaction-trigger.ts` 在 `agent_settled` 后检查：
+`src/hooks/compaction-trigger.ts` 有两条不等待 worker 的路径。
+
+### 回合边界直接折叠
+
+源 entry token 达到主动压缩阈值后，在正常完成的 `turn_end` 读取已提交 ledger，直接返回 `compaction` entry，由 Pi 在进入下一回合前提交。它不调用 `ctx.compact()` 或摘要模型。
+
+切点取宿主当前模型的 `keepRecentTokens` 所需边界与完整处理覆盖边界中更早的一个，并沿用宿主切点规则，保留工具调用与结果配对。未处理消息及其后的历史始终原样保留。切点没有推进、记忆为空或估算摘要不比待替换内容更小时，不压缩。
+
+取消、失败、长度截断、其他扩展已有边界提案或宿主缺少所需设置能力时，跳过此优化，不更改 Pi 的恢复及续跑决定。
+
+### Idle 主动压缩
+
+在 `agent_settled` 后继续检查：
 
 - 不是 `passive`；
 - 没有其他主动压缩；
@@ -100,7 +112,7 @@ Observer 的完整覆盖须有连续源片段的 `processing` 回执；零观察
 - `setTimeout(0)` 延迟复查时 Pi 仍然 idle；
 - 延迟期间阈值仍然满足。
 
-满足后调用 `ctx.compact()`。这条路径不等待 consolidation promise。
+满足后调用 `ctx.compact()`，由现有压缩 Hook 判定是否接管。后台未覆盖待移除历史时，Pi 原生摘要器仍是安全出口；不保证每次都能免除原生摘要等待。
 
 ## 压缩 Hook
 

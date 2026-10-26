@@ -6,7 +6,7 @@ import { observerChunkBudget, runObserver } from "../agents/observer/agent.js";
 import { runReflector } from "../agents/reflector/agent.js";
 import { runWorkerWithRetry } from "../agents/worker-retry.js";
 import { debugLog, withDebugLogContext } from "../debug-log.js";
-import { resolveObserverChunkMaxTokens } from "../config.js";
+import { resolveCompactAfterTokens, resolveObserverChunkMaxTokens } from "../config.js";
 import { CONSOLIDATION_PHASE_LABELS, type ResolveResult, type Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
@@ -184,12 +184,42 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: LiveC
 	}));
 }
 
+/** 距主动压缩不足一轮观察预算时，先追赶当前快照，不追逐持续增长的消息尾部。 */
+function observationPriorityTarget(runtime: Runtime, ctx: ConsolidationCtx): string | undefined {
+	const entries = ctx.sessionManager.getBranch() as Entry[];
+	const contextWindow = (ctx.model as { contextWindow?: number } | undefined)?.contextWindow;
+	const threshold = resolveCompactAfterTokens(runtime.config, contextWindow);
+	if (runtime.tokenProgress.compactionProgress(entries) + runtime.config.observeAfterTokens < threshold) return;
+	if (observationProcessingState(entries).nextEntryIndex < 0 || runtime.maintenanceDue(entries)) return;
+	return entries.at(-1)?.id;
+}
+
 export async function runConsolidationPipeline(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): Promise<void> {
 	if (!sessionActive(runtime, ctx)) return;
 	const resolveModel = makeModelResolver(runtime, ctx);
 	for (const stage of ["observer", "reflector", "dropper"] as const) {
+		if (!sessionActive(runtime, ctx)) return;
 		runtime.consolidationPhase = stage;
 		try {
+			const target = observationPriorityTarget(runtime, ctx);
+			if (target) {
+				runtime.consolidationPhase = "observer";
+				let needsMaintenance = false;
+				while (sessionActive(runtime, ctx)) {
+					const entries = ctx.sessionManager.getBranch() as Entry[];
+					const cursor = observationProcessingState(entries);
+					const end = entries.findIndex((entry) => entry.id === target);
+					if (cursor.nextEntryIndex < 0 || cursor.nextEntryIndex > end) break;
+					if (await runObserverStage(pi, runtime, ctx, resolveModel, target) === "abort") return;
+					if (!sessionActive(runtime, ctx)) return;
+					// 不能为追赶持续扩张记忆池，挤掉反思与安全精简的输入预算。
+					needsMaintenance = runtime.maintenanceDue(ctx.sessionManager.getBranch() as Entry[]);
+					if (needsMaintenance) break;
+				}
+				if (!needsMaintenance) return;
+				if (stage === "observer") continue;
+				runtime.consolidationPhase = stage;
+			}
 			const outcome = stage === "observer" ? await runObserverStage(pi, runtime, ctx, resolveModel)
 				: stage === "reflector" ? await runReflectorStage(pi, runtime, ctx, resolveModel)
 				: await runDropperStage(pi, runtime, ctx, resolveModel);
@@ -198,7 +228,8 @@ export async function runConsolidationPipeline(pi: ExtensionAPI, runtime: Runtim
 		} catch (error) {
 			// 会话已切换时，任何失败都属于正常收尾，不再触碰失效的 ctx 或提示用户。
 			if (!sessionActive(runtime, ctx)) return;
-			debugLog(`${stage}.error`, { errorMessage: runtime.recordConsolidationStageError(ctx, stage, error) });
+			const failedStage = runtime.consolidationPhase ?? stage;
+			debugLog(`${failedStage}.error`, { errorMessage: runtime.recordConsolidationStageError(ctx, failedStage, error) });
 			return;
 		}
 	}
@@ -207,12 +238,14 @@ export async function runConsolidationPipeline(pi: ExtensionAPI, runtime: Runtim
 async function runObserverStage(
 	pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx,
 	resolveModel: (stage: "observer") => Promise<ResolvedModel | undefined>,
+	throughEntryId?: string,
 ): Promise<StageOutcome> {
 	if (!sessionActive(runtime, ctx)) return "abort";
 	const entries = ctx.sessionManager.getBranch() as Entry[];
-	if (!stageDue(runtime, entries, realContextTokens(runtime, ctx), "observations", runtime.config.observeAfterTokens)) return "continue";
+	if (!throughEntryId && !stageDue(runtime, entries, realContextTokens(runtime, ctx), "observations", runtime.config.observeAfterTokens)) return "continue";
 	const cursor = observationProcessingState(entries);
-	if (cursor.nextEntryIndex < 0) return "continue";
+	const end = throughEntryId ? entries.findIndex((entry) => entry.id === throughEntryId) + 1 : entries.length;
+	if (cursor.nextEntryIndex < 0 || cursor.nextEntryIndex >= end) return "continue";
 	const resolved = await resolveModel("observer");
 	if (!resolved || !sessionActive(runtime, ctx)) return "abort";
 	const memory = fullProjection(entries);
@@ -220,7 +253,7 @@ async function runObserverStage(
 	const priorObservations = memory.observations.map(observationToSummaryLine);
 	const maxChunkTokens = observerChunkBudget(resolved.model as any, priorReflections, priorObservations,
 		resolveObserverChunkMaxTokens(runtime.config, (resolved.model as { contextWindow?: number }).contextWindow));
-	const chunk = serializeSourceAddressedBranchEntries(entries.slice(cursor.nextEntryIndex), {
+	const chunk = serializeSourceAddressedBranchEntries(entries.slice(cursor.nextEntryIndex, end), {
 		maxTokens: maxChunkTokens, startOffset: cursor.startOffset,
 	});
 	if (!chunk.text || !chunk.sourceEntryIds.length) throw new Error("观察器输入预算不足，无法读取下一个源片段");

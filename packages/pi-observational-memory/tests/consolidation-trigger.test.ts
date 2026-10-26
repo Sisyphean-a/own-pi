@@ -58,6 +58,7 @@ function setup(args: {
 	observeAfterTokens?: number;
 	reflectAfterTokens?: number;
 	observerChunkMaxTokens?: number;
+	compactAfterTokens?: number;
 	observationsPoolMaxTokens?: number;
 	observationsPoolTargetTokens?: number;
 	showWorkerNotifications?: boolean;
@@ -89,6 +90,8 @@ function setup(args: {
 			observeAfterTokens: args.observeAfterTokens ?? 1,
 			reflectAfterTokens: args.reflectAfterTokens ?? 1,
 			observerChunkMaxTokens: args.observerChunkMaxTokens,
+			compactAfterTokens: args.compactAfterTokens ?? 81_000,
+			compactAfterTokensMode: "calibrated",
 			observationsPoolMaxTokens: args.observationsPoolMaxTokens ?? 100,
 			observationsPoolTargetTokens: args.observationsPoolTargetTokens ?? Math.floor((args.observationsPoolMaxTokens ?? 100) / 2),
 			agentMaxTurns: 9,
@@ -325,6 +328,41 @@ describe("记忆整理编排", () => {
 		expect(calls.map((call) => call.chunk).join("")).toContain(":MIDDLE:");
 		expect(calls.at(-1).allowedSourceEntryIds).toContain("next");
 		expect((run.pi.appendEntry.mock.calls[0][1] as any).processing.nextSourceOffset).toBeGreaterThan(0);
+	});
+	it("接近压缩时先追赶观察，暂缓反思与精简", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "a".repeat(800)), textCustomMessage("raw-2", "b".repeat(800))], compactAfterTokens: 300, observerChunkMaxTokens: 256 });
+		mockAgents.runObserver.mockImplementation(async (args) => ({ observations: args.allowedSourceEntryIds.includes("raw-1") ? [obsA] : [], complete: true }));
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver.mock.calls.map((call) => call[0].allowedSourceEntryIds)).toEqual([["raw-1"], ["raw-2"]]);
+		expect(mockAgents.runReflector).not.toHaveBeenCalled();
+		expect(mockAgents.runDropper).not.toHaveBeenCalled();
+	});
+	it("压力追赶固定快照，不无限追逐主任务新增消息", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "a".repeat(800)), textCustomMessage("raw-2", "b".repeat(800))], compactAfterTokens: 300, observerChunkMaxTokens: 256 });
+		mockAgents.runObserver.mockImplementation(async (args) => {
+			run.addEntries(textCustomMessage("later-" + mockAgents.runObserver.mock.calls.length, "稍后处理"));
+			return { observations: args.allowedSourceEntryIds.includes("raw-1") ? [obsA] : [], complete: true };
+		});
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver.mock.calls.map((call) => call[0].allowedSourceEntryIds)).toEqual([["raw-1"], ["raw-2"]]);
+		expect(mockAgents.runReflector).not.toHaveBeenCalled();
+	});
+	it("积压追上后恢复维护，不让反思永久饥饿", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "a".repeat(800))], compactAfterTokens: 100 });
+		mockAgents.runObserver.mockResolvedValue({ observations: [obsA], complete: true });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runReflector).not.toHaveBeenCalled();
+		run.runtime.consolidationInFlight = false;
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runReflector).toHaveBeenCalledOnce();
+	});
+	it("观察池压力升高时让维护插入，不为追赶耗尽后续输入预算", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "a".repeat(800)), textCustomMessage("raw-2", "b".repeat(800))], compactAfterTokens: 300, observerChunkMaxTokens: 256, observationsPoolMaxTokens: 10, observationsPoolTargetTokens: 5 });
+		mockAgents.runObserver.mockResolvedValue({ observations: [obsA], complete: true });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver).toHaveBeenCalledOnce();
+		expect(mockAgents.runReflector).toHaveBeenCalledOnce();
+		expect(mockAgents.runDropper).toHaveBeenCalledOnce();
 	});
 	it("会话代次变化后放弃已排队的后台任务", async () => {
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });

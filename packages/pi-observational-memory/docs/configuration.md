@@ -115,11 +115,15 @@ Dropper 独立按活跃观察池压力运行，不要求同轮产生新反思。
 
 ### `compactAfterTokens`
 
-主动压缩在 `agent_settled` 事件中运行，统计最近 compaction boundary 之后的源 entry token。记忆 entry 和 compaction metadata 不计入该值。
+主动压缩统计当前保留边界以来的源 entry token。记忆 entry 和 compaction metadata 不计入该值。
 
-扩展会在 `setTimeout(0)` 后确认 Pi 仍然 idle，并重新检查阈值，然后调用 `ctx.compact()`。它不等待 Observer、Reflector 或 Dropper。
+达到阈值后，先在正常完成的 `turn_end` 尝试直接折叠已完整处理的旧历史，未处理消息原样保留。近期历史预算沿用 Pi 的 `compaction.keepRecentTokens` 及当前模型 override；没有安全且能缩小上下文的切点时跳过，不等待 worker。
 
-Pi 自己的窗口压力压缩和手动压缩仍然独立存在。
+`agent_settled` 的 idle 路径仍保留：在 `setTimeout(0)` 后复查 idle 和阈值，再调用 `ctx.compact()`。它同样不等待 Observer、Reflector 或 Dropper。
+
+后台整理距离阈值不足一轮 `observeAfterTokens` 预算且有未处理历史时，优先追赶固定快照，暂缓反思和精简。原有阶段启动阈值不变，也没有新增前台等待时限配置。
+
+Pi 自己的窗口压力压缩和手动压缩仍然独立存在；覆盖不足时可能仍需等待原生摘要。
 
 ### `compactAfterTokensMode`
 
