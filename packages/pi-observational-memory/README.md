@@ -11,9 +11,11 @@ Pi 的观察式记忆扩展。它在后台把会话中的重要信息整理成 o
 - **Dropper**：观察池超过目标时，按替代证据精简冗余、已取代或已解决的观察；
 - **快速压缩**：达到阈值后，在回合边界直接折叠已处理的旧历史，未处理的新消息原样保留；Pi 请求压缩时仍严格校验覆盖，不用旧记忆冒充完整历史；
 - **来源追溯**：`recall(<memory-id>)` 可以从记忆恢复支持它的 observation 和原始会话条目；
-- **状态查看**：提供 `/om:status`、`/om:view` 和 `/om:view full`。
+- **状态与恢复**：`/om:status` 查看进度、暂停状态和本周期次数；`/om:retry` 手动重试暂停的观察批次。
 
-后台记忆工作会调用模型，因此会产生额外模型请求。接近压缩阈值且有积压时，优先观察、暂缓反思和精简；追赶只针对固定快照。记忆压缩路径不等待后台 worker，也不新增摘要模型调用；后台追不上时仍可能由 Pi 原生摘要器处理。
+后台记忆工作会产生额外模型请求。每个观察分块只允许一次模型响应；失败后暂停该源位置，追加消息、压缩或重载都不自动重发，需用 `/om:retry` 手动重试。反思、精简在两次成功压缩之间各最多尝试一次，失败或取消也占用次数，不进行整轮自动重试。
+
+接近压缩阈值且有积压时，优先观察、暂缓反思和精简；追赶只针对固定快照。记忆压缩不等待后台 worker，也不新增摘要模型调用；覆盖不足时仍交由 Pi 原生摘要器处理。以上限制不是每日费用上限，基础记录分块和原生压缩仍可能收费。
 
 ## 安装
 
@@ -36,7 +38,8 @@ node install-extensions.mjs
 ## 使用
 
 ```text
-/om:status       查看记录数、进度、记忆池和 worker 状态
+/om:status       查看记录数、进度、暂停状态和本压缩周期次数
+/om:retry        手动重试当前观察批次，不刷新反思或精简次数
 /om:view         查看当前已对代理可见的记忆，并尝试复制到剪贴板
 /om:view full    查看当前分支完整的 V3 ledger 记忆
 recall(<id>)     由代理按明确的 12 位小写十六进制 ID 追溯来源
@@ -60,6 +63,7 @@ Pi 会话事件
 - `om.observations.recorded`
 - `om.reflections.recorded`
 - `om.observations.dropped`
+- `om.worker.attempted`：请求前保存尝试次数与观察源位置；不是成功回执，不进入模型提示词
 
 `coversUpToId` 是进度水位，不是来源或完整处理的证明；Observer 另存显式处理回执，超长源连续分片读取。来源关系分别保存在 observation 的 `sourceEntryIds` 和 reflection 的 `supportingObservationIds` 中。被精简的观察、被撤回的反思及撤回理由仍可按 ID recall，撤回内容不再作为当前结论。
 
@@ -77,7 +81,6 @@ Pi 会话事件
     "compactAfterTokensRatio": 0.68,
     "observationsPoolMaxTokens": 20000,
     "observationsPoolTargetTokens": 10000,
-    "agentMaxTurns": 16,
     "model": {
       "provider": "openrouter",
       "id": "google/gemma-4-31b-it",
@@ -102,11 +105,12 @@ Pi 会话事件
 | `compactAfterTokensRatio` | `0.68` | `ratio` 模式下使用的上下文窗口比例，必须在 `0` 和 `1` 之间 |
 | `observationsPoolMaxTokens` | `20000` | 活跃观察达到此压力时提前维护反思；每次压缩都会应用当前维护结果 |
 | `observationsPoolTargetTokens` | 最大值的一半 | Dropper 维护的活动 observation 目标 |
-| `agentMaxTurns` | `16` | 三类后台 memory agent 的共同回合上限 |
 | `model` | 当前会话模型 | 可为 memory worker 指定更快或更便宜的模型 |
 | `showWorkerNotifications` | `true` | 是否显示普通 worker 进度提示 |
 | `passive` | `false` | 是否关闭后台记忆工作和主动压缩 |
 | `debugLog` | `false` | 是否增加详细调试事件；基本运行摘要与错误始终自动记录 |
+
+后台 worker 固定为单次模型响应，旧的 `agentMaxTurns` 设置不再生效。观察器需在同次响应中提交记录和完成确认；没有有效完成确认不会保存部分结果。
 
 `passive` 也可以用环境变量临时覆盖：
 
@@ -130,8 +134,8 @@ PI_OBSERVATIONAL_MEMORY_PASSIVE=true pi
 - 没有可用模型或认证时，后台阶段会跳过或报告错误，不会伪造记忆；
 - 记忆 worker 失败不会阻塞 Pi 的主回合；
 - 记忆摘要不等待 worker；指定摘要重点、历史尚未完整处理或记忆为空时，由 Pi 原生摘要器处理；
-- 会话替换、重载或退出时，在途后台整理会被作废，旧会话的 worker 结果不会写入新会话；
-- `passive: true` 仍保留手动/Pi 压缩、状态命令、查看命令和 recall；
+- 会话替换、重载或退出时，向在途请求发送取消信号，旧结果不写入新会话；已发出的请求可能仍被服务端计费，取消不退款；
+- `passive: true` 仍保留手动/Pi 压缩、命令和 recall；显式 `/om:retry` 只运行一个观察分块，不顺带调用反思或精简；
 - 保留旧 V3 记忆读取，不改写既有会话；旧水位不充当新处理回执。V2 设置和记忆条目仍不迁移；
 - 不支持用旧版插件解释新增的撤回语义；回退版本时应新建会话，避免旧结论重新出现。
 

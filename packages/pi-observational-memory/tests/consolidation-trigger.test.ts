@@ -12,18 +12,6 @@ vi.mock("../src/agents/observer/agent.js", async (importOriginal) => ({
 }));
 vi.mock("../src/agents/reflector/agent.js", () => ({ runReflector: mockAgents.runReflector }));
 vi.mock("../src/agents/dropper/agent.js", () => ({ runDropper: mockAgents.runDropper }));
-// 保留真实重试实现，只把退避延迟压到 0；重试策略本身由 worker-retry.test.ts 覆盖。
-vi.mock("../src/agents/worker-retry.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../src/agents/worker-retry.js")>();
-	return {
-		...actual,
-		runWorkerWithRetry: (
-			label: string,
-			run: () => Promise<unknown>,
-			options: Parameters<typeof actual.runWorkerWithRetry>[2] = {},
-		) => actual.runWorkerWithRetry(label, run, { ...options, baseDelayMs: 0 }),
-	};
-});
 
 import { ObserverStreamError } from "../src/agents/observer/agent.js";
 import { registerConsolidationTrigger } from "../src/hooks/consolidation-trigger.js";
@@ -33,6 +21,7 @@ import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
+	OM_WORKER_ATTEMPTED,
 } from "../src/session-ledger/index.js";
 import {
 	observation,
@@ -71,7 +60,9 @@ function setup(args: {
 	let entries = [...args.entries];
 	let sessionId = args.sessionId ?? "session-1";
 	const handlers: Record<string, ((event: unknown, ctx: any) => void) | undefined> = {};
+	let retryHandler: any;
 	const pi = {
+		registerCommand: vi.fn((_name, options) => { retryHandler = options.handler; }),
 		on: vi.fn((eventName: string, cb: (event: unknown, ctx: any) => void) => {
 			handlers[eventName] = cb;
 		}),
@@ -94,7 +85,6 @@ function setup(args: {
 			compactAfterTokensMode: "calibrated",
 			observationsPoolMaxTokens: args.observationsPoolMaxTokens ?? 100,
 			observationsPoolTargetTokens: args.observationsPoolTargetTokens ?? Math.floor((args.observationsPoolMaxTokens ?? 100) / 2),
-			agentMaxTurns: 9,
 			model: { provider: "anthropic", id: "memory", thinking: "minimal" },
 		},
 		consolidationInFlight: args.consolidationInFlight ?? false,
@@ -110,13 +100,16 @@ function setup(args: {
 		resolveModel: vi.fn(async () => ({ ok: true, model: { reasoning: true }, apiKey: "key", headers: { h: "v" } })),
 		launchConsolidationTask: vi.fn((_ctx, work) => {
 			runtime.consolidationInFlight = true;
-			launchedWork = work;
+			const controller = new AbortController();
+			runtime.consolidationController = controller;
+			launchedWork = () => work(controller.signal);
 			return Promise.resolve();
 		}),
 	};
 	// 使用真实实现，保证 stale 会话的失败处理与生产路径一致。
 	runtime.recordConsolidationStageError = Runtime.prototype.recordConsolidationStageError.bind(runtime);
 	runtime.endSession = Runtime.prototype.endSession.bind(runtime);
+	runtime.cancelConsolidation = Runtime.prototype.cancelConsolidation.bind(runtime);
 	runtime.observationProgress = Runtime.prototype.observationProgress.bind(runtime);
 	runtime.reflectionProgress = Runtime.prototype.reflectionProgress.bind(runtime);
 	runtime.maintenanceDue = Runtime.prototype.maintenanceDue.bind(runtime);
@@ -144,6 +137,11 @@ function setup(args: {
 		fireAgentStart: () => handlers.agent_start!(undefined, ctx),
 		fireTurnEnd: () => handlers.turn_end!(undefined, ctx),
 		runLaunchedWork: async () => launchedWork?.(),
+		retry: async () => {
+			const previous = launchedWork;
+			await retryHandler("", { ...ctx, isIdle: () => true });
+			if (launchedWork !== previous) await launchedWork?.();
+		},
 		addEntries: (...more: TestEntry[]) => {
 			entries = [...entries, ...more];
 		},
@@ -154,7 +152,73 @@ function setup(args: {
 	};
 }
 
+function memoryWrites(run: ReturnType<typeof setup>) {
+	return run.pi.appendEntry.mock.calls.filter(([type]) => type !== OM_WORKER_ATTEMPTED);
+}
+
 describe("记忆整理编排", () => {
+	it("反思和清理失败各自消耗本周期机会，重载和新消息都不补跑", async () => {
+		mockAgents.runObserver.mockResolvedValue({ observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"] })], complete: true });
+		mockAgents.runReflector.mockRejectedValue(new Error("反思失败"));
+		mockAgents.runDropper.mockRejectedValue(new Error("清理失败"));
+		const run = setup({ entries: [textCustomMessage("raw-1", "原始事实")], observationsPoolTargetTokens: 5 });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runReflector).toHaveBeenCalledTimes(1);
+		expect(mockAgents.runDropper).toHaveBeenCalledTimes(1);
+		const restored = setup({ entries: [...run.getEntries(), textCustomMessage("raw-2", "新增事实")], observationsPoolTargetTokens: 5 });
+		restored.fire(); await restored.runLaunchedWork();
+		expect(mockAgents.runReflector).toHaveBeenCalledTimes(1);
+		expect(mockAgents.runDropper).toHaveBeenCalledTimes(1);
+		restored.runtime.consolidationInFlight = false;
+		restored.addEntries({ type: "compaction", id: "next-cycle", parentId: null, timestamp: "2026-05-02T10:01:00Z" }, textCustomMessage("raw-3", "压缩后新增事实"));
+		restored.fire(); await restored.runLaunchedWork();
+		expect(mockAgents.runReflector).toHaveBeenCalledTimes(2);
+		expect(mockAgents.runDropper).toHaveBeenCalledTimes(2);
+	});
+	it("被动模式下手动重试只运行观察，不顺带请求可选维护", async () => {
+		const run = setup({ passive: true, entries: [textCustomMessage("raw-1", "需要保存的约束")], observationsPoolTargetTokens: 1 });
+		mockAgents.runObserver.mockResolvedValueOnce({ observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"] })], complete: true });
+		run.fire();
+		expect(mockAgents.runObserver).not.toHaveBeenCalled();
+		await run.retry();
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
+		expect(mockAgents.runReflector).not.toHaveBeenCalled();
+		expect(mockAgents.runDropper).not.toHaveBeenCalled();
+	});
+	it("已有任务运行时手动重试不能再启动一次请求", async () => {
+		const run = setup({ consolidationInFlight: true, entries: [textCustomMessage("raw-1", "事实")] });
+		await run.retry();
+		expect(mockAgents.runObserver).not.toHaveBeenCalled();
+		expect(run.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("等待"), "warning");
+	});
+	it("尝试记录必须先落盘，落盘失败不得发起模型请求", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "事实")] });
+		run.pi.appendEntry.mockImplementationOnce(() => { throw new Error("磁盘不可写"); });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver).not.toHaveBeenCalled();
+		expect(run.runtime.lastObserverError).toContain("磁盘不可写");
+	});
+	it("压缩成功取消旧周期维护请求，不把结果写进新周期", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "事实")] });
+		mockAgents.runObserver.mockResolvedValueOnce({ observations: [observation("aaaaaaaaaaaa")], complete: true });
+		mockAgents.runReflector.mockImplementationOnce(async (args) => {
+			run.addEntries({ type: "compaction", id: "committed-compact", parentId: null, timestamp: "2026-05-02T10:01:00Z" });
+			run.fire("session_compact");
+			expect(args.signal.aborted).toBe(true);
+			return { reflections: [], retirements: [], reviewedObservationIds: ["aaaaaaaaaaaa"] };
+		});
+		run.fire(); await run.runLaunchedWork();
+		expect(memoryWrites(run).map(([type]) => type)).toEqual([OM_OBSERVATIONS_RECORDED]);
+	});
+	it("观察失败后同一未读位置暂停，重载或追加消息不能自动重发", async () => {
+		mockAgents.runObserver.mockRejectedValue(new Error("content_filter"));
+		const run = setup({ entries: [textCustomMessage("raw-1", "原始事实")], reflectAfterTokens: 999 });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
+		const restored = setup({ entries: [...run.getEntries(), textCustomMessage("raw-2", "新增消息")], reflectAfterTokens: 999 });
+		restored.fire(); await restored.runLaunchedWork();
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
+	});
 	const obsA = observation("aaaaaaaaaaaa", { sourceEntryIds: ["raw-1"] });
 	const refA = reflection("eeeeeeeeeeee", [obsA.id]);
 
@@ -177,7 +241,7 @@ describe("记忆整理编排", () => {
 		mockAgents.runObserver.mockResolvedValueOnce({ observations: [obsA], complete: true });
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], reflectAfterTokens: 999 });
 		run.fire(); await run.runLaunchedWork();
-		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({ allowedSourceEntryIds: ["raw-1"], maxTurns: 9, thinkingLevel: "minimal" }));
+		expect(mockAgents.runObserver).toHaveBeenCalledWith(expect.objectContaining({ allowedSourceEntryIds: ["raw-1"], thinkingLevel: "minimal" }));
 		expect(run.pi.appendEntry).toHaveBeenCalledWith(OM_OBSERVATIONS_RECORDED, { observations: [obsA], coversUpToId: "raw-1", processing: { processedSourceEntryIds: ["raw-1"] } });
 	});
 	it("仅 headers 的 OAuth 认证仍完整透传", async () => {
@@ -202,7 +266,7 @@ describe("记忆整理编排", () => {
 	it("零观察推进处理游标，后续运行只检查新增源消息", async () => {
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], reflectAfterTokens: 999 });
 		run.fire(); await run.runLaunchedWork();
-		expect(run.pi.appendEntry.mock.calls[0][1]).toMatchObject({ observations: [], processing: { processedSourceEntryIds: ["raw-1"] } });
+		expect(memoryWrites(run)[0][1]).toMatchObject({ observations: [], processing: { processedSourceEntryIds: ["raw-1"] } });
 		run.runtime.consolidationInFlight = false;
 		run.addEntries(textCustomMessage("raw-2", "新的重要约束"));
 		run.fire(); await run.runLaunchedWork();
@@ -226,11 +290,11 @@ describe("记忆整理编排", () => {
 		expect(mockAgents.runObserver.mock.calls[1][0].allowedSourceEntryIds).toEqual(["raw-3"]);
 		expect(run.getEntries()[0]).toBe(empty);
 	});
-	it("没有完成回执不写任何内容，也不启动后续阶段", async () => {
+	it("没有完成回执只保留尝试记录，不提交观察或启动后续阶段", async () => {
 		mockAgents.runObserver.mockResolvedValueOnce(undefined);
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
 		run.fire(); await run.runLaunchedWork();
-		expect(run.pi.appendEntry).not.toHaveBeenCalled();
+		expect(memoryWrites(run)).toHaveLength(0);
 		expect(run.runtime.lastObserverError).toContain("完成回执");
 		expect(mockAgents.runReflector).not.toHaveBeenCalled();
 	});
@@ -239,7 +303,7 @@ describe("记忆整理编排", () => {
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
 		run.fire(); await run.runLaunchedWork();
 		expect(mockAgents.runReflector).toHaveBeenCalledWith(expect.objectContaining({ observations: [obsA] }));
-		expect(run.pi.appendEntry.mock.calls[1][1]).toMatchObject({ reflections: [], reviewedObservationIds: [obsA.id] });
+		expect(memoryWrites(run)[1][1]).toMatchObject({ reflections: [], reviewedObservationIds: [obsA.id] });
 	});
 	it("即使没有新反思，压力下仍可运行精简器", async () => {
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa"), observationsRecordedEntry("obs", { observations: [obsA], coversUpToId: "raw-1" })], observeAfterTokens: 999, reflectAfterTokens: 999, observationsPoolTargetTokens: 5 });
@@ -289,29 +353,33 @@ describe("记忆整理编排", () => {
 		expect(run.pi.appendEntry).not.toHaveBeenCalled();
 		expect(run.ctx.ui.notify.mock.calls.filter((call) => call[1] === "warning")).toHaveLength(1);
 	});
-	it.each(["observer", "reflector", "dropper"] as const)("阶段失败保持先前已提交记录，停止后续阶段：%s", async (stage) => {
+	it.each(["observer", "reflector", "dropper"] as const)("失败不提交本阶段结果；只有观察失败中止后续阶段：%s", async (stage) => {
 		mockAgents.runObserver.mockResolvedValue({ observations: [obsA], complete: true });
 		mockAgents.runReflector.mockImplementation(async (args) => ({ reflections: [refA], retirements: [], reviewedObservationIds: args.observations.map((item: any) => item.id) }));
 		mockAgents[stage === "observer" ? "runObserver" : stage === "reflector" ? "runReflector" : "runDropper"].mockRejectedValueOnce(new Error(stage + " failed"));
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], observationsPoolTargetTokens: 5 });
 		run.fire(); await run.runLaunchedWork();
 		expect(run.runtime["last" + stage[0].toUpperCase() + stage.slice(1) + "Error"]).toContain("failed");
-		expect(run.pi.appendEntry).toHaveBeenCalledTimes(stage === "observer" ? 0 : stage === "reflector" ? 1 : 2);
+		expect(memoryWrites(run)).toHaveLength(stage === "observer" ? 0 : stage === "reflector" ? 1 : 2);
 	});
-	it("瞬态失败重试成功后只提交一次，且不记录失败", async () => {
+	it("瞬态失败也不自动重试，只允许用户显式重试当前批次", async () => {
 		mockAgents.runObserver.mockRejectedValueOnce(new ObserverStreamError("error", "Connection error."));
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
 		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
+		expect(memoryWrites(run)).toHaveLength(0);
+		expect(run.runtime.lastObserverError).toContain("Connection error.");
+		run.runtime.consolidationInFlight = false;
+		await run.retry();
 		expect(mockAgents.runObserver).toHaveBeenCalledTimes(2);
-		expect(run.pi.appendEntry).toHaveBeenCalledTimes(1);
-		expect(run.runtime.lastObserverError).toBeUndefined();
+		expect(memoryWrites(run)).toHaveLength(1);
 	});
-	it("瞬态失败重试耗尽后不提交，也不启动后续阶段", async () => {
+	it("瞬态失败一次即停止，不提交观察或启动后续阶段", async () => {
 		mockAgents.runObserver.mockRejectedValue(new ObserverStreamError("error", "Connection error."));
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
 		run.fire(); await run.runLaunchedWork();
-		expect(mockAgents.runObserver).toHaveBeenCalledTimes(3);
-		expect(run.pi.appendEntry).not.toHaveBeenCalled();
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(1);
+		expect(memoryWrites(run)).toHaveLength(0);
 		expect(mockAgents.runReflector).not.toHaveBeenCalled();
 		expect(run.runtime.lastObserverError).toContain("Connection error.");
 	});
@@ -326,7 +394,7 @@ describe("记忆整理编排", () => {
 		run.runtime.resolveModel.mockResolvedValue({ ok: true, model: { contextWindow: 32_000, maxTokens: 8_000 } });
 		run.fire(); await run.runLaunchedWork();
 		expect(mockAgents.runObserver).not.toHaveBeenCalled();
-		expect(run.pi.appendEntry).not.toHaveBeenCalled();
+		expect(memoryWrites(run)).toHaveLength(0);
 		expect(run.runtime.lastObserverError).toContain("预算");
 	});
 	it("预算内的完整分块从旧到新逐次排空", async () => {
@@ -345,7 +413,35 @@ describe("记忆整理编排", () => {
 		expect(calls[1].sourceOffset).toBeGreaterThan(0);
 		expect(calls.map((call) => call.chunk).join("")).toContain(":MIDDLE:");
 		expect(calls.at(-1).allowedSourceEntryIds).toContain("next");
-		expect((run.pi.appendEntry.mock.calls[0][1] as any).processing.nextSourceOffset).toBeGreaterThan(0);
+		expect((memoryWrites(run)[0][1] as any).processing.nextSourceOffset).toBeGreaterThan(0);
+	});
+	it("清理次数已用完时，仍可运行有额度且达到压力阈值的反思", async () => {
+		const run = setup({ entries: [
+			textCustomMessage("old-source", "旧事实"),
+			observationsRecordedEntry("old-record", { observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["old-source"] })], coversUpToId: "old-source" }),
+			{ type: "custom", id: "used-dropper", parentId: null, timestamp: "2026-05-02T10:00:00Z", customType: OM_WORKER_ATTEMPTED, data: { stage: "dropper" } },
+		], observeAfterTokens: 99_999, reflectAfterTokens: 99_999, observationsPoolMaxTokens: 10, observationsPoolTargetTokens: 5 });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver).not.toHaveBeenCalled();
+		expect(mockAgents.runReflector).toHaveBeenCalledTimes(1);
+		expect(mockAgents.runDropper).not.toHaveBeenCalled();
+	});
+	it.each([
+		{ name: "两种维护次数都已用完", reflectorUsed: true, reflectAfterTokens: 1, observationsPoolMaxTokens: 100 },
+		{ name: "清理已用完且反思未到期", reflectorUsed: false, reflectAfterTokens: 99_999, observationsPoolMaxTokens: 1_000 },
+	])("不可运行的维护不能挡住固定快照追赶：$name", async (options) => {
+		const entries = [
+			textCustomMessage("old-source", "旧事实"),
+			observationsRecordedEntry("old-record", { observations: [observation("aaaaaaaaaaaa", { sourceEntryIds: ["old-source"] })], coversUpToId: "old-source" }),
+			...(options.reflectorUsed ? [{ type: "custom", id: "used-reflector", parentId: null, timestamp: "2026-05-02T10:00:00Z", customType: OM_WORKER_ATTEMPTED, data: { stage: "reflector" } }] : []),
+			{ type: "custom", id: "used-dropper", parentId: null, timestamp: "2026-05-02T10:00:00Z", customType: OM_WORKER_ATTEMPTED, data: { stage: "dropper" } },
+			textCustomMessage("raw-1", "a".repeat(800)), textCustomMessage("raw-2", "b".repeat(800)),
+		];
+		const run = setup({ entries, compactAfterTokens: 300, observerChunkMaxTokens: 256, reflectAfterTokens: options.reflectAfterTokens, observationsPoolMaxTokens: options.observationsPoolMaxTokens, observationsPoolTargetTokens: 5 });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver.mock.calls.map((call) => call[0].allowedSourceEntryIds)).toEqual([["raw-1"], ["raw-2"]]);
+		expect(mockAgents.runReflector).not.toHaveBeenCalled();
+		expect(mockAgents.runDropper).not.toHaveBeenCalled();
 	});
 	it("接近压缩时先追赶观察，暂缓反思与精简", async () => {
 		const run = setup({ entries: [textCustomMessage("raw-1", "a".repeat(800)), textCustomMessage("raw-2", "b".repeat(800))], compactAfterTokens: 300, observerChunkMaxTokens: 256 });
@@ -391,13 +487,13 @@ describe("记忆整理编排", () => {
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
 		mockAgents.runObserver.mockImplementationOnce(async () => { run.runtime.endSession(); return { observations: [obsA], complete: true }; });
 		run.fire(); await run.runLaunchedWork();
-		expect(run.pi.appendEntry).not.toHaveBeenCalled();
+		expect(memoryWrites(run)).toHaveLength(0);
 	});
 	it("stale-ctx 作为取消处理，不打扰用户", async () => {
 		mockAgents.runObserver.mockRejectedValueOnce(new Error("This extension ctx is stale after session replacement or reload."));
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
 		run.fire(); await run.runLaunchedWork();
 		expect(run.ctx.ui.notify.mock.calls.every((call) => call[1] !== "warning")).toBe(true);
-		expect(run.pi.appendEntry).not.toHaveBeenCalled();
+		expect(memoryWrites(run)).toHaveLength(0);
 	});
 });

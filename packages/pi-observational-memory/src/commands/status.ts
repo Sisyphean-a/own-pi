@@ -11,6 +11,8 @@ import {
 	rawTokensSinceObservationCoverage,
 	rawTokensSinceReflectionCoverage,
 	visibleProjection,
+	workerAttempted,
+	observationProcessingState,
 	type Entry,
 } from "../session-ledger/index.js";
 
@@ -65,6 +67,8 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 			const compactionProgress = rawTokensSinceLastCompaction(entries);
 			const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
 			const compactThreshold = resolveCompactAfterTokens(runtime.config, contextWindow);
+			const cursor = observationProcessingState(entries);
+			const observerPaused = cursor.nextEntryIndex >= 0 && workerAttempted(entries, "observer", entries[cursor.nextEntryIndex].id, cursor.startOffset);
 
 			const passiveLines = runtime.config.passive === true
 				? [
@@ -81,6 +85,8 @@ export function registerStatusCommand(pi: ExtensionAPI, runtime: Runtime): void 
 				reflectionLine,
 				"",
 				"── 进度 ──",
+				...(observerPaused ? ["观察已暂停：该未读批次已经尝试；使用 /om:retry 手动重试"] : []),
+				`本压缩周期：反思 ${workerAttempted(entries, "reflector") ? "已尝试" : "未尝试"}；清理 ${workerAttempted(entries, "dropper") ? "已尝试" : "未尝试"}（各最多一次请求）`,
 				`下次观察：~${obsProgress.toLocaleString()} / ${runtime.config.observeAfterTokens.toLocaleString()} token（${pct(obsProgress, runtime.config.observeAfterTokens)}%）`,
 				`下次反思：~${reflectionProgress.toLocaleString()} / ${runtime.config.reflectAfterTokens.toLocaleString()} token（${pct(reflectionProgress, runtime.config.reflectAfterTokens)}%）`,
 				`下次压缩：~${compactionProgress.toLocaleString()} / ${compactThreshold.toLocaleString()} 估算源 token（${pct(compactionProgress, compactThreshold)}%）`,

@@ -116,6 +116,7 @@ export class Runtime {
 	configLoaded = false;
 	consolidationInFlight = false;
 	consolidationPromise: Promise<void> | null = null;
+	private consolidationController?: AbortController;
 	consolidationPhase: ConsolidationPhase | undefined;
 	compactInFlight = false;
 	compactHookInFlight = false;
@@ -170,10 +171,8 @@ export class Runtime {
 
 	/** 会话替换、重载或退出：作废在途后台任务，并释放会被下一个会话复用的运行标志。 */
 	endSession(): void {
+		this.cancelConsolidation();
 		this.sessionEpoch += 1;
-		this.consolidationInFlight = false;
-		this.consolidationPhase = undefined;
-		this.consolidationPromise = null;
 		this.compactInFlight = false;
 		this.compactHookInFlight = false;
 		this.lastDiagnostic = undefined;
@@ -335,23 +334,32 @@ export class Runtime {
 		return recovered;
 	}
 
-	launchConsolidationTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> {
+	cancelConsolidation(): void {
+		this.consolidationController?.abort();
+		this.consolidationController = undefined;
+		this.consolidationInFlight = false;
+		this.consolidationPhase = undefined;
+		this.consolidationPromise = null;
+	}
+
+	launchConsolidationTask(ctx: LaunchCtx, work: (signal: AbortSignal) => Promise<void>): Promise<void> {
+		const controller = new AbortController();
+		this.consolidationController = controller;
 		this.consolidationInFlight = true;
 		this.consolidationPhase = undefined;
 		this.lastObserverError = undefined;
 		this.lastReflectorError = undefined;
 		this.lastDropperError = undefined;
-		const promise = this.launchTrackedTask(ctx, "记忆整理", work, () => {
-			this.consolidationInFlight = false;
-			this.consolidationPhase = undefined;
-			if (this.consolidationPromise === promise) this.consolidationPromise = null;
+		const promise = this.launchTrackedTask(ctx, "记忆整理", () => work(controller.signal), () => {
+			// 旧会话的收尾不能解开新任务的锁。
+			if (this.consolidationController === controller) this.cancelConsolidation();
 		});
-		this.consolidationPromise = promise;
+		if (this.consolidationController === controller) this.consolidationPromise = promise;
 		return promise;
 	}
 
 	recordConsolidationStageError(ctx: LaunchCtx, phase: ConsolidationPhase, error: unknown, evidence: Record<string, unknown> = {}): string {
-		const reference = recordDiagnosticError(`${phase}.error`, error, { phase, failureCode: "stage_exception", evidence, configuredModel: this.config.model ? { provider: this.config.model.provider, id: this.config.model.id } : undefined, agentMaxTurns: this.config.agentMaxTurns });
+		const reference = recordDiagnosticError(`${phase}.error`, error, { phase, failureCode: "stage_exception", evidence, configuredModel: this.config.model ? { provider: this.config.model.provider, id: this.config.model.id } : undefined, maxTurns: 1 });
 		this.lastDiagnostic = reference;
 		const message = diagnosticError(error).message;
 		if (phase === "observer") this.lastObserverError = message;
@@ -359,7 +367,7 @@ export class Runtime {
 		if (phase === "dropper") this.lastDropperError = message;
 		// 会话已被替换/重载时，旧 ctx 已失效：这不是需要提醒用户的失败。
 		if (isStaleSessionError(error)) return message;
-		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`观察式记忆：${CONSOLIDATION_PHASE_LABELS[phase]}阶段失败：${diagnosticNotice(error, reference)}`, "warning");
+		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`观察式记忆：${CONSOLIDATION_PHASE_LABELS[phase]}阶段失败：${diagnosticNotice(error, reference)}；${phase === "observer" ? "请用 /om:status 查看处理状态，需要时用 /om:retry 手动重试" : "自动维护按压缩周期限次，状态见 /om:status"}`, "warning");
 		return message;
 	}
 

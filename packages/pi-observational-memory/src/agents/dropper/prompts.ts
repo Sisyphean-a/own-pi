@@ -12,4 +12,4 @@ export const DROPPER_SYSTEM = `你是活跃观察的精简代理。只移除对�
 用户一次性授权、旧错误与失效路径不自动成为永久记忆；确认已过时且有状态变化证据时可精简。拿不准时保留。
 
 输出
-调用 drop_observations 提交 drops：observationId、reason 与 replacementIds。检查全部安全候选后一次提交；没有安全项时提交空数组。目标 token 是整理方向，不是必须达到的配额。你只提出精简，不改写事实或创建反思。`;
+本次只允许一次模型响应，不等待工具回执后再生成或补跑。调用前核对替代证据仍保留且没有相互删除。调用 drop_observations 提交 drops：observationId、reason 与 replacementIds。检查全部安全候选后一次提交；没有安全项时提交空数组。目标 token 是整理方向，不是必须达到的配额。你只提出精简，不改写事实或创建反思。`;

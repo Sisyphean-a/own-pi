@@ -33,7 +33,6 @@
     "compactAfterTokensRatio": 0.68,
     "observationsPoolMaxTokens": 20000,
     "observationsPoolTargetTokens": 10000,
-    "agentMaxTurns": 16,
     "model": {
       "provider": "openrouter",
       "id": "google/gemma-4-31b-it",
@@ -60,7 +59,6 @@
 | `compactAfterTokensRatio` | `0 < n < 1` | `0.68` | `ratio` 模式使用的上下文窗口比例 |
 | `observationsPoolMaxTokens` | 正整数 | `20000` | 活跃观察达到该压力时提前维护反思 |
 | `observationsPoolTargetTokens` | 小于 max 的正整数 | max 的一半 | Dropper 维护的活动 observation 目标 |
-| `agentMaxTurns` | 正整数 | `16` | Observer、Reflector、Dropper 共用的嵌套 agent 回合上限 |
 | `model` | 对象 | 未设置 | memory worker 使用的模型覆盖 |
 | `model.provider` | 非空字符串 | 未设置 | Pi model registry 中的 provider |
 | `model.id` | 非空字符串 | 未设置 | Pi model registry 中的模型 ID |
@@ -79,7 +77,9 @@ Observer 根据显式处理回执定位最旧未读源，从旧到新发送 sour
 
 阈值较低：记忆更新更及时，但模型调用更多。阈值较高：调用更少，但未观察的原始会话会积累更久。
 
-审阅完成即写入处理回执，零 observation 也推进游标；缺少完成回执、工具拒绝项未修正或流失败时不写入整批结果。
+每个分块只允许一次模型响应，需在同次响应中提交 `record_observations` 和 `finish_observation`（无新观察时仅提交完成确认）。零 observation 也可推进游标；缺回执、工具拒绝或流失败时不提交部分结果。
+
+请求前保存 `om.worker.attempted`。失败、取消或请求前预算检查失败后，该源位置暂停；追加消息、成功压缩、重载或重启都不自动重发。用 `/om:status` 查看，用 `/om:retry` 手动重试一个分块。该命令在被动模式下也可用，但不会顺带运行反思、精简或连续追赶。模型/认证尚未解析成功时不会消耗请求机会。
 
 ### `observerChunkMaxTokens`
 
@@ -95,7 +95,9 @@ Observer 根据显式处理回执定位最旧未读源，从旧到新发送 sour
 
 Reflector 按最近成功审阅水位统计进度。它一次提交新增反思、旧反思撤回和完整审阅回执；没有变化也记录审阅完成。只有同一主题及作用域的明确变化才撤回旧结论。
 
-Dropper 独立按活跃观察池压力运行，不要求同轮产生新反思。任一阶段真正失败会停止后续阶段，但不回滚先前已提交的记录。
+Dropper 独立按活跃观察池压力运行，不要求同轮产生新反思。反思和 Dropper 是可选增强：各自在两次成功压缩之间最多一次模型响应，请求前即保存尝试记录，成功、失败或取消都不自动补跑。重载、追加观察、模型切换不刷新次数，手动或自动压缩真正落盘后才进入下一周期；压缩失败或取消不刷新。
+
+旧版本已提交的成功反思/精简也算本周期用过；旧版本没有落盘的失败尝试无法追溯。反思失败不拦住清理，任一维护失败都不回滚先前已保存的记忆，也不阻塞压缩。Observer 失败则停止本次整理流水线，等待手动恢复。
 
 ### `observationsPoolMaxTokens`
 
@@ -105,7 +107,7 @@ Dropper 独立按活跃观察池压力运行，不要求同轮产生新反思。
 
 ### `observationsPoolTargetTokens`
 
-这是 Dropper 维护活跃观察的目标。超出目标可独立触发整理；同一记忆修订完成检查后，不因零安全候选逐轮重复调用。
+这是 Dropper 维护活跃观察的目标。超出目标且本周期尚未尝试时可独立触发整理；新观察或零安全候选不会使本周期重新获得一次调用机会。
 
 每项精简须标注原因。冗余、取代、已解决三类必须提供实际留存的全部替代证据；仅 low 级例行回执可不提供。引用次数不构成语义覆盖。代码按完整观察行的实际估算 token 选择候选，达到目标即停止；没有安全项时允许池仍超目标。
 
@@ -159,7 +161,7 @@ Pi 自己的窗口压力压缩和手动压缩仍然独立存在；覆盖不足�
 - 自动 Reflector/Dropper；
 - 主动压缩触发器。
 
-仍保留 Pi/手动压缩、`/om:status`、`/om:view` 和 `recall`。
+仍保留 Pi/手动压缩、`/om:status`、`/om:view` 和 `recall`。显式 `/om:retry` 可手动执行一次观察分块，不会恢复后台自动运行或重置维护次数。
 
 环境变量示例：
 
@@ -184,7 +186,7 @@ observational-memory/debug/<session-id>.ndjson
 排查顺序：
 
 1. 用通知中的 `diagnosticId` 在当前文件和 `.1` 中查找错误。
-2. 用该记录的 `data.workerId` 关联 `worker.started`、`worker.tool_failed`、`worker.validation_rejected`、`worker.finished` / `worker.failed`；同一 `runId` 关联模型解析与外层阶段错误。重试会产生新的 `workerId`。
+2. 用该记录的 `data.workerId` 关联 `worker.started`、`worker.tool_failed`、`worker.validation_rejected`、`worker.finished` / `worker.failed`；同一 `runId` 关联模型解析与外层阶段错误。显式手动重试会产生新的 `workerId`，没有自动整轮重试。
 3. 查看 `data.failureCode`、实际 `turns`、`maxTurns`、`lastStopReason`、工具统计、校验字段及错误栈，而不是根据耗时猜测。
 4. 必要时利用 `sessionFile`、内部来源 ID 和字符偏移，只读取关联的源片段进行复现；不要整份转储会话或日志到模型上下文。
 
@@ -199,7 +201,7 @@ observational-memory/debug/<session-id>.ndjson
 
 `worker.model_resolved` 记录实际选择的模型；输入只保存数量、长度、token 预算、内部来源 ID 和偏移。SDK 校验仅提取字段路径与规则，不抄录附带的原始参数。`worker.completion_invalidated` 表示曾经有效的完成状态被后续工具错误作废。`worker.finished` 只表示 worker 返回成功，是否写入记忆仍以会话账本为准。
 
-未捕获的事件、命令和 `recall` 异常统一记录为 `extension.error`；配置、认证复检、上下文探测、压缩、用量通知与剪贴板等已处理失败也会自动留痕，保留原有行为。不会把诊断作为会话消息或观察/反思保存，也不会改变重试与完整回执要求。
+未捕获的事件、命令和 `recall` 异常统一记录为 `extension.error`；配置、认证复检、上下文探测、压缩、用量通知与剪贴板等已处理失败也会自动留痕，保留原有行为。不会把诊断作为会话消息或观察/反思保存，也不会改变调用次数限制与完整回执要求。
 
 日志不主动保存提示词、响应正文、记忆正文或工具参数；错误文本限制长度并遮蔽常见凭据，但仍包含项目路径、ID、厂商错误摘要和文件栈，应按私有诊断文件处理。写入失败不会替换原始异常；错误通知会说明日志未能落盘。进程被强制结束、代码尚未加载时的错误无法靠此运行时采集器追溯。
 
@@ -214,12 +216,18 @@ V3 不把 V2 配置名当作别名：
 | `reflectionThresholdTokens` | `reflectAfterTokens`、`observationsPoolMaxTokens`、`observationsPoolTargetTokens` | 拆分职责 |
 | `compactionModel` | `model` | 移动到 `model` 对象 |
 | `thinkingLevel` | `model.thinking` | 移动到 `model` 对象 |
-| `observerMaxTurnsPerRun` | `agentMaxTurns` | 合并为共享上限 |
-| `reflectorMaxTurnsPerPass` | `agentMaxTurns` | 合并为共享上限 |
-| `prunerMaxTurnsPerPass` | `agentMaxTurns` | Dropper 使用共享上限 |
+| `observerMaxTurnsPerRun` | 无 | 固定单次模型响应 |
+| `reflectorMaxTurnsPerPass` | 无 | 固定单次模型响应 |
+| `prunerMaxTurnsPerPass` | 无 | 固定单次模型响应 |
 | `compactionMaxToolCalls` | 无 | 删除 |
 
 旧 V2 memory entry 和 details 也会被忽略。升级时建议使用新会话。
+
+## 调用与缓存边界
+
+三类 worker 固定为单次模型响应，旧 `agentMaxTurns` 设置忽略。完整输入仍保留系统提示、工具声明和输出空间检查；来源、审阅与安全精简校验不降低。单次输出仍受 `workerMaxTokens()` 上限约束；这些限制不是每日 token 或费用封顶。
+
+观察请求按固定提示词、当前反思、当前观察、新源片段、当前时间排列；时间不再位于旧记忆前面。已有记录顺序保持不变，但新增记录、周期维护和压缩仍会改变部分前缀。缓存由服务端决定，不保证命中比例；命中缓存也不代表请求免费。不要为提高命中率重复发送已处理内容或保留不必要的长输入。
 
 ## 调优示例
 
@@ -230,7 +238,6 @@ V3 不把 V2 配置名当作别名：
   "observational-memory": {
     "observeAfterTokens": 20000,
     "reflectAfterTokens": 50000,
-    "agentMaxTurns": 8,
     "model": { "provider": "openrouter", "id": "a-cheaper-model", "thinking": "off" }
   }
 }

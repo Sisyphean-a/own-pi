@@ -40,7 +40,6 @@ export interface Config {
 	compactAfterTokensRatio: number;
 	observationsPoolMaxTokens: number;
 	observationsPoolTargetTokens: number;
-	agentMaxTurns: number;
 	model?: ConfiguredModel;
 	showWorkerNotifications: boolean;
 	passive: boolean;
@@ -55,7 +54,6 @@ export const DEFAULTS: Config = {
 	compactAfterTokensRatio: 0.68,
 	observationsPoolMaxTokens: 20_000,
 	observationsPoolTargetTokens: 10_000,
-	agentMaxTurns: 16,
 	showWorkerNotifications: true,
 	passive: false,
 	debugLog: false,
@@ -177,7 +175,6 @@ function normalizeSettingsConfig(value: Record<string, unknown>): Partial<Config
 		"compactAfterTokens",
 		"observationsPoolMaxTokens",
 		"observationsPoolTargetTokens",
-		"agentMaxTurns",
 	] as const;
 	for (const key of numberKeys) {
 		const normalizedValue = positiveIntegerOrUndefined(value[key]);

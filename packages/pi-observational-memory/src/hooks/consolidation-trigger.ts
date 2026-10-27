@@ -4,7 +4,6 @@ import { runDropper } from "../agents/dropper/agent.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { observerChunkBudget, runObserver } from "../agents/observer/agent.js";
 import { runReflector } from "../agents/reflector/agent.js";
-import { runWorkerWithRetry } from "../agents/worker-retry.js";
 import { debugLog, diagnosticLog, diagnosticNotice, recordDiagnosticError, withDebugLogContext } from "../debug-log.js";
 import { resolveCompactAfterTokens, resolveObserverChunkMaxTokens } from "../config.js";
 import { CONSOLIDATION_PHASE_LABELS, type ResolveResult, type Runtime } from "../runtime.js";
@@ -13,6 +12,9 @@ import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
 	OM_REFLECTIONS_RECORDED,
+	OM_WORKER_ATTEMPTED,
+	workerAttempted,
+	workerCycleId,
 	buildObservationsDroppedData,
 	buildObservationsRecordedData,
 	buildReflectionsRecordedData,
@@ -30,6 +32,7 @@ type ResolvedModel = Extract<ResolveResult, { ok: true }>;
 type ConsolidationCtx = {
 	/** 启动时的会话代次；代次变化后 ctx/pi 已失效，后台任务必须立即退出。 */
 	epoch: number;
+	signal?: AbortSignal;
 	cwd: string;	hasUI: boolean;
 	ui?: { notify: (message: string, type?: "warning" | "info" | "error") => void };
 	model: unknown;
@@ -49,7 +52,7 @@ type StageOutcome = "continue" | "abort";
 
 /** 会话代次变化后，Pi 已让旧 ctx/pi 失效：停止后续阶段，不再触碰它们。 */
 function sessionActive(runtime: Runtime, ctx: ConsolidationCtx): boolean {
-	return runtime.isSessionCurrent(ctx.epoch);
+	return runtime.isSessionCurrent(ctx.epoch) && !ctx.signal?.aborted;
 }
 
 /**
@@ -86,10 +89,22 @@ function stageDue(
 	return (progress.realTokens ?? progress.rawTokens) >= threshold;
 }
 
+function maintenanceCanRun(entries: Entry[], runtime: Runtime, currentTokens: number | undefined): boolean {
+	const canDrop = !workerAttempted(entries, "dropper");
+	const canReflect = !workerAttempted(entries, "reflector");
+	if ((!canDrop && !canReflect) || !runtime.maintenanceDue(entries)) return false;
+	if (canDrop) return true;
+	return stageDue(runtime, entries, currentTokens, "reflections", runtime.config.reflectAfterTokens)
+		|| observationPoolMetrics(foldLedger(entries).activeObservations, runtime.config.observationsPoolMaxTokens).observationTokens >= runtime.config.observationsPoolMaxTokens;
+}
+
 function anyStageDue(entries: Entry[], runtime: Runtime, currentTokens: number | undefined): boolean {
-	return stageDue(runtime, entries, currentTokens, "observations", runtime.config.observeAfterTokens)
-		|| stageDue(runtime, entries, currentTokens, "reflections", runtime.config.reflectAfterTokens)
-		|| runtime.maintenanceDue(entries);
+	if (stageDue(runtime, entries, currentTokens, "observations", runtime.config.observeAfterTokens)) {
+		const cursor = observationProcessingState(entries);
+		if (cursor.nextEntryIndex >= 0 && !workerAttempted(entries, "observer", entries[cursor.nextEntryIndex].id, cursor.startOffset)) return true;
+	}
+	return (!workerAttempted(entries, "reflector") && stageDue(runtime, entries, currentTokens, "reflections", runtime.config.reflectAfterTokens))
+		|| maintenanceCanRun(entries, runtime, currentTokens);
 }
 
 function shouldNotifyWorker(runtime: Runtime, ctx: ConsolidationCtx): boolean {
@@ -145,6 +160,19 @@ export function registerConsolidationTrigger(pi: ExtensionAPI, runtime: Runtime)
 	};
 	pi.on("agent_start", launch);
 	pi.on("turn_end", launch);
+	pi.on("session_compact", () => {
+		if (runtime.consolidationPhase === "reflector" || runtime.consolidationPhase === "dropper") runtime.cancelConsolidation();
+	});
+	pi.registerCommand("om:retry", {
+		description: "手动重试当前暂停的观察批次；不重置反思和清理额度",
+		handler: async (_args, ctx) => {
+			if (!ctx.isIdle() || runtime.consolidationInFlight) {
+				ctx.ui.notify("观察式记忆：请等待当前任务结束后再重试", "warning");
+				return;
+			}
+			await maybeLaunchConsolidation(pi, runtime, ctx, true);
+		},
+	});
 }
 
 function debugSessionMetadata(ctx: LiveCtx): { sessionId?: string; sessionFile?: string } {
@@ -159,14 +187,14 @@ function debugSessionMetadata(ctx: LiveCtx): { sessionId?: string; sessionFile?:
 	}
 }
 
-function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: LiveCtx): void {
+function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: LiveCtx, retryObserver = false): Promise<void> | undefined {
 	runtime.ensureConfig(ctx.cwd);
-	if (runtime.config.passive === true) return;
+	if (runtime.config.passive === true && !retryObserver) return;
 	if (runtime.consolidationInFlight) return;
 
 	const entries = ctx.sessionManager.getBranch() as Entry[];
 	const currentTokens = rawContextTokens(ctx);
-	if (!anyStageDue(entries, runtime, currentTokens)) return;
+	if (!retryObserver && !anyStageDue(entries, runtime, currentTokens)) return;
 
 	const runId = `consolidation-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
 	const consolidationCtx: ConsolidationCtx = {
@@ -181,13 +209,13 @@ function maybeLaunchConsolidation(pi: ExtensionAPI, runtime: Runtime, ctx: LiveC
 	};
 
 	const sessionMetadata = debugSessionMetadata(ctx);
-	void runtime.launchConsolidationTask(ctx, async () => withDebugLogContext({
+	return runtime.launchConsolidationTask(ctx, async (signal) => withDebugLogContext({
 		enabled: runtime.config.debugLog === true,
 		cwd: ctx.cwd,
 		...sessionMetadata,
 		runId,
 	}, async () => {
-		await runConsolidationPipeline(pi, runtime, consolidationCtx);
+		await runConsolidationPipeline(pi, runtime, { ...consolidationCtx, signal }, retryObserver);
 	}));
 }
 
@@ -197,18 +225,21 @@ function observationPriorityTarget(runtime: Runtime, ctx: ConsolidationCtx): str
 	const contextWindow = (ctx.model as { contextWindow?: number } | undefined)?.contextWindow;
 	const threshold = resolveCompactAfterTokens(runtime.config, contextWindow);
 	if (runtime.tokenProgress.compactionProgress(entries) + runtime.config.observeAfterTokens < threshold) return;
-	if (observationProcessingState(entries).nextEntryIndex < 0 || runtime.maintenanceDue(entries)) return;
+	const cursor = observationProcessingState(entries);
+	if (cursor.nextEntryIndex < 0 || maintenanceCanRun(entries, runtime, realContextTokens(runtime, ctx))
+		|| workerAttempted(entries, "observer", entries[cursor.nextEntryIndex].id, cursor.startOffset)) return;
 	return entries.at(-1)?.id;
 }
 
-export async function runConsolidationPipeline(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx): Promise<void> {
+export async function runConsolidationPipeline(pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx, retryObserver = false): Promise<void> {
 	if (!sessionActive(runtime, ctx)) return;
 	const resolveModel = makeModelResolver(runtime, ctx);
-	for (const stage of ["observer", "reflector", "dropper"] as const) {
+	const stages = retryObserver ? ["observer"] as const : ["observer", "reflector", "dropper"] as const;
+	for (const stage of stages) {
 		if (!sessionActive(runtime, ctx)) return;
 		runtime.consolidationPhase = stage;
 		try {
-			const target = observationPriorityTarget(runtime, ctx);
+			const target = retryObserver ? undefined : observationPriorityTarget(runtime, ctx);
 			if (target) {
 				runtime.consolidationPhase = "observer";
 				let needsMaintenance = false;
@@ -217,17 +248,17 @@ export async function runConsolidationPipeline(pi: ExtensionAPI, runtime: Runtim
 					const cursor = observationProcessingState(entries);
 					const end = entries.findIndex((entry) => entry.id === target);
 					if (cursor.nextEntryIndex < 0 || cursor.nextEntryIndex > end) break;
-					if (await runObserverStage(pi, runtime, ctx, resolveModel, target) === "abort") return;
+					if (await runObserverStage(pi, runtime, ctx, resolveModel, target, retryObserver) === "abort") return;
 					if (!sessionActive(runtime, ctx)) return;
 					// 不能为追赶持续扩张记忆池，挤掉反思与安全精简的输入预算。
-					needsMaintenance = runtime.maintenanceDue(ctx.sessionManager.getBranch() as Entry[]);
+					needsMaintenance = maintenanceCanRun(ctx.sessionManager.getBranch() as Entry[], runtime, realContextTokens(runtime, ctx));
 					if (needsMaintenance) break;
 				}
 				if (!needsMaintenance) return;
 				if (stage === "observer") continue;
 				runtime.consolidationPhase = stage;
 			}
-			const outcome = stage === "observer" ? await runObserverStage(pi, runtime, ctx, resolveModel)
+			const outcome = stage === "observer" ? await runObserverStage(pi, runtime, ctx, resolveModel, undefined, retryObserver)
 				: stage === "reflector" ? await runReflectorStage(pi, runtime, ctx, resolveModel)
 				: await runDropperStage(pi, runtime, ctx, resolveModel);
 			if (outcome === "abort") return;
@@ -243,7 +274,8 @@ export async function runConsolidationPipeline(pi: ExtensionAPI, runtime: Runtim
 				evidence = { branchEntries: entries.length, branchLeafId: entries.at(-1)?.id, activeObservations: folded.activeObservations.length, reflections: folded.reflections.length, observationTokens: observationPoolMetrics(folded.activeObservations, runtime.config.observationsPoolTargetTokens).observationTokens, cursor: observationProcessingState(entries), observerChunkMaxTokens: runtime.config.observerChunkMaxTokens };
 			} catch { evidence = { contextCaptureFailed: true }; }
 			debugLog(`${failedStage}.error`, { errorMessage: runtime.recordConsolidationStageError(ctx, failedStage, error, evidence) });
-			return;
+			if (failedStage === "observer") return;
+			// 维护是可选增强；反思失败不妨碍清理，次数已在请求前落盘。
 		}
 	}
 }
@@ -252,15 +284,18 @@ async function runObserverStage(
 	pi: ExtensionAPI, runtime: Runtime, ctx: ConsolidationCtx,
 	resolveModel: (stage: "observer") => Promise<ResolvedModel | undefined>,
 	throughEntryId?: string,
+	retryObserver = false,
 ): Promise<StageOutcome> {
 	if (!sessionActive(runtime, ctx)) return "abort";
 	const entries = ctx.sessionManager.getBranch() as Entry[];
-	if (!throughEntryId && !stageDue(runtime, entries, realContextTokens(runtime, ctx), "observations", runtime.config.observeAfterTokens)) return "continue";
+	if (!throughEntryId && !retryObserver && !stageDue(runtime, entries, realContextTokens(runtime, ctx), "observations", runtime.config.observeAfterTokens)) return "continue";
 	const cursor = observationProcessingState(entries);
 	const end = throughEntryId ? entries.findIndex((entry) => entry.id === throughEntryId) + 1 : entries.length;
 	if (cursor.nextEntryIndex < 0 || cursor.nextEntryIndex >= end) return "continue";
+	if (!retryObserver && workerAttempted(entries, "observer", entries[cursor.nextEntryIndex].id, cursor.startOffset)) return "continue";
 	const resolved = await resolveModel("observer");
 	if (!resolved || !sessionActive(runtime, ctx)) return "abort";
+	pi.appendEntry(OM_WORKER_ATTEMPTED, { stage: "observer", sourceEntryId: entries[cursor.nextEntryIndex].id, sourceOffset: cursor.startOffset });
 	const memory = fullProjection(entries);
 	const priorReflections = memory.reflections.map(reflectionToSummaryLine);
 	const priorObservations = memory.observations.map(observationToSummaryLine);
@@ -272,12 +307,12 @@ async function runObserverStage(
 	if (!chunk.text || !chunk.sourceEntryIds.length) throw new Error("观察器输入预算不足，无法读取下一个源片段");
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`观察式记忆：观察器正在处理约 ${chunk.estimatedTokens.toLocaleString()} token 的分块`, "info");
 	debugLog("observer.start", { sourceEntryIds: chunk.sourceEntryIds, startSourceOffset: cursor.startOffset, chunkTokens: chunk.estimatedTokens });
-	const result = await runWorkerWithRetry("observer", () => runObserver({
+	const result = await runObserver({
 		onUsage: (message) => { try { publishUsage(pi.events, message); } catch (error) { recordDiagnosticError("usage.publish_error", error); } },
 		model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, env: resolved.env,
 		priorReflections, priorObservations, chunk: chunk.text, allowedSourceEntryIds: chunk.sourceEntryIds,
-		sourceOffset: cursor.startOffset, maxTurns: runtime.config.agentMaxTurns, thinkingLevel: runtime.config.model?.thinking ?? "low",
-	}), { shouldContinue: () => sessionActive(runtime, ctx) });
+		sourceOffset: cursor.startOffset, thinkingLevel: runtime.config.model?.thinking ?? "low", signal: ctx.signal,
+	});
 	if (!result?.complete) throw new Error("观察器缺少完成回执，处理进度保持不变");
 	const coversUpToId = chunk.sourceEntryIds.at(-1)!;
 	const data = buildObservationsRecordedData(result.observations, coversUpToId, {
@@ -299,6 +334,8 @@ async function runReflectorStage(
 ): Promise<StageOutcome> {
 	if (!sessionActive(runtime, ctx)) return "abort";
 	const entries = ctx.sessionManager.getBranch() as Entry[];
+	if (workerAttempted(entries, "reflector")) return "continue";
+	const cycleId = workerCycleId(entries);
 	const folded = foldLedger(entries);
 	const pressure = observationPoolMetrics(folded.activeObservations, runtime.config.observationsPoolMaxTokens).observationTokens >= runtime.config.observationsPoolMaxTokens;
 	if (!pressure && !stageDue(runtime, entries, realContextTokens(runtime, ctx), "reflections", runtime.config.reflectAfterTokens)) return "continue";
@@ -309,12 +346,14 @@ async function runReflectorStage(
 	if (!resolved || !sessionActive(runtime, ctx)) return "abort";
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`观察式记忆：反思器正在维护 ${folded.activeObservations.length} 条观察与 ${folded.reflections.length} 条当前结论`, "info");
 	debugLog("reflector.start", { observations: folded.activeObservations.length, reflections: folded.reflections.length, pressure });
-	const result = await runWorkerWithRetry("reflector", () => runReflector({
+	pi.appendEntry(OM_WORKER_ATTEMPTED, { stage: "reflector" });
+	const result = await runReflector({
 		onUsage: (message) => { try { publishUsage(pi.events, message); } catch (error) { recordDiagnosticError("usage.publish_error", error); } },
 		model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, env: resolved.env,
 		reflections: folded.reflections, observations: folded.activeObservations,
-		maxTurns: runtime.config.agentMaxTurns, thinkingLevel: runtime.config.model?.thinking ?? "low",
-	}), { shouldContinue: () => sessionActive(runtime, ctx) });
+		thinkingLevel: runtime.config.model?.thinking ?? "low", signal: ctx.signal,
+	});
+	if (!sessionActive(runtime, ctx) || workerCycleId(ctx.sessionManager.getBranch() as Entry[]) !== cycleId) return "abort";
 	if (!result) throw new Error("反思器未返回审阅结果");
 	const data = buildReflectionsRecordedData(result.reflections, observationCoverageId, result.retirements, result.reviewedObservationIds);
 	if (!data) throw new Error("反思维护记录非法");
@@ -330,6 +369,8 @@ async function runDropperStage(
 ): Promise<StageOutcome> {
 	if (!sessionActive(runtime, ctx)) return "abort";
 	const entries = ctx.sessionManager.getBranch() as Entry[];
+	if (workerAttempted(entries, "dropper")) return "continue";
+	const cycleId = workerCycleId(entries);
 	const folded = foldLedger(entries);
 	const metrics = observationPoolMetrics(folded.activeObservations, runtime.config.observationsPoolTargetTokens);
 	if (!metrics.ready) return "continue";
@@ -339,12 +380,14 @@ async function runDropperStage(
 	if (!resolved || !sessionActive(runtime, ctx)) return "abort";
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`观察式记忆：精简器正在检查——活跃观察池约 ${metrics.observationTokens.toLocaleString()} / ${metrics.targetTokens.toLocaleString()} 目标 token`, "info");
 	debugLog("dropper.start", metrics);
-	const drops = await runWorkerWithRetry("dropper", () => runDropper({
+	pi.appendEntry(OM_WORKER_ATTEMPTED, { stage: "dropper" });
+	const drops = await runDropper({
 		onUsage: (message) => { try { publishUsage(pi.events, message); } catch (error) { recordDiagnosticError("usage.publish_error", error); } },
 		model: resolved.model as any, apiKey: resolved.apiKey, headers: resolved.headers, env: resolved.env,
 		reflections: folded.reflections, observations: folded.activeObservations, targetTokens: runtime.config.observationsPoolTargetTokens,
-		maxTurns: runtime.config.agentMaxTurns, thinkingLevel: runtime.config.model?.thinking ?? "low",
-	}), { shouldContinue: () => sessionActive(runtime, ctx) });
+		thinkingLevel: runtime.config.model?.thinking ?? "low", signal: ctx.signal,
+	});
+	if (!sessionActive(runtime, ctx) || workerCycleId(ctx.sessionManager.getBranch() as Entry[]) !== cycleId) return "abort";
 	if (!drops) throw new Error("精简器缺少完成回执");
 	if (!drops.length) return "continue";
 	const data = buildObservationsDroppedData(drops.map((item) => item.observationId), coverageId, drops);

@@ -4,8 +4,7 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
 import { recordDiagnosticError } from "../../debug-log.js";
-import { logAgentStreamError } from "../stream-errors.js";
-import { WorkerStreamError } from "../worker-retry.js";
+import { logAgentStreamError, WorkerStreamError } from "../stream-errors.js";
 import { WorkerDiagnostics } from "../worker-diagnostics.js";
 import { remainingWorkerInputBytes, workerMaxTokens, workerMessages } from "../../model-budget.js";
 import { OBSERVER_SYSTEM } from "./prompts.js";
@@ -26,7 +25,6 @@ interface RunObserverArgs {
 	sourceOffset?: number;
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
-	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
 	onUsage?: (message: unknown) => void;
 }
@@ -69,7 +67,7 @@ export function normalizeSourceEntryIds(ids: readonly string[] | undefined, allo
 export type ObserverResult = { observations: Observation[]; complete: true };
 
 function observerUserText(priorReflections: string[], priorObservations: string[], chunk: string): string {
-	return `当前本地时间：${nowTimestamp()}\n\n当前反思：\n${priorReflections.join("\n") || "（暂无）"}\n\n当前观察：\n${priorObservations.join("\n") || "（暂无）"}\n\n新源片段：\n${chunk}`;
+	return `当前反思：\n${priorReflections.join("\n") || "（暂无）"}\n\n当前观察：\n${priorObservations.join("\n") || "（暂无）"}\n\n新源片段：\n${chunk}\n\n当前本地时间：${nowTimestamp()}`;
 }
 
 export function observerChunkBudget(model: Model<any>, priorReflections: string[], priorObservations: string[], requested: number): number {
@@ -84,10 +82,12 @@ export function observerChunkBudget(model: Model<any>, priorReflections: string[
 
 export async function runObserver(args: RunObserverArgs): Promise<ObserverResult | undefined> {
 	if (!args.chunk.trim()) return undefined;
-	const diagnostics = new WorkerDiagnostics("observer", args, { sourceEntryIds: args.allowedSourceEntryIds, sourceOffset: args.sourceOffset ?? 0, sourceEntries: args.allowedSourceEntryIds.length, sourceChars: args.chunk.length, priorObservations: args.priorObservations.length, priorReflections: args.priorReflections.length, outputTokenBudget: workerMaxTokens(args.model) });
+	const diagnostics = new WorkerDiagnostics("observer", { ...args, maxTurns: 1 }, { sourceEntryIds: args.allowedSourceEntryIds, sourceOffset: args.sourceOffset ?? 0, sourceEntries: args.allowedSourceEntryIds.length, sourceChars: args.chunk.length, priorObservations: args.priorObservations.length, priorReflections: args.priorReflections.length, outputTokenBudget: workerMaxTokens(args.model) });
 	const accumulated = new Map<string, Observation>();
 	let complete = false;
-	let lastRejected = 0;
+	// 同次响应中一旦出现工具错误，不允许后续完成调用将其覆盖。
+	let hasToolError = false;
+	let rejectedObservations = 0;
 	const recordObservations: AgentTool<typeof RecordObservationsSchema> = {
 		...RECORD_TOOL,
 		execute: async (_id, params: Static<typeof RecordObservationsSchema>) => {
@@ -106,7 +106,7 @@ export async function runObserver(args: RunObserverArgs): Promise<ObserverResult
 				accumulated.set(id, { ...observation, tokenCount: observationLineTokenCount(observation) });
 				added++;
 			}
-			lastRejected = rejected;
+			rejectedObservations += rejected;
 			if (rejected) diagnostics.validation("record_observations", { rejected, reasons });
 			return {
 				content: [{ type: "text", text: `已记录 ${added} 条；重复 ${duplicates} 条；拒绝 ${rejected} 条（检查来源和单行内容）。审阅完全部片段后调用 finish_observation。` }],
@@ -119,8 +119,8 @@ export async function runObserver(args: RunObserverArgs): Promise<ObserverResult
 		execute: async (_id, params: Static<typeof FinishSchema>) => {
 			complete = false;
 			const ids = normalizeSourceEntryIds(params.processedSourceEntryIds, args.allowedSourceEntryIds);
-			if (lastRejected > 0 || !ids || ids.length !== new Set(args.allowedSourceEntryIds).size) {
-				diagnostics.validation("finish_observation", { expectedCount: new Set(args.allowedSourceEntryIds).size, receivedCount: params.processedSourceEntryIds.length, missingIds: args.allowedSourceEntryIds.filter((id) => !params.processedSourceEntryIds.includes(id)), rejectedObservations: lastRejected });
+			if (hasToolError || rejectedObservations > 0 || !ids || ids.length !== new Set(args.allowedSourceEntryIds).size) {
+				diagnostics.validation("finish_observation", { expectedCount: new Set(args.allowedSourceEntryIds).size, receivedCount: params.processedSourceEntryIds.length, missingIds: args.allowedSourceEntryIds.filter((id) => !params.processedSourceEntryIds.includes(id)), rejectedObservations });
 				throw new Error("完成回执必须包含全部已提供的源 id，且先修正被拒绝的观察");
 			}
 			complete = true;
@@ -130,15 +130,13 @@ export async function runObserver(args: RunObserverArgs): Promise<ObserverResult
 	const userText = observerUserText(args.priorReflections, args.priorObservations, args.chunk);
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
 	const context = createAgentContext(OBSERVER_SYSTEM, diagnostics.tools([recordObservations, finishObservation] as AgentTool<any>[]));
-	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
-	let turns = 0;
 	const thinking = args.thinkingLevel ?? "low";
 	const config: AgentLoopConfig = {
 		model: args.model, apiKey: args.apiKey, headers: args.headers, env: args.env,
 		maxTokens: workerMaxTokens(args.model),
 		convertToLlm: (messages) => workerMessages(args.model, messages as Message[]), toolExecution: "sequential",
 		...(args.model.reasoning && thinking !== "off" ? { reasoning: thinking } : {}),
-		finishTurn: () => { diagnostics.turns = ++turns; return complete || (effectiveMaxTurns !== undefined && turns >= effectiveMaxTurns) ? { action: "end" } as const : undefined; },
+		finishTurn: () => { diagnostics.turns = 1; return { action: "end" }; },
 	};
 	return diagnostics.run(async () => {
 		const stream = (args.agentLoop ?? agentLoop)(prompts, context, config, args.signal, streamSimple);
@@ -146,8 +144,12 @@ export async function runObserver(args: RunObserverArgs): Promise<ObserverResult
 		for await (const event of stream) {
 			diagnostics.observe(event);
 			logAgentStreamError("observer", event);
-			if (event.type === "tool_execution_end" && event.isError) { if (complete) diagnostics.invalidated(); complete = false; }
-			if (event.type === "message_end") {
+			if (event.type === "tool_execution_end" && event.isError) {
+				hasToolError = true;
+				if (complete) diagnostics.invalidated();
+				complete = false;
+			}
+			if (event.type === "message_end" && event.message.role === "assistant") {
 				try { args.onUsage?.(event.message); } catch (error) { recordDiagnosticError("usage.callback_error", error, { stage: "observer" }); }
 			}
 			const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
@@ -157,7 +159,7 @@ export async function runObserver(args: RunObserverArgs): Promise<ObserverResult
 		}
 		await stream.result();
 		if (streamError) throw new ObserverStreamError(streamError.stopReason, streamError.errorMessage);
-		if (!complete) throw diagnostics.completionError("观察器缺少完成回执；不提交观察，也不推进处理进度");
+		if (hasToolError || rejectedObservations > 0 || !complete) throw diagnostics.completionError("观察器缺少完成回执；不提交观察，也不推进处理进度");
 		return { observations: Array.from(accumulated.values()), complete: true as const };
 	});
 }

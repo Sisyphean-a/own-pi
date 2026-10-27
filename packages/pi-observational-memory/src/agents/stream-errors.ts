@@ -1,6 +1,14 @@
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { debugLog, diagnosticText } from "../debug-log.js";
 
+/** 保留真实流终止原因；不自动重跑模型调用。 */
+export class WorkerStreamError extends Error {
+	constructor(readonly stopReason: string, readonly errorMessage: string | undefined, message: string) {
+		super(message);
+		this.name = "WorkerStreamError";
+	}
+}
+
 /**
  * 把 agent 循环事件流中的 LLM 失败暴露出来。
  *

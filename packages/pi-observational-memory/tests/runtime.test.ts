@@ -10,6 +10,23 @@ function modelRegistry(args: { found?: unknown; auth?: unknown } = {}) {
 }
 
 describe("Runtime V3 behavior", () => {
+	it("旧任务结束不能释放新会话的运行锁，并真正取消旧请求", async () => {
+		const runtime = new Runtime();
+		let releaseOld!: () => void, releaseNew!: () => void;
+		let oldSignal: AbortSignal | undefined;
+		const old = runtime.launchConsolidationTask({ hasUI: false }, async (signal: AbortSignal) => {
+			oldSignal = signal;
+			await new Promise<void>((resolve) => { releaseOld = resolve; });
+		});
+		runtime.endSession();
+		expect(oldSignal?.aborted).toBe(true);
+		const current = runtime.launchConsolidationTask({ hasUI: false }, () => new Promise<void>((resolve) => { releaseNew = resolve; }));
+		releaseOld(); await old;
+		expect(runtime.consolidationInFlight).toBe(true);
+		expect(runtime.consolidationPromise).toBe(current);
+		releaseNew(); await current;
+		expect(runtime.consolidationInFlight).toBe(false);
+	});
 	it("uses configured model when present", async () => {
 		const runtime = new Runtime();
 		const configured = { provider: "anthropic", id: "configured" };
@@ -147,7 +164,7 @@ describe("Runtime V3 behavior", () => {
 		expect(runtime.lastObserverError).toBe("observe failed");
 		expect(runtime.lastReflectorError).toBe("reflect failed");
 		expect(runtime.lastDropperError).toBe("drop failed");
-		expect(notify).toHaveBeenCalledWith(expect.stringMatching(/^观察式记忆：观察阶段失败：observe failed（诊断 [a-f0-9]+）$/), "warning");
+		expect(notify).toHaveBeenCalledWith(expect.stringMatching(/^观察式记忆：观察阶段失败：observe failed（诊断 [a-f0-9]+）；请用 \/om:status 查看处理状态，需要时用 \/om:retry 手动重试$/), "warning");
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("观察式记忆：反思阶段失败：reflect failed（诊断 "), "warning");
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("观察式记忆：精简阶段失败：drop failed（诊断 "), "warning");
 	});

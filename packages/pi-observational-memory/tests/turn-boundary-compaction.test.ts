@@ -34,6 +34,19 @@ function setup(options: { passive?: boolean; keepRecentTokens?: number; covered?
 }
 
 describe("长任务回合边界压缩", () => {
+	it.each(["reflector", "dropper", "observer"] as const)("边界压缩取消旧周期维护但不取消观察尾部：%s", async (stage) => {
+		const run = setup();
+		let release!: () => void;
+		let signal!: AbortSignal;
+		const task = run.runtime.launchConsolidationTask({ hasUI: false }, async (currentSignal) => {
+			signal = currentSignal;
+			run.runtime.consolidationPhase = stage;
+			await new Promise<void>((resolve) => { release = resolve; });
+		});
+		expect(run.run()?.entries).toHaveLength(1);
+		expect(signal.aborted).toBe(stage !== "observer");
+		release(); await task;
+	});
 	it("立即折叠已覆盖旧历史，完整保留尚未覆盖的工具调用与结果", () => {
 		const run = setup();
 		const result = run.run();

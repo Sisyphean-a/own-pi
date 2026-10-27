@@ -5,8 +5,7 @@ import type { Static } from "typebox";
 import { debugLog, recordDiagnosticError } from "../../debug-log.js";
 import { hashId } from "../../ids.js";
 import { createAgentContext } from "../agent-context.js";
-import { logAgentStreamError } from "../stream-errors.js";
-import { WorkerStreamError } from "../worker-retry.js";
+import { logAgentStreamError, WorkerStreamError } from "../stream-errors.js";
 import { WorkerDiagnostics } from "../worker-diagnostics.js";
 import { workerMaxTokens, workerMessages } from "../../model-budget.js";
 import { MAX_RECORD_CONTENT_CHARS } from "../../serialize.js";
@@ -24,7 +23,6 @@ interface RunReflectorArgs {
 	observations: Observation[];
 	signal?: AbortSignal;
 	agentLoop?: typeof agentLoop;
-	maxTurns?: number;
 	thinkingLevel?: ModelThinkingLevel;
 	onUsage?: (message: unknown) => void;
 }
@@ -46,10 +44,11 @@ function singleLine(content: string): string {
 
 export async function runReflector(args: RunReflectorArgs): Promise<ReflectorResult | undefined> {
 	if (!args.observations.length) return undefined;
-	const diagnostics = new WorkerDiagnostics("reflector", args, { observations: args.observations.length, reflections: args.reflections.length, outputTokenBudget: workerMaxTokens(args.model) });
+	const diagnostics = new WorkerDiagnostics("reflector", { ...args, maxTurns: 1 }, { observations: args.observations.length, reflections: args.reflections.length, outputTokenBudget: workerMaxTokens(args.model) });
 	const allowedIds = args.observations.map((observation) => observation.id);
 	const existingIds = new Set(args.reflections.map((reflection) => reflection.id));
 	let result: ReflectorResult | undefined;
+	let hasToolError = false;
 	const recordReflections: AgentTool<typeof RecordReflectionsSchema> = {
 		name: "record_reflections", label: "维护反思",
 		description: "原子提交新增反思、旧反思撤回和全部观察的审阅回执；无变化时两个结果数组均为空。",
@@ -100,14 +99,13 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
 	const userText = `当前有效反思：\n${args.reflections.map(reflectionToSummaryLine).join("\n") || "（暂无）"}\n\n当前观察：\n${args.observations.map(observationToSummaryLine).join("\n")}`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
 	const context = createAgentContext(REFLECTOR_SYSTEM, diagnostics.tools([recordReflections as AgentTool<any>]));
-	let turns = 0;
 	const thinking = args.thinkingLevel ?? "low";
 	const config: AgentLoopConfig = {
 		model: args.model, apiKey: args.apiKey, headers: args.headers, env: args.env,
 		maxTokens: workerMaxTokens(args.model),
 		convertToLlm: (messages) => workerMessages(args.model, messages as Message[]), toolExecution: "sequential",
 		...(args.model.reasoning && thinking !== "off" ? { reasoning: thinking } : {}),
-		finishTurn: () => { diagnostics.turns = ++turns; return result || (args.maxTurns && turns >= args.maxTurns) ? { action: "end" } as const : undefined; },
+		finishTurn: () => { diagnostics.turns = 1; return { action: "end" }; },
 	};
 	return diagnostics.run(async () => {
 		const stream = (args.agentLoop ?? agentLoop)(prompts, context, config, args.signal, streamSimple);
@@ -115,8 +113,12 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
 		for await (const event of stream) {
 			diagnostics.observe(event);
 			logAgentStreamError("reflector", event);
-			if (event.type === "tool_execution_end" && event.isError) { if (result) diagnostics.invalidated(); result = undefined; }
-			if (event.type === "message_end") {
+			if (event.type === "tool_execution_end" && event.isError) {
+				hasToolError = true;
+				if (result) diagnostics.invalidated();
+				result = undefined;
+			}
+			if (event.type === "message_end" && event.message.role === "assistant") {
 				try { args.onUsage?.(event.message); } catch (error) { recordDiagnosticError("usage.callback_error", error, { stage: "reflector" }); }
 				const message = event.message as { stopReason?: string; errorMessage?: string };
 				if (message.stopReason === "error" || message.stopReason === "aborted") {
@@ -132,7 +134,7 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
 				`反思器流失败，未提交维护结果：${streamError.errorMessage ?? streamError.stopReason}`,
 			);
 		}
-		if (!result) throw diagnostics.completionError("反思器缺少审阅完成回执");
+		if (hasToolError || !result) throw diagnostics.completionError("反思器缺少审阅完成回执");
 		debugLog("reflector.result", { reflections: result.reflections.length, retirements: result.retirements.length });
 		return result;
 	});

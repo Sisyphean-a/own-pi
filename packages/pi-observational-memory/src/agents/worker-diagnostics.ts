@@ -120,8 +120,8 @@ export class WorkerDiagnostics {
 		if (this.options.signal?.aborted || this.lastStopReason === "aborted") return "cancelled";
 		if (this.lastStopReason === "error") return "stream_error";
 		if (this.lastStopReason === "length") return "output_limit";
-		if (this.options.maxTurns && this.turns >= this.options.maxTurns) return "max_turns";
 		if (this.failed.size || this.validationRejections) return "tool_rejected";
+		if (this.lastStopReason === "toolUse" && this.options.maxTurns && this.turns >= this.options.maxTurns) return "max_turns";
 		return "missing_completion";
 	}
 

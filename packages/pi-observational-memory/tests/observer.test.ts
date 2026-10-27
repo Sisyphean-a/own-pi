@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { normalizeSourceEntryIds, OBSERVATION_TIMESTAMP_PATTERN, ObserverStreamError, observerChunkBudget, runObserver } from "../src/agents/observer/agent.js";
 import { observationLineTokenCount } from "../src/tokens.js";
@@ -13,6 +13,29 @@ const base = { model: {} as any, priorReflections: [], priorObservations: [], ch
 const finish = (context: any, ids = ["entry-a"]) => context.tools[1].execute("finish", { processedSourceEntryIds: ids });
 
 describe("观察协议", () => {
+	it("每批最多一次模型响应，变化时间位于可复用记忆之后", async () => {
+		const loop: any = (prompts: any, context: any, config: any) => ({
+			async *[Symbol.asyncIterator]() {
+				const text = prompts[0].content[0].text;
+				expect(text.startsWith("当前反思：")).toBe(true);
+				expect(text.indexOf("当前本地时间：")).toBeGreaterThan(text.indexOf(base.chunk));
+				expect(config.finishTurn({})).toEqual({ action: "end" });
+				await finish(context);
+			},
+			async result() { return {}; },
+		});
+		await runObserver({ ...base, agentLoop: loop });
+	});
+	it("用量只发布助手回复，不把用户与工具消息误算为模型调用", async () => {
+		const onUsage = vi.fn();
+		const assistant = { role: "assistant", stopReason: "toolUse", usage: { input: 10, output: 2 } };
+		await runObserver({ ...base, onUsage, agentLoop: fake((context) => finish(context), [
+			{ type: "message_end", message: { role: "user" } },
+			{ type: "message_end", message: assistant },
+			{ type: "message_end", message: { role: "toolResult" } },
+		]) });
+		expect(onUsage).toHaveBeenCalledExactlyOnceWith(assistant);
+	});
 	it("系统消息和工具声明一起送入真实 agent context", async () => {
 		await runObserver({ ...base, agentLoop: fake(async (context) => {
 			expect(getCurrentSystemPrompt(context.messages)).toBeTruthy();
@@ -35,6 +58,24 @@ describe("观察协议", () => {
 	});
 	it("没有完成回执不能把零结果解释成已处理", async () => {
 		await expect(runObserver({ ...base, agentLoop: fake(() => {}) })).rejects.toThrow("完成回执");
+	});
+	it("记录被 SDK 拒绝后，合法完成调用也不能掩盖整批失败", async () => {
+		const loop: any = (_prompts: unknown, context: any) => ({
+			async *[Symbol.asyncIterator]() {
+				yield { type: "tool_execution_end", toolName: "record_observations", toolCallId: "bad-record", isError: true };
+				await finish(context);
+				yield { type: "tool_execution_end", toolName: "finish_observation", toolCallId: "finish", isError: false };
+			},
+			async result() { return {}; },
+		});
+		await expect(runObserver({ ...base, agentLoop: loop })).rejects.toThrow("完成回执");
+	});
+	it("同次响应中的后续合法记录不能清除之前被拒绝的观察", async () => {
+		await expect(runObserver({ ...base, agentLoop: fake(async (context) => {
+			await context.tools[0].execute("invalid", { observations: [{ ...proposal, sourceEntryIds: ["invented"] }] });
+			await context.tools[0].execute("valid", { observations: [proposal] });
+			await finish(context);
+		}) })).rejects.toThrow("修正");
 	});
 	it("完成回执必须覆盖全部提供的源 id", async () => {
 		await expect(runObserver({ ...base, allowedSourceEntryIds: ["entry-a", "entry-b"], agentLoop: fake((context) => finish(context)) })).rejects.toThrow("全部");
@@ -61,9 +102,8 @@ describe("观察协议", () => {
 		}, [{ type: "message_end", message: { role: "assistant", stopReason, errorMessage: "测试失败" } }]) })).rejects.toBeInstanceOf(ObserverStreamError);
 	});
 	it.each(["minimal", "off"] as const)("保留思考设置与回合上限：%s", async (thinkingLevel) => {
-		await runObserver({ ...base, model: { reasoning: true } as any, thinkingLevel, maxTurns: 2, agentLoop: fake(async (context, config) => {
+		await runObserver({ ...base, model: { reasoning: true } as any, thinkingLevel, agentLoop: fake(async (context, config) => {
 			expect(config.reasoning).toBe(thinkingLevel === "off" ? undefined : thinkingLevel);
-			expect(config.finishTurn({})).toBeUndefined();
 			expect(config.finishTurn({})).toEqual({ action: "end" }); await finish(context);
 		}) });
 	});

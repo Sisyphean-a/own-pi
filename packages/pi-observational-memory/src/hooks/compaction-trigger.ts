@@ -19,6 +19,8 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 			const settings = SettingsManager.inMemory(pi.getSettings()).getCompactionSettings(ctx.model);
 			const compaction = readyCompaction(event, entries, settings.keepRecentTokens);
 			if (!compaction) return;
+			// 回合边界提交 compaction 不触发 session_compact；先终止旧周期维护，观察尾部仍可继续。
+			if (runtime.consolidationPhase === "reflector" || runtime.consolidationPhase === "dropper") runtime.cancelConsolidation();
 			if (ctx.hasUI) ctx.ui.notify("观察式记忆：已在回合边界折叠已处理历史，未处理消息原样保留", "info");
 			return { entries: [compaction] };
 		} catch (error) {

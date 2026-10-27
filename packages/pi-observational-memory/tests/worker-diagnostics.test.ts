@@ -9,7 +9,6 @@ import { withDebugLogContext } from "../src/debug-log.js";
 import { runObserver, ObserverStreamError } from "../src/agents/observer/agent.js";
 import { runReflector } from "../src/agents/reflector/agent.js";
 import { runDropper } from "../src/agents/dropper/agent.js";
-import { isRetryableWorkerError } from "../src/agents/worker-retry.js";
 import { observation } from "./fixtures/session.js";
 
 const base = {
@@ -32,6 +31,22 @@ beforeEach(() => { mock.agentDir = mkdtempSync(join(tmpdir(), "om-worker-diag-")
 afterEach(() => { rmSync(mock.agentDir, { recursive: true, force: true }); });
 
 describe("自动 worker 诊断", () => {
+	it.each(["observer", "reflector", "dropper"] as const)("同次响应的先前工具错误不能被后续有效提交清除：%s", async (stage) => {
+		const obs = observation("aaaaaaaaaaaa", { content: "x".repeat(200) });
+		const agentLoop = loop(async function* (ctx) {
+			yield { type: "tool_execution_end", toolName: ctx.tools[0].name, toolCallId: "invalid", isError: true };
+			const tool = stage === "observer" ? ctx.tools[1] : ctx.tools[0];
+			const params = stage === "observer" ? { processedSourceEntryIds: base.allowedSourceEntryIds }
+				: stage === "reflector" ? { reflections: [], retirements: [], reviewedObservationIds: [obs.id] }
+				: { drops: [] };
+			await tool.execute("valid", params);
+			yield { type: "tool_execution_end", toolName: tool.name, toolCallId: "valid", isError: false };
+		});
+		await expect(run(() => stage === "observer" ? runObserver({ ...base, agentLoop })
+			: stage === "reflector" ? runReflector({ ...base, observations: [obs], reflections: [], agentLoop })
+			: runDropper({ ...base, observations: [obs], reflections: [], targetTokens: 1, agentLoop }))).rejects.toThrow("完成回执");
+		expect(failure().data.failureCode).toBe("tool_rejected");
+	});
 	it("即使关闭 debug，也能定位模型正常结束但未确认完成", async () => {
 		await expect(run(() => runObserver({ ...base, agentLoop: loop(async function* (_ctx, config) { yield message(); config.finishTurn({}); }) }))).rejects.toThrow("完成回执");
 		expect(failure()).toMatchObject({ sessionId: "diag-session", runId: "pipeline-1", data: { stage: "observer", failureCode: "missing_completion", turns: 1, lastStopReason: "stop", model: { provider: "test-provider", id: "test-model" } } });
@@ -39,10 +54,10 @@ describe("自动 worker 诊断", () => {
 	});
 
 	it("明确记录轮数耗尽，而不是泛称缺回执", async () => {
-		await expect(run(() => runObserver({ ...base, maxTurns: 2, agentLoop: loop(async function* (_ctx, config) {
+		await expect(run(() => runObserver({ ...base, agentLoop: loop(async function* (_ctx, config) {
 			for (let i = 0; i < 2; i++) { yield message("toolUse"); config.finishTurn({}); }
 		}) }))).rejects.toThrow("轮数上限");
-		expect(failure().data).toMatchObject({ failureCode: "max_turns", turns: 2, maxTurns: 2 });
+		expect(failure().data).toMatchObject({ failureCode: "max_turns", turns: 1, maxTurns: 1 });
 	});
 
 	it("输出截断不被误判为模型主动放弃", async () => {
@@ -85,11 +100,11 @@ describe("自动 worker 诊断", () => {
 		expect(failure().data).toMatchObject({ stage: "dropper", failureCode: "missing_completion" });
 	});
 
-	it("保留流错误类型及重试判定，同时关联自动诊断", async () => {
+	it("保留流错误类型，同时关联自动诊断", async () => {
 		let error: unknown;
 		try { await run(() => runObserver({ ...base, agentLoop: loop(async function* () { yield { type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "Connection error." } }; }) })); } catch (e) { error = e; }
 		expect(error).toBeInstanceOf(ObserverStreamError);
-		expect(isRetryableWorkerError(error)).toBe(true);
+		expect((error as ObserverStreamError).errorMessage).toBe("Connection error.");
 		expect(failure().data.failureCode).toBe("stream_error");
 	});
 
@@ -110,7 +125,7 @@ describe("自动 worker 诊断", () => {
 	it("取消保留真实终止原因，不被当成可重试的服务端失败", async () => {
 		let error: unknown;
 		try { await run(() => runObserver({ ...base, agentLoop: loop(async function* () { yield message("aborted"); }) })); } catch (e) { error = e; }
-		expect(isRetryableWorkerError(error)).toBe(false);
+		expect((error as ObserverStreamError).stopReason).toBe("aborted");
 		expect(failure().data).toMatchObject({ failureCode: "cancelled", lastStopReason: "aborted" });
 	});
 
