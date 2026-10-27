@@ -1,3 +1,4 @@
+import { serializeBranchEntries } from "../serialize.js";
 import { estimateEntryTokens } from "../tokens.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
@@ -92,7 +93,10 @@ export function observationProcessingState(entries: Entry[]): { nextEntryIndex: 
 			offsets.set(id, next ?? Number.POSITIVE_INFINITY);
 		});
 	}
-	const nextEntryIndex = entries.findIndex((entry) => isSourceEntry(entry) && offsets.get(entry.id) !== Number.POSITIVE_INFINITY);
+	// 与观察输入保持同一范围：无可渲染内容的源不需要模型回执，也不能卡住后续进度。
+	const nextEntryIndex = entries.findIndex((entry) => isSourceEntry(entry)
+		&& offsets.get(entry.id) !== Number.POSITIVE_INFINITY
+		&& serializeBranchEntries([entry]).trim().length > 0);
 	return { nextEntryIndex, startOffset: nextEntryIndex < 0 ? 0 : offsets.get(entries[nextEntryIndex].id) ?? 0 };
 }
 

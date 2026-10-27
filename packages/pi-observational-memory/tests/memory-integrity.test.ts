@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { runObserver } from "../src/agents/observer/agent.js";
 import { registerCompactionHook } from "../src/hooks/compaction-hook.js";
 import { foldLedger, fullProjection, recallMemorySources, hasProcessedSourcePrefix, observationProcessingState, isObservationsDroppedData } from "../src/session-ledger/index.js";
-import { serializeSourceAddressedBranchEntries } from "../src/serialize.js";
+import { serializeBranchEntries, serializeSourceAddressedBranchEntries } from "../src/serialize.js";
 import { workerMessages, workerMaxTokens } from "../src/model-budget.js";
-import { observation, observationsRecordedEntry, reflection, reflectionsRecordedEntry, textCustomMessage } from "./fixtures/session.js";
+import { observation, observationsRecordedEntry, rawMessage, reflection, reflectionsRecordedEntry, textCustomMessage } from "./fixtures/session.js";
 
 function loop(handler: (context: any) => Promise<void>, events: any[] = []): any {
 	return (_prompts: unknown, context: any) => ({
@@ -39,6 +39,40 @@ describe("记忆完整性回归", () => {
 		const first = observationsRecordedEntry("first", { observations: [], coversUpToId: "huge", processing: { processedSourceEntryIds: ["huge"], nextSourceOffset: 100 } });
 		const gap = observationsRecordedEntry("gap", { observations: [], coversUpToId: "huge", processing: { processedSourceEntryIds: ["huge"], startSourceOffset: 200, nextSourceOffset: 300 } });
 		expect(observationProcessingState([source, first, gap])).toEqual({ nextEntryIndex: 0, startOffset: 100 });
+	});
+	it.each([
+		{ content: [] },
+		{ content: [{ type: "thinking", thinking: "未公开的思考" }] },
+		{ content: [{ type: "thinking", redacted: true }] },
+	])("观察输入为空的助手消息不阻塞既有回执和后续进度 %#", ({ content }) => {
+		const empty = rawMessage("empty", "", { message: { role: "assistant", content, stopReason: "error", errorMessage: "Connection error." } });
+		const source = textCustomMessage("processed", "已审阅的事实");
+		const receipt = observationsRecordedEntry("receipt", { observations: [], coversUpToId: source.id, processing: { processedSourceEntryIds: [source.id] } });
+		const next = textCustomMessage("next", "新约束");
+		const entries = [empty, source, receipt, next];
+		expect(serializeBranchEntries([empty])).toBe("");
+		expect(observationProcessingState(entries)).toEqual({ nextEntryIndex: 3, startOffset: 0 });
+		expect(hasProcessedSourcePrefix(entries, next.id)).toBe(true);
+		expect(observationProcessingState([empty, source, receipt])).toEqual({ nextEntryIndex: -1, startOffset: 0 });
+		expect(observationProcessingState([empty])).toEqual({ nextEntryIndex: -1, startOffset: 0 });
+		expect(empty.message).toMatchObject({ stopReason: "error", errorMessage: "Connection error." });
+	});
+	it("空消息之后的未完成分片仍从真实未读位置恢复", () => {
+		const empty = rawMessage("empty", "", { message: { role: "assistant", content: [] } });
+		const source = textCustomMessage("huge", "x".repeat(1_000));
+		const receipt = observationsRecordedEntry("partial", { observations: [], coversUpToId: source.id, processing: { processedSourceEntryIds: [source.id], nextSourceOffset: 100 } });
+		expect(observationProcessingState([empty, source, receipt])).toEqual({ nextEntryIndex: 1, startOffset: 100 });
+	});
+	it.each([
+		{ role: "assistant", stopReason: "error", content: [{ type: "text", text: "测试失败，不能提交" }] },
+		{ role: "assistant", content: [{ type: "toolCall", id: "call", name: "bash", arguments: { command: "npm test" } }] },
+		{ role: "user", content: [{ type: "image", data: "image", mimeType: "image/png" }] },
+	])("有正文、工具调用或非文本占位的源仍须完整处理 %#", (message) => {
+		const source = rawMessage("unread", "", { message });
+		const next = textCustomMessage("next", "保留边界");
+		expect(serializeSourceAddressedBranchEntries([source]).sourceEntryIds).toEqual([source.id]);
+		expect(observationProcessingState([source, next])).toEqual({ nextEntryIndex: 0, startOffset: 0 });
+		expect(hasProcessedSourcePrefix([source, next], next.id)).toBe(false);
 	});
 	it("每个精简 id 都须有自己的证据，重复证据不能覆盖另一个 id", () => {
 		const duplicate = { observationId: "aaaaaaaaaaaa", reason: "routine", replacementIds: [] };

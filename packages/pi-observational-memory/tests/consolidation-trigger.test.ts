@@ -208,6 +208,24 @@ describe("记忆整理编排", () => {
 		run.fire(); await run.runLaunchedWork();
 		expect(mockAgents.runObserver.mock.calls[1][0].allowedSourceEntryIds).toEqual(["raw-2"]);
 	});
+	it("旧会话的空失败消息不使已审阅历史在后续回合重复付费处理", async () => {
+		const empty = rawMessage("empty", "", { message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error." } });
+		const run = setup({ entries: [
+			empty,
+			textCustomMessage("raw-1", "已经处理过的长历史"),
+			observationsRecordedEntry("receipt", { observations: [], coversUpToId: "raw-1", processing: { processedSourceEntryIds: ["raw-1"] } }),
+			textCustomMessage("raw-2", "新约束"),
+		], reflectAfterTokens: 999 });
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver).toHaveBeenCalledOnce();
+		expect(mockAgents.runObserver.mock.calls[0][0].allowedSourceEntryIds).toEqual(["raw-2"]);
+		run.runtime.consolidationInFlight = false;
+		run.addEntries(textCustomMessage("raw-3", "又一条新约束"));
+		run.fire(); await run.runLaunchedWork();
+		expect(mockAgents.runObserver).toHaveBeenCalledTimes(2);
+		expect(mockAgents.runObserver.mock.calls[1][0].allowedSourceEntryIds).toEqual(["raw-3"]);
+		expect(run.getEntries()[0]).toBe(empty);
+	});
 	it("没有完成回执不写任何内容，也不启动后续阶段", async () => {
 		mockAgents.runObserver.mockResolvedValueOnce(undefined);
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });

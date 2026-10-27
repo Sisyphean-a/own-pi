@@ -58,8 +58,12 @@ export async function runReflector(args: RunReflectorArgs): Promise<ReflectorRes
 			if (result) throw new Error("本次反思维护已完成");
 			const reviewed = normalizeSupportingObservationIds(params.reviewedObservationIds, allowedIds);
 			if (!reviewed || reviewed.length !== new Set(allowedIds).size) {
-				diagnostics.validation("record_reflections", { expectedCount: new Set(allowedIds).size, receivedCount: params.reviewedObservationIds.length, missingIds: allowedIds.filter((id) => !params.reviewedObservationIds.includes(id)) });
-				throw new Error("审阅回执必须包含全部当前观察 id");
+				const receivedIds = new Set(params.reviewedObservationIds);
+				const allowedIdSet = new Set(allowedIds);
+				const missingIds = allowedIds.filter((id) => !receivedIds.has(id));
+				const unknownIds = [...receivedIds].filter((id) => !allowedIdSet.has(id));
+				diagnostics.validation("record_reflections", { expectedCount: allowedIdSet.size, receivedCount: params.reviewedObservationIds.length, missingIds, unknownIds });
+				throw new Error(`审阅回执必须包含全部当前观察 id；缺失 id：${JSON.stringify(missingIds)}；非法 id：${JSON.stringify(unknownIds)}`);
 			}
 			const support = (ids: string[]) => {
 				const normalized = normalizeSupportingObservationIds(ids, allowedIds);

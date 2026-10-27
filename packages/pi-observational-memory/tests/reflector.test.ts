@@ -43,6 +43,27 @@ describe("反思维护协议", () => {
 	])("拒绝无效维护并保持整批原子性 %#", async (invalid) => {
 		await expect(runReflector({ ...base, agentLoop: fake(invalid) })).rejects.toThrow();
 	});
+	it.each([false, true])("大量观察漏报时返回精确差异，修正后才完成（含非法 id：%s）", async (includeUnknown) => {
+		const observations = Array.from({ length: 144 }, (_, index) => observation(index.toString(16).padStart(12, "0")));
+		const ids = observations.map((item) => item.id);
+		const missingId = ids.at(-1)!;
+		const unknownId = "ffffffffffff";
+		const submitted = ids.slice(0, -1).concat(includeUnknown ? [unknownId] : []);
+		const loop: any = (prompts: any, context: any) => ({
+			async *[Symbol.asyncIterator]() {
+				expect(JSON.stringify(prompts)).toContain(`[${missingId}]`);
+				let feedback = "";
+				try {
+					await context.tools[0].execute("incomplete", { ...empty, reviewedObservationIds: submitted });
+				} catch (error) { feedback = (error as Error).message; }
+				expect(feedback).toContain(`缺失 id：${JSON.stringify([missingId])}`);
+				expect(feedback).toContain(`非法 id：${JSON.stringify(includeUnknown ? [unknownId] : [])}`);
+				await context.tools[0].execute("corrected", { ...empty, reviewedObservationIds: ids });
+			},
+			async result() { return {}; },
+		});
+		await expect(runReflector({ ...base, observations, agentLoop: loop })).resolves.toEqual({ ...empty, reviewedObservationIds: ids });
+	});
 	it("已存在的同文结论不会为了覆盖计数被重写", async () => {
 		const result = await runReflector({ ...base, agentLoop: fake({ ...empty, reflections: [{ content: old.content, supportingObservationIds: [obs.id] }] }) });
 		expect(result?.reflections).toEqual([]);
