@@ -16,7 +16,7 @@ import {
 	type TestEntry,
 } from "./fixtures/session.js";
 
-function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unknown; contextUsage?: unknown }) {
+function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unknown; contextUsage?: unknown; showWorkerNotifications?: boolean }) {
 	let handler: ((args: unknown, ctx: any) => Promise<void>) | undefined;
 	const pi = {
 		registerCommand: vi.fn((name: string, command: { handler: typeof handler }) => {
@@ -33,6 +33,7 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 			observationsPoolMaxTokens: 40,
 			observationsPoolTargetTokens: 20,
 			passive: false,
+			showWorkerNotifications: args.showWorkerNotifications ?? true,
 		},
 		consolidationInFlight: false,
 		consolidationPhase: undefined,
@@ -61,6 +62,13 @@ function setup(args: { entries: TestEntry[]; runtime?: Partial<any>; model?: unk
 }
 
 describe("V3 /om:status", () => {
+	it("关闭后台通知后仍可主动查看状态与维护失败原因", async () => {
+		const run = setup({ entries: [], showWorkerNotifications: false, runtime: { lastDropperError: "精简没有安全替代依据" } });
+		const output = await run.run();
+		expect(run.notify).toHaveBeenCalledTimes(1);
+		expect(output).toContain("精简没有安全替代依据");
+		expect(output).toContain("日志：");
+	});
 	it("renders concise no-memory status without V2 committed/pending language", async () => {
 		const output = await setup({ entries: [] }).run();
 

@@ -27,6 +27,25 @@ describe("Runtime V3 behavior", () => {
 		releaseNew(); await current;
 		expect(runtime.consolidationInFlight).toBe(false);
 	});
+	it("旧会话晚到的普通异常不通知旧 UI，也不覆盖新会话状态", async () => {
+		const runtime = new Runtime();
+		let releaseOld!: () => void, releaseNew!: () => void;
+		let replaced = false;
+		const notify = vi.fn();
+		const ctx = { hasUI: true, get ui() { if (replaced) throw new Error("旧 UI 不可访问"); return { notify }; } };
+		const old = runtime.launchConsolidationTask(ctx, async () => {
+			await new Promise<void>((resolve) => { releaseOld = resolve; });
+			throw new Error("旧请求晚到的失败");
+		});
+		runtime.endSession(); replaced = true;
+		const current = runtime.launchConsolidationTask({ hasUI: false }, () => new Promise<void>((resolve) => { releaseNew = resolve; }));
+		releaseOld(); await old;
+		expect(notify).not.toHaveBeenCalled();
+		expect(runtime.lastDiagnostic).toBeUndefined();
+		expect(runtime.lastObserverError).toBeUndefined();
+		expect(runtime.consolidationInFlight).toBe(true);
+		releaseNew(); await current;
+	});
 	it("uses configured model when present", async () => {
 		const runtime = new Runtime();
 		const configured = { provider: "anthropic", id: "configured" };
@@ -164,11 +183,72 @@ describe("Runtime V3 behavior", () => {
 		expect(runtime.lastObserverError).toBe("observe failed");
 		expect(runtime.lastReflectorError).toBe("reflect failed");
 		expect(runtime.lastDropperError).toBe("drop failed");
-		expect(notify).toHaveBeenCalledWith(expect.stringMatching(/^观察式记忆：观察阶段失败：observe failed（诊断 [a-f0-9]+）；请用 \/om:status 查看处理状态，需要时用 \/om:retry 手动重试$/), "warning");
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("观察式记忆：反思阶段失败：reflect failed（诊断 "), "warning");
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("观察式记忆：精简阶段失败：drop failed（诊断 "), "warning");
+		expect(notify).toHaveBeenCalledExactlyOnceWith("观察式记忆：记忆暂未更新，当前任务可继续；详情见 /om:status", "warning");
+		expect(runtime.lastDiagnostic?.id).toBeTruthy();
 	});
 
+	it.each(["observer", "reflector", "dropper"] as const)("关闭通知仍保存阶段错误与诊断：%s", (phase) => {
+		const runtime = new Runtime();
+		runtime.config.showWorkerNotifications = false;
+		const notify = vi.fn();
+		runtime.recordConsolidationStageError({ hasUI: true, ui: { notify } }, phase, new Error("实际失败原因"));
+		expect(notify).not.toHaveBeenCalled();
+		expect(runtime[phase === "observer" ? "lastObserverError" : phase === "reflector" ? "lastReflectorError" : "lastDropperError"]).toBe("实际失败原因");
+		expect(runtime.lastDiagnostic?.id).toBeTruthy();
+	});
+	it("启动新整理不清空未恢复的错误，同次观察暂停只提醒一次", async () => {
+		const runtime = new Runtime();
+		const notify = vi.fn();
+		const ctx = { hasUI: true, ui: { notify } };
+		runtime.recordConsolidationStageError(ctx, "observer", new Error("首次失败"));
+		runtime.recordConsolidationStageError(ctx, "reflector", new Error("维护失败"));
+		await runtime.launchConsolidationTask(ctx, async () => {});
+		runtime.recordConsolidationStageError(ctx, "observer", new Error("再次失败"));
+		expect(notify).toHaveBeenCalledTimes(1);
+		expect(runtime.lastObserverError).toBe("再次失败");
+		expect(runtime.lastReflectorError).toBe("维护失败");
+	});
+	it("切换会话后清空旧错误，允许提醒新会话的首次暂停", () => {
+		const runtime = new Runtime();
+		const notify = vi.fn();
+		const ctx = { hasUI: true, ui: { notify } };
+		runtime.recordConsolidationStageError(ctx, "observer", new Error("旧会话失败"));
+		runtime.endSession();
+		expect(runtime.lastObserverError).toBeUndefined();
+		runtime.recordConsolidationStageError(ctx, "observer", new Error("新会话失败"));
+		expect(notify).toHaveBeenCalledTimes(2);
+	});
+	it.each([
+		{ phase: "observer" as const, notifications: false },
+		{ phase: "reflector" as const, notifications: true },
+		{ phase: "dropper" as const, notifications: true },
+	])("外层任务错误也遵守阶段通知策略：$phase", async ({ phase, notifications }) => {
+		const runtime = new Runtime();
+		runtime.config.showWorkerNotifications = notifications;
+		const notify = vi.fn();
+		await runtime.launchConsolidationTask({ hasUI: true, ui: { notify } }, async () => {
+			runtime.consolidationPhase = phase;
+			throw new Error("任务异常");
+		});
+		expect(notify).not.toHaveBeenCalled();
+		expect(runtime[phase === "observer" ? "lastObserverError" : phase === "reflector" ? "lastReflectorError" : "lastDropperError"]).toBe("任务异常");
+		expect(runtime.lastDiagnostic?.id).toBeTruthy();
+	});
+	it("提示 UI 失败不替换观察阶段的原始错误", () => {
+		const runtime = new Runtime();
+		const ctx = { hasUI: true, ui: { notify: () => { throw new Error("UI 不可用"); } } };
+		expect(() => runtime.recordConsolidationStageError(ctx, "observer", new Error("原始失败"))).not.toThrow();
+		expect(runtime.lastObserverError).toBe("原始失败");
+	});
+	it("关闭通知时模型回退不额外弹提示", async () => {
+		const runtime = new Runtime();
+		runtime.config.showWorkerNotifications = false;
+		runtime.config.model = { provider: "test", id: "missing" };
+		const notify = vi.fn();
+		const model = { provider: "test", id: "session" };
+		expect(await runtime.resolveModel({ model, modelRegistry: modelRegistry(), hasUI: true, ui: { notify } })).toMatchObject({ ok: true, model });
+		expect(notify).not.toHaveBeenCalled();
+	});
 	it("keeps compaction flags independent", () => {
 		const runtime = new Runtime();
 		runtime.compactInFlight = true;

@@ -4,7 +4,7 @@ import { registerCompactionTrigger } from "../src/hooks/compaction-trigger.js";
 import { JournalTokenProgress } from "../src/session-ledger/token-progress.js";
 import { compactionEntry, rawMessage, textCustomMessage, type TestEntry } from "./fixtures/session.js";
 
-function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensMode?: "calibrated" | "ratio"; compactAfterTokensRatio?: number; passive?: boolean; compactInFlight?: boolean } = {}) {
+function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensMode?: "calibrated" | "ratio"; compactAfterTokensRatio?: number; passive?: boolean; compactInFlight?: boolean; showWorkerNotifications?: boolean } = {}) {
 	let handler: ((event: unknown, ctx: unknown) => void) | undefined;
 	const pi = {
 		on: vi.fn((name: string, cb: typeof handler) => {
@@ -18,6 +18,7 @@ function captureHandler(args: { compactAfterTokens?: number; compactAfterTokensM
 			compactAfterTokensMode: args.compactAfterTokensMode ?? "calibrated",
 			compactAfterTokensRatio: args.compactAfterTokensRatio ?? 0.68,
 			passive: args.passive ?? false,
+			showWorkerNotifications: args.showWorkerNotifications ?? true,
 		},
 		compactInFlight: args.compactInFlight ?? false,
 		tokenProgress: new JournalTokenProgress(),
@@ -62,6 +63,22 @@ describe("V3 compaction trigger", () => {
 		vi.useRealTimers();
 	});
 
+	it.each(["completed", "failed", "throws", "busy", "already-compacted"])("关闭通知不改变自动压缩行为：%s", async (outcome) => {
+		const { handler, runtime } = captureHandler({ showWorkerNotifications: false });
+		const ctx = fakeCtx(outcome === "already-compacted" ? [dueBranch, belowBranch] : [dueBranch]);
+		if (outcome === "busy") ctx.isIdle.mockReturnValue(false);
+		ctx.compact.mockImplementation((options: any) => {
+			if (outcome === "failed") options.onError({ message: "压缩失败" });
+			else if (outcome === "throws") throw new Error("压缩异常");
+			else options.onComplete();
+		});
+		handler(agentSettled(), ctx);
+		await vi.runAllTimersAsync();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+		expect(ctx.compact).toHaveBeenCalledTimes(outcome === "busy" || outcome === "already-compacted" ? 0 : 1);
+		expect(runtime.compactInFlight).toBe(false);
+		if (outcome === "failed" || outcome === "throws") expect((runtime as any).lastDiagnostic?.id).toBeTruthy();
+	});
 	it("does nothing below compactAfterTokens", async () => {
 		const { handler, runtime } = captureHandler({ compactAfterTokens: 3 });
 		const ctx = fakeCtx([belowBranch]);

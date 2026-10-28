@@ -233,10 +233,10 @@ describe("OAuth provider end-to-end consolidation", () => {
 		});
 		await runtime.consolidationPromise;
 
-		const skipped = notices.find((message) => message.includes("已跳过"));
-		expect(skipped).toContain(
-			'观察式记忆：观察已跳过——provider "openai-codex" 认证失败——OAuth 凭据可能已过期；请运行 \'/login openai-codex\' 重新登录',
-		);
+		const skipped = notices.find((message) => message.includes("记忆暂未更新"));
+		expect(skipped).toBe("观察式记忆：记忆暂未更新，当前任务可继续；详情见 /om:status");
+		expect(runtime.lastObserverError).toContain("OAuth 凭据可能已过期");
+		expect(runtime.lastObserverError).toContain("/login openai-codex");
 		expect(appended).toEqual([]);
 
 		// eslint-disable-next-line no-console

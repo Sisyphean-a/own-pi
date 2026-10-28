@@ -92,7 +92,6 @@ function setup(args: {
 		sessionEpoch: 0,
 		isSessionCurrent: (epoch: number) => runtime.sessionEpoch === epoch,
 		consolidationPhase: undefined as "observer" | "reflector" | "dropper" | undefined,
-		resolveFailureNotified: false,
 		lastObserverError: undefined as string | undefined,
 		lastReflectorError: undefined as string | undefined,
 		lastDropperError: undefined as string | undefined,
@@ -336,22 +335,24 @@ describe("记忆整理编排", () => {
 		run.fire(); await run.runLaunchedWork();
 		expect(mockAgents.runReflector).not.toHaveBeenCalled(); expect(mockAgents.runDropper).not.toHaveBeenCalled();
 	});
-	it.each([true, false])("例行通知遵守设置，错误始终报告：%s", async (showWorkerNotifications) => {
+	it.each([true, false])("正常与失败通知都遵守设置：%s", async (showWorkerNotifications) => {
 		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], reflectAfterTokens: 999, showWorkerNotifications });
 		run.fire(); await run.runLaunchedWork();
 		expect(run.ctx.ui.notify.mock.calls.length > 0).toBe(showWorkerNotifications);
 		mockAgents.runObserver.mockRejectedValue(new ObserverStreamError("error", "gateway timeout"));
 		const failed = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], showWorkerNotifications });
 		failed.fire(); await failed.runLaunchedWork();
-		expect(failed.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("gateway timeout"), "warning");
+		expect(failed.ctx.ui.notify.mock.calls.filter((call) => call[1] === "warning")).toHaveLength(showWorkerNotifications ? 1 : 0);
+		expect(failed.runtime.lastObserverError).toContain("gateway timeout");
 	});
-	it("模型不可用只提示一次且不写伪记忆", async () => {
-		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
+	it.each([true, false])("模型不可用也遵守通知设置且不写伪记忆：%s", async (showWorkerNotifications) => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")], showWorkerNotifications });
 		run.runtime.resolveModel.mockResolvedValue({ ok: false, reason: "no model" });
 		run.fire(); await run.runLaunchedWork(); run.runtime.consolidationInFlight = false;
 		run.fire(); await run.runLaunchedWork();
 		expect(run.pi.appendEntry).not.toHaveBeenCalled();
-		expect(run.ctx.ui.notify.mock.calls.filter((call) => call[1] === "warning")).toHaveLength(1);
+		expect(run.ctx.ui.notify.mock.calls.filter((call) => call[1] === "warning")).toHaveLength(showWorkerNotifications ? 1 : 0);
+		expect(run.runtime.lastObserverError).toBe("no model");
 	});
 	it.each(["observer", "reflector", "dropper"] as const)("失败不提交本阶段结果；只有观察失败中止后续阶段：%s", async (stage) => {
 		mockAgents.runObserver.mockResolvedValue({ observations: [obsA], complete: true });
@@ -361,6 +362,29 @@ describe("记忆整理编排", () => {
 		run.fire(); await run.runLaunchedWork();
 		expect(run.runtime["last" + stage[0].toUpperCase() + stage.slice(1) + "Error"]).toContain("failed");
 		expect(memoryWrites(run)).toHaveLength(stage === "observer" ? 0 : stage === "reflector" ? 1 : 2);
+		expect(run.ctx.ui.notify.mock.calls.filter((call) => call[1] === "warning")).toHaveLength(stage === "observer" ? 1 : 0);
+	});
+	it("同次暂停的手动重试不重复提醒，成功后再次失败才重新提醒", async () => {
+		mockAgents.runObserver.mockRejectedValueOnce(new Error("首次失败"))
+			.mockRejectedValueOnce(new Error("重试失败"))
+			.mockResolvedValueOnce({ observations: [], complete: true })
+			.mockRejectedValueOnce(new Error("新批次失败"));
+		const run = setup({ entries: [textCustomMessage("raw-1", "aaaaaaaa")] });
+		run.fire(); await run.runLaunchedWork();
+		run.runtime.consolidationInFlight = false; await run.retry();
+		expect(run.ctx.ui.notify.mock.calls.filter((call) => call[1] === "warning")).toHaveLength(1);
+		run.runtime.consolidationInFlight = false; await run.retry();
+		expect(run.runtime.lastObserverError).toBeUndefined();
+		run.addEntries(textCustomMessage("raw-2", "新批次"));
+		run.runtime.consolidationInFlight = false; run.fire(); await run.runLaunchedWork();
+		expect(run.ctx.ui.notify.mock.calls.filter((call) => call[1] === "warning")).toHaveLength(2);
+	});
+	it("仅维护模型不可用时也不弹警告", async () => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "旧事实"), observationsRecordedEntry("obs", { observations: [obsA], coversUpToId: "raw-1" })] });
+		run.runtime.resolveModel.mockResolvedValue({ ok: false, reason: "维护模型不可用" });
+		run.fire(); await run.runLaunchedWork();
+		expect(run.ctx.ui.notify).not.toHaveBeenCalled();
+		expect(run.runtime.lastReflectorError).toBe("维护模型不可用");
 	});
 	it("瞬态失败也不自动重试，只允许用户显式重试当前批次", async () => {
 		mockAgents.runObserver.mockRejectedValueOnce(new ObserverStreamError("error", "Connection error."));

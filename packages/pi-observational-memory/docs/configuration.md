@@ -63,7 +63,7 @@
 | `model.provider` | 非空字符串 | 未设置 | Pi model registry 中的 provider |
 | `model.id` | 非空字符串 | 未设置 | Pi model registry 中的模型 ID |
 | `model.thinking` | 枚举 | `low` | `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
-| `showWorkerNotifications` | 布尔值 | `true` | 是否显示普通 worker 进度通知 |
+| `showWorkerNotifications` | 布尔值 | `true` | 是否显示插件后台提示；关闭不影响诊断及主动查询 |
 | `passive` | 布尔值 | `false` | 是否停用后台记忆和主动压缩 |
 | `debugLog` | 布尔值 | `false` | 是否增加详细调试事件；关闭不影响自动诊断 |
 
@@ -145,13 +145,17 @@ Pi 自己的窗口压力压缩和手动压缩仍然独立存在；覆盖不足�
 - OAuth 风格的 `Authorization` 等 headers；
 - Pi 在请求时使用的环境凭据，例如 Bedrock SigV4 或 Vertex ADC。
 
-配置模型找不到时会回退到会话模型并提示一次。没有可用模型或凭据时，worker 跳过或报告失败，不生成假记忆。
+配置模型找不到时仍按既有规则回退到会话模型，提示受 `showWorkerNotifications` 控制。没有可用模型或凭据时，worker 跳过或报告失败，不生成假记忆。
 
 ## 通知、被动模式和调试
 
 ### `showWorkerNotifications`
 
-设为 `false` 只隐藏正常的 Observer/Reflector/Dropper 进度提示。模型不可用、worker 失败、压缩提示和 `/om:*` 命令输出仍然可见。
+设为 `false` 关闭插件产生的后台提示，包括 worker 进度、模型不可用或回退、观察暂停、自动压缩及诊断日志写入失败的提示。不影响模型选择、调用限制、错误采集或 Pi 宿主自己的报错；`/om:status`、`/om:view` 等主动操作的输出和忙碌反馈仍可见。
+
+开启时，反思和精简失败也只记入日志及 `/om:status`，不弹警告。观察未完成只显示一句“记忆暂未更新，当前任务可继续”；同一运行会话内连续失败或手动重试不会重复提醒，成功提交观察或重载/切换会话后可再次提醒。
+
+阶段错误不会因下一次任务启动或跳过阶段而清空；该阶段真正成功或会话重建后才清除。静默不代表成功，不会放宽安全校验或增加重试。
 
 ### `passive`
 
@@ -173,7 +177,7 @@ PI_OBSERVATIONAL_MEMORY_PASSIVE=true pi
 
 ### `debugLog`
 
-基本运行摘要与错误始终自动采集，`debugLog: false` 不会关闭它们。设为 `true` 会增加分块启动、账本提交、凭据检查等详细事件；`showWorkerNotifications: false` 只隐藏普通进度提示，不影响诊断。
+基本运行摘要与错误始终自动采集，`debugLog: false` 不会关闭它们。设为 `true` 会增加分块启动、账本提交、凭据检查等详细事件；`showWorkerNotifications: false` 关闭后台提示，不影响诊断。
 
 文件位于 Pi agent 目录，通常为：
 
@@ -181,11 +185,11 @@ PI_OBSERVATIONAL_MEMORY_PASSIVE=true pi
 observational-memory/debug/<session-id>.ndjson
 ```
 
-没有可用 session ID 时使用 `observational-memory/debug.ndjson`。每个文件达到 10 MiB 后轮转，保留一份 `.1` 备份。`/om:status` 显示当前路径、最近诊断编号及已知写入失败；普通错误通知只保留短原因和编号，不展开堆栈。
+没有可用 session ID 时使用 `observational-memory/debug.ndjson`。每个文件达到 10 MiB 后轮转，保留一份 `.1` 备份。`/om:status` 显示当前路径、最近诊断编号及已知写入失败；worker 的技术错误、编号和堆栈留在状态及日志中，不再通过维护失败警告打断主任务。
 
 排查顺序：
 
-1. 用通知中的 `diagnosticId` 在当前文件和 `.1` 中查找错误。
+1. 运行 `/om:status`，用最近诊断编号在当前文件和 `.1` 中查找错误。
 2. 用该记录的 `data.workerId` 关联 `worker.started`、`worker.tool_failed`、`worker.validation_rejected`、`worker.finished` / `worker.failed`；同一 `runId` 关联模型解析与外层阶段错误。显式手动重试会产生新的 `workerId`，没有自动整轮重试。
 3. 查看 `data.failureCode`、实际 `turns`、`maxTurns`、`lastStopReason`、工具统计、校验字段及错误栈，而不是根据耗时猜测。
 4. 必要时利用 `sessionFile`、内部来源 ID 和字符偏移，只读取关联的源片段进行复现；不要整份转储会话或日志到模型上下文。
@@ -203,7 +207,7 @@ observational-memory/debug/<session-id>.ndjson
 
 未捕获的事件、命令和 `recall` 异常统一记录为 `extension.error`；配置、认证复检、上下文探测、压缩、用量通知与剪贴板等已处理失败也会自动留痕，保留原有行为。不会把诊断作为会话消息或观察/反思保存，也不会改变调用次数限制与完整回执要求。
 
-日志不主动保存提示词、响应正文、记忆正文或工具参数；错误文本限制长度并遮蔽常见凭据，但仍包含项目路径、ID、厂商错误摘要和文件栈，应按私有诊断文件处理。写入失败不会替换原始异常；错误通知会说明日志未能落盘。进程被强制结束、代码尚未加载时的错误无法靠此运行时采集器追溯。
+日志不主动保存提示词、响应正文、记忆正文或工具参数；错误文本限制长度并遮蔽常见凭据，但仍包含项目路径、ID、厂商错误摘要和文件栈，应按私有诊断文件处理。写入失败不会替换原始异常；`/om:status` 保留已知写入失败，通知关闭时也不会额外弹窗。进程被强制结束、代码尚未加载时的错误无法靠此运行时采集器追溯。
 
 ## V2 迁移
 

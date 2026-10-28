@@ -4,9 +4,9 @@ import { runDropper } from "../agents/dropper/agent.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { observerChunkBudget, runObserver } from "../agents/observer/agent.js";
 import { runReflector } from "../agents/reflector/agent.js";
-import { debugLog, diagnosticLog, diagnosticNotice, recordDiagnosticError, withDebugLogContext } from "../debug-log.js";
+import { debugLog, diagnosticLog, recordDiagnosticError, withDebugLogContext } from "../debug-log.js";
 import { resolveCompactAfterTokens, resolveObserverChunkMaxTokens } from "../config.js";
-import { CONSOLIDATION_PHASE_LABELS, type ResolveResult, type Runtime } from "../runtime.js";
+import { type ResolveResult, type Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
@@ -125,7 +125,6 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "ob
 		if (cached.ok) {
 			const selected = cached.model as { provider?: string; id?: string; contextWindow?: number };
 			diagnosticLog("worker.model_resolved", { stage, model: { provider: selected?.provider, id: selected?.id, contextWindow: selected?.contextWindow }, thinking: runtime.config.model?.thinking ?? "low" });
-			runtime.resolveFailureNotified = false;
 			// OpenCode Go 要求 worker 请求携带稳定会话头；同时保留已有认证头。
 			const model = (cached.model ?? {}) as { provider?: string; baseUrl?: string };
 			if (model.provider === "opencode" || model.provider === "opencode-go" || (typeof model.baseUrl === "string" && model.baseUrl.includes("opencode.ai"))) {
@@ -144,12 +143,7 @@ function makeModelResolver(runtime: Runtime, ctx: ConsolidationCtx): (stage: "ob
 			return cached;
 		}
 		const error = new Error(cached.reason);
-		const reference = recordDiagnosticError(`${stage}.model_unavailable`, error, { stage, failureCode: "model_unavailable" });
-		runtime.lastDiagnostic = reference;
-		if (!runtime.resolveFailureNotified && ctx.hasUI && ctx.ui && sessionActive(runtime, ctx)) {
-			ctx.ui.notify(`观察式记忆：${CONSOLIDATION_PHASE_LABELS[stage]}已跳过——${diagnosticNotice(error, reference)}`, "warning");
-			runtime.resolveFailureNotified = true;
-		}
+		runtime.recordConsolidationStageError(ctx, stage, error, { failureCode: "model_unavailable" });
 		return undefined;
 	};
 }
@@ -323,6 +317,7 @@ async function runObserverStage(
 	if (!data) throw new Error("观察器处理记录非法");
 	if (!sessionActive(runtime, ctx)) return "abort";
 	pi.appendEntry(OM_OBSERVATIONS_RECORDED, data);
+	runtime.lastObserverError = undefined;
 	debugLog("observer.appended", { count: result.observations.length, coversUpToId, nextSourceOffset: chunk.nextSourceOffset });
 	if (shouldNotifyWorker(runtime, ctx)) ctx.ui?.notify(`观察式记忆：已审阅源片段，记录 ${result.observations.length} 条观察`, "info");
 	return "continue";
@@ -359,6 +354,7 @@ async function runReflectorStage(
 	if (!data) throw new Error("反思维护记录非法");
 	if (!sessionActive(runtime, ctx)) return "abort";
 	pi.appendEntry(OM_REFLECTIONS_RECORDED, data);
+	runtime.lastReflectorError = undefined;
 	debugLog("reflector.appended", { added: result.reflections.length, retired: result.retirements.length, coversUpToId: observationCoverageId });
 	return "continue";
 }
@@ -389,11 +385,12 @@ async function runDropperStage(
 	});
 	if (!sessionActive(runtime, ctx) || workerCycleId(ctx.sessionManager.getBranch() as Entry[]) !== cycleId) return "abort";
 	if (!drops) throw new Error("精简器缺少完成回执");
-	if (!drops.length) return "continue";
+	if (!drops.length) { runtime.lastDropperError = undefined; return "continue"; }
 	const data = buildObservationsDroppedData(drops.map((item) => item.observationId), coverageId, drops);
 	if (!data) throw new Error("精简记录非法");
 	if (!sessionActive(runtime, ctx)) return "abort";
 	pi.appendEntry(OM_OBSERVATIONS_DROPPED, data);
+	runtime.lastDropperError = undefined;
 	debugLog("dropper.appended", { count: drops.length, coversUpToId: coverageId });
 	return "continue";
 }

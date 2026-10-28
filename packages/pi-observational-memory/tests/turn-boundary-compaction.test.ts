@@ -47,6 +47,15 @@ describe("长任务回合边界压缩", () => {
 		expect(signal.aborted).toBe(stage !== "observer");
 		release(); await task;
 	});
+	it.each([false, true])("关闭通知时边界压缩与失败诊断仍正常：失败=%s", (failed) => {
+		const run = setup();
+		run.runtime.config.showWorkerNotifications = false;
+		if (failed) run.pi.getSettings = () => { throw new Error("设置读取失败"); };
+		const result = run.run();
+		if (failed) expect(run.runtime.lastDiagnostic?.id).toBeTruthy();
+		else expect(result?.entries).toHaveLength(1);
+		expect(run.ctx.ui.notify).not.toHaveBeenCalled();
+	});
 	it("立即折叠已覆盖旧历史，完整保留尚未覆盖的工具调用与结果", () => {
 		const run = setup();
 		const result = run.run();

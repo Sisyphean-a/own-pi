@@ -1,5 +1,5 @@
 import { type Config, DEFAULTS, loadConfig } from "./config.js";
-import { debugLog, diagnosticError, diagnosticNotice, recordDiagnosticError, type DiagnosticReference } from "./debug-log.js";
+import { debugLog, diagnosticError, recordDiagnosticError, type DiagnosticReference } from "./debug-log.js";
 import { observationTokenSum } from "./agents/dropper/pool.js";
 import { foldLedger, JournalTokenProgress, type Entry, type StageProgress } from "./session-ledger/index.js";
 
@@ -125,7 +125,6 @@ export class Runtime {
 	 * 代次变化后立即停止，不再触碰已失效的 ctx/pi。
 	 */
 	sessionEpoch = 0;
-	resolveFailureNotified = false;
 	lastObserverError: string | undefined;
 	lastReflectorError: string | undefined;
 	lastDropperError: string | undefined;
@@ -176,6 +175,9 @@ export class Runtime {
 		this.compactInFlight = false;
 		this.compactHookInFlight = false;
 		this.lastDiagnostic = undefined;
+		this.lastObserverError = undefined;
+		this.lastReflectorError = undefined;
+		this.lastDropperError = undefined;
 		this.tokenProgress.reset();
 		this.maintenanceState = undefined;
 		this.maintainedRevision = undefined;
@@ -192,7 +194,7 @@ export class Runtime {
 			const configured = ctx.modelRegistry.find(this.config.model.provider, this.config.model.id);
 			if (configured) {
 				model = configured;
-			} else if (ctx.hasUI && ctx.ui) {
+			} else if (this.config.showWorkerNotifications && ctx.hasUI && ctx.ui) {
 				ctx.ui.notify(
 					`观察式记忆：配置的模型 ${this.config.model.provider}/${this.config.model.id} 不存在，改用当前会话模型`,
 					"warning",
@@ -347,9 +349,6 @@ export class Runtime {
 		this.consolidationController = controller;
 		this.consolidationInFlight = true;
 		this.consolidationPhase = undefined;
-		this.lastObserverError = undefined;
-		this.lastReflectorError = undefined;
-		this.lastDropperError = undefined;
 		const promise = this.launchTrackedTask(ctx, "记忆整理", () => work(controller.signal), () => {
 			// 旧会话的收尾不能解开新任务的锁。
 			if (this.consolidationController === controller) this.cancelConsolidation();
@@ -359,15 +358,24 @@ export class Runtime {
 	}
 
 	recordConsolidationStageError(ctx: LaunchCtx, phase: ConsolidationPhase, error: unknown, evidence: Record<string, unknown> = {}): string {
-		const reference = recordDiagnosticError(`${phase}.error`, error, { phase, failureCode: "stage_exception", evidence, configuredModel: this.config.model ? { provider: this.config.model.provider, id: this.config.model.id } : undefined, maxTurns: 1 });
+		const failureCode = evidence.failureCode === "model_unavailable" ? "model_unavailable" : "stage_exception";
+		const reference = recordDiagnosticError(failureCode === "model_unavailable" ? `${phase}.model_unavailable` : `${phase}.error`, error, { phase, failureCode, evidence, configuredModel: this.config.model ? { provider: this.config.model.provider, id: this.config.model.id } : undefined, maxTurns: 1 });
 		this.lastDiagnostic = reference;
 		const message = diagnosticError(error).message;
+		const observerAlreadyPaused = this.lastObserverError !== undefined;
 		if (phase === "observer") this.lastObserverError = message;
 		if (phase === "reflector") this.lastReflectorError = message;
 		if (phase === "dropper") this.lastDropperError = message;
 		// 会话已被替换/重载时，旧 ctx 已失效：这不是需要提醒用户的失败。
 		if (isStaleSessionError(error)) return message;
-		if (ctx.hasUI && ctx.ui) ctx.ui.notify(`观察式记忆：${CONSOLIDATION_PHASE_LABELS[phase]}阶段失败：${diagnosticNotice(error, reference)}；${phase === "observer" ? "请用 /om:status 查看处理状态，需要时用 /om:retry 手动重试" : "自动维护按压缩周期限次，状态见 /om:status"}`, "warning");
+		// 维护失败只留在日志和状态中；未恢复的观察暂停不因重试反复打扰。
+		if (phase === "observer" && !observerAlreadyPaused && this.config.showWorkerNotifications && ctx.hasUI && ctx.ui) {
+			try {
+				ctx.ui.notify("观察式记忆：记忆暂未更新，当前任务可继续；详情见 /om:status", "warning");
+			} catch (notifyError) {
+				recordDiagnosticError("notification.error", notifyError, { phase });
+			}
+		}
 		return message;
 	}
 
@@ -377,19 +385,18 @@ export class Runtime {
 		work: () => Promise<void>,
 		onFinally: (error: string | undefined) => void,
 	): Promise<void> {
-		const hasUI = ctx.hasUI;
-		const ui = ctx.ui;
+		const epoch = this.sessionEpoch;
 		return (async () => {
 			let errorMessage: string | undefined;
 			try {
 				await work();
 			} catch (error) {
 				const reference = recordDiagnosticError("task.error", error, { task: label });
-				this.lastDiagnostic = reference;
 				errorMessage = diagnosticError(error).message;
-				// 会话替换/重载导致的 stale 错误属于正常收尾，不打扰用户。
-				if (!isStaleSessionError(error) && hasUI && ui) {
-					ui.notify(`观察式记忆：${label} 任务失败：${diagnosticNotice(error, reference)}`, "warning");
+				// 旧任务只留诊断，不更新新会话状态或访问旧 UI。
+				if (this.isSessionCurrent(epoch)) {
+					this.lastDiagnostic = reference;
+					if (!isStaleSessionError(error)) this.recordConsolidationStageError(ctx, this.consolidationPhase ?? "observer", error, { task: label });
 				}
 			} finally {
 				onFinally(errorMessage);

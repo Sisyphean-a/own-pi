@@ -11,7 +11,7 @@ beforeEach(() => { mock.agentDir = mkdtempSync(join(tmpdir(), "om-boundary-diag-
 afterEach(() => { rmSync(mock.agentDir, { recursive: true, force: true }); });
 const ctx = (id: string) => ({ cwd: "/project", sessionManager: { getSessionId: () => id, getSessionFile: () => `/sessions/${id}.jsonl` } });
 const records = (id: string) => readFileSync(join(mock.agentDir, "observational-memory", "debug", `${id}.ndjson`), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-function setup(getEpoch = () => 0) {
+function setup(getEpoch = () => 0, notificationsEnabled = () => true) {
 	const handlers: Record<string, (...args: any[]) => any> = {};
 	const raw = {
 		on: (event: string, handler: any) => { handlers[event] = handler; return "unsubscribe"; },
@@ -19,7 +19,7 @@ function setup(getEpoch = () => 0) {
 		registerTool: (tool: any) => { handlers[tool.name] = tool.execute; },
 		sendMessage: vi.fn(), sendUserMessage: vi.fn(), appendEntry: vi.fn(),
 	};
-	return { pi: withDiagnosticBoundary(raw as any, getEpoch), raw, handlers };
+	return { pi: withDiagnosticBoundary(raw as any, getEpoch, notificationsEnabled), raw, handlers };
 }
 
 describe("插件异常边界", () => {
@@ -51,6 +51,16 @@ describe("插件异常边界", () => {
 		expect(JSON.stringify([records("command"), records("tool")])).not.toContain("PRIVATE_ARGUMENT");
 	});
 
+	it("关闭通知时诊断写入失败也不弹窗，仍抛出原始异常", () => {
+		writeFileSync(join(mock.agentDir, "observational-memory"), "blocked");
+		let enabled = true;
+		const { pi, handlers } = setup(() => 0, () => enabled);
+		const notify = vi.fn();
+		const error = new Error("原始异常");
+		pi.on("turn_end", () => { enabled = false; throw error; });
+		expect(() => handlers.turn_end({}, { ...ctx("muted"), hasUI: true, ui: { notify } })).toThrow(error);
+		expect(notify).not.toHaveBeenCalled();
+	});
 	it("日志无法落盘时提示问题，但不替换原始异常", () => {
 		writeFileSync(join(mock.agentDir, "observational-memory"), "blocked");
 		const { pi, handlers } = setup();

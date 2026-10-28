@@ -15,7 +15,7 @@ import {
 	type TestEntry,
 } from "./fixtures/session.js";
 
-function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number; compactHookInFlight?: boolean }) {
+function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number; compactHookInFlight?: boolean; showWorkerNotifications?: boolean }) {
 	let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
 	const pi = {
 		on: vi.fn((eventName: string, cb: typeof handler) => {
@@ -27,6 +27,7 @@ function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number;
 	const runtime = {
 		config: {
 			observationsPoolMaxTokens: args.observationsPoolMaxTokens ?? 20_000,
+			showWorkerNotifications: args.showWorkerNotifications ?? true,
 		},
 		compactHookInFlight: args.compactHookInFlight ?? false,
 		observerPromise: new Promise(() => {}),
@@ -52,6 +53,12 @@ function setup(args: { entries: TestEntry[]; observationsPoolMaxTokens?: number;
 }
 
 describe("V3 compaction hook", () => {
+	it.each([true, false])("关闭通知不改变重复压缩取消和原生交接：%s", async (compactHookInFlight) => {
+		const run = setup({ entries: [textCustomMessage("raw-1", "旧事实"), textCustomMessage("raw-2", "保留内容")], showWorkerNotifications: false, compactHookInFlight });
+		expect(await run.run("raw-2")).toEqual(compactHookInFlight ? { cancel: true } : undefined);
+		expect(run.ctx.ui.notify).not.toHaveBeenCalled();
+		expect(run.runtime.resolveModel).not.toHaveBeenCalled();
+	});
 	it("delegates to native compaction when there is no V3 memory", async () => {
 		const entries = [textCustomMessage("raw-1", "aaaa")];
 		const { run, runtime, pi } = setup({ entries });

@@ -16,7 +16,7 @@
 ## 架构规则
 
 - 领域规则唯一依据见[观察式记忆上下文](../../requirements/contexts/observational-memory.md)：语言、会话作废、处理回执、反思撤回、安全精简与压缩接管条件不在本页重复定义。
-- `Runtime` 持有每个后台任务的独立取消控制器；`endSession()` 取消在途请求、自增代次并释放运行状态和进度缓存，旧任务只可清理自己的控制器。Pi 的 stale-ctx 错误按取消处理。
+- `Runtime` 持有每个后台任务的独立取消控制器；`endSession()` 取消在途请求、自增代次并释放运行状态和进度缓存，旧任务只可清理自己的控制器。Pi 的 stale-ctx 错误按取消处理。阶段错误状态与观察暂停提醒由 `Runtime` 统一判定，提交成功后清除对应错误，启动新任务不清空状态；各通知出口及诊断边界消费同一通知设置。
 - 记忆状态由 `foldLedger()` 重建，活动投影与包含已精简观察/已撤回反思的历史索引分离，`recall` 复用该折叠结果判定状态。调用控制状态由 `session-ledger/attempts.ts` 从当前分支的 `om.worker.attempted`、旧版成功维护和 compaction 边界读取；不使用额外数据库或迁移旧会话。
 - 覆盖进度和主动压缩的原始 token 计量由 `src/session-ledger/token-progress.ts` 维护为增量水位：Pi 的 `getBranch()` 每次都返回新数组，因此以分支前缀的首/末条目身份而非数组身份判定追加；分叉、压缩重写等前缀变化时重建，会话关闭时主动清空。账本追加只累计新增源条目，覆盖标记推进时从新标记重新累计；真实上下文增量仍以 provider 上报的 usage 为基准，锚点缺失时回退到原始水位。阶段到期判断与阶段内准入都消费它，主动压缩在 `turn_end`、`agent_settled` 及延迟复核时复用同一进度缓存，不逐轮重算整本账本。
 - 回合边界通过 Pi 的 `BoundaryResult.entries` 提交 `compaction`，不从忙碌的事件中调用 `ctx.compact()`；宿主负责落盘和重建下一回合上下文。切点计算复用 `findCutPoint`，近期历史预算通过内存 `SettingsManager` 解析宿主设置及模型 override，不读写额外设置文件。

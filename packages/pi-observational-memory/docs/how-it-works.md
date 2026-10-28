@@ -162,9 +162,9 @@ Observer 的完整覆盖须有连续源片段的 `processing` 回执；零观察
 ## 错误与竞态
 
 - `Runtime` 的 in-flight 标记防止重复 worker；
-- 阶段错误保存在 `lastObserverError`、`lastReflectorError`、`lastDropperError`；
-- 无 UI 时不发送通知；
-- 无效提议由工具回执暴露，修正后才能完成；零产出须有显式处理或审阅回执；
+- 阶段错误保存在 `lastObserverError`、`lastReflectorError`、`lastDropperError`，实际阶段成功或会话重建后清除，不因新任务或跳过阶段清空；
+- 反思和精简失败只留在状态及日志，观察未完成在连续暂停期间仅提醒一次；无 UI 或关闭 `showWorkerNotifications` 时不发后台提示，主动查询仍可用；
+- 工具错误或被拒绝的观察使本次响应失败，后续完成调用不能覆盖错误；零产出须有显式处理或审阅回执；
 - 失败及缺回执不伪装成成功；完整输入超预算时显式报错，不截断既有记忆；
 - 压缩只折叠已经落盘的 ledger，不回滚或等待后台任务；
 - 无效或悬空 coverage marker 会被进度/投影函数忽略，不导致整个会话崩溃。

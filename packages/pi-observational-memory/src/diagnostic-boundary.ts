@@ -4,7 +4,7 @@ import { recordDiagnosticError, withDebugLogContext, type DebugLogContext } from
 
 type Handler = (...args: any[]) => any;
 
-function observed(operation: string, handler: Handler, contextIndex: number, getEpoch: () => number): Handler {
+function observed(operation: string, handler: Handler, contextIndex: number, getEpoch: () => number, notificationsEnabled: () => boolean): Handler {
 	return (...args) => {
 		const ctx = args[contextIndex] as ExtensionContext | undefined;
 		const epoch = getEpoch();
@@ -19,7 +19,7 @@ function observed(operation: string, handler: Handler, contextIndex: number, get
 		return withDebugLogContext(metadata, () => {
 			const failed = (error: unknown): never => {
 				const reference = recordDiagnosticError("extension.error", error, { operation });
-				if (reference.writeError && getEpoch() === epoch) {
+				if (reference.writeError && getEpoch() === epoch && notificationsEnabled()) {
 					try { notify?.(`观察式记忆：诊断日志写入失败：${reference.writeError}`); } catch { /* 诊断提示不得替换原始异常。 */ }
 				}
 				throw error;
@@ -33,14 +33,14 @@ function observed(operation: string, handler: Handler, contextIndex: number, get
 }
 
 /** 统一兜住本插件事件、命令和 recall 的未捕获异常，保留同步返回值及原始异常身份。 */
-export function withDiagnosticBoundary(pi: ExtensionAPI, getEpoch: () => number = () => 0): ExtensionAPI {
+export function withDiagnosticBoundary(pi: ExtensionAPI, getEpoch: () => number = () => 0, notificationsEnabled: () => boolean = () => true): ExtensionAPI {
 	return new Proxy(pi, {
 		get(target, key, receiver) {
-			if (key === "on") return (event: string, handler: Handler) => (target.on as Handler)(event, observed(`event:${event}`, handler, 1, getEpoch));
+			if (key === "on") return (event: string, handler: Handler) => (target.on as Handler)(event, observed(`event:${event}`, handler, 1, getEpoch, notificationsEnabled));
 			if (key === "registerCommand") return (name: string, command: { handler: Handler }) =>
-				target.registerCommand(name, { ...command, handler: observed(`command:${name}`, command.handler, 1, getEpoch) });
+				target.registerCommand(name, { ...command, handler: observed(`command:${name}`, command.handler, 1, getEpoch, notificationsEnabled) });
 			if (key === "registerTool") return (tool: { name: string; execute: Handler }) =>
-				(target.registerTool as Handler)({ ...tool, execute: observed(`tool:${tool.name}`, tool.execute, 4, getEpoch) });
+				(target.registerTool as Handler)({ ...tool, execute: observed(`tool:${tool.name}`, tool.execute, 4, getEpoch, notificationsEnabled) });
 			return Reflect.get(target, key, receiver);
 		},
 	});

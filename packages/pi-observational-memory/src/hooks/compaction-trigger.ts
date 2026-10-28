@@ -21,12 +21,12 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 			if (!compaction) return;
 			// 回合边界提交 compaction 不触发 session_compact；先终止旧周期维护，观察尾部仍可继续。
 			if (runtime.consolidationPhase === "reflector" || runtime.consolidationPhase === "dropper") runtime.cancelConsolidation();
-			if (ctx.hasUI) ctx.ui.notify("观察式记忆：已在回合边界折叠已处理历史，未处理消息原样保留", "info");
+			if (runtime.config.showWorkerNotifications && ctx.hasUI) ctx.ui.notify("观察式记忆：已在回合边界折叠已处理历史，未处理消息原样保留", "info");
 			return { entries: [compaction] };
 		} catch (error) {
 			const reference = recordDiagnosticError("compaction.error", error, { boundary: "turn_end" });
 			runtime.lastDiagnostic = reference;
-			if (ctx.hasUI) ctx.ui.notify(`观察式记忆：回合边界压缩失败：${diagnosticNotice(error, reference)}`, "warning");
+			if (runtime.config.showWorkerNotifications && ctx.hasUI) ctx.ui.notify(`观察式记忆：回合边界压缩失败：${diagnosticNotice(error, reference)}`, "warning");
 		}
 	});
 
@@ -45,7 +45,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 
 		// 同步捕获 ctx 属性——下面的 setTimeout 和异步工作可能比扩展 ctx 活得更久
 		// （会话替换/重载后会失效）。
-		const hasUI = ctx.hasUI;
+		const hasUI = runtime.config.showWorkerNotifications && ctx.hasUI;
 		const ui = ctx.ui;
 		const epoch = runtime.sessionEpoch;
 		const sessionCurrent = () => runtime.isSessionCurrent(epoch);

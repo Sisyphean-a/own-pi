@@ -106,9 +106,11 @@ Pi 会话事件
 | `observationsPoolMaxTokens` | `20000` | 活跃观察达到此压力时提前维护反思；每次压缩都会应用当前维护结果 |
 | `observationsPoolTargetTokens` | 最大值的一半 | Dropper 维护的活动 observation 目标 |
 | `model` | 当前会话模型 | 可为 memory worker 指定更快或更便宜的模型 |
-| `showWorkerNotifications` | `true` | 是否显示普通 worker 进度提示 |
+| `showWorkerNotifications` | `true` | 是否显示插件后台提示；关闭不影响诊断和主动查询 |
 | `passive` | `false` | 是否关闭后台记忆工作和主动压缩 |
 | `debugLog` | `false` | 是否增加详细调试事件；基本运行摘要与错误始终自动记录 |
+
+反思和精简失败仅保留在日志及 `/om:status`；观察未完成在同一次暂停期间只提醒一次。`showWorkerNotifications: false` 关闭插件后台提示，包括模型不可用和压缩提示，但不隐藏 `/om:status`、`/om:view` 等主动操作的反馈。
 
 后台 worker 固定为单次模型响应，旧的 `agentMaxTurns` 设置不再生效。观察器需在同次响应中提交记录和完成确认；没有有效完成确认不会保存部分结果。
 
