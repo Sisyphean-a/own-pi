@@ -11,8 +11,7 @@
  * The advisor:
  * - Sees a curated transcript plus the executor's current system prompt
  * - Returns strategic guidance (plan, correction, or stop signal)
- * - May use bounded read and bash tools when concrete evidence is needed
- * - Is invoked at the executor's discretion; tool use is optional
+ * - Has no tools; the executor gathers any additional evidence
  *
  * Commands:
  * - /advisor on [provider/model] — Enable advisor tool (persists to config)
@@ -55,7 +54,6 @@ interface AdvisorDetails {
 	usage?: AdvisorUsage;
 	callNumber: number;
 	stage?: AdvisorStage;
-	toolUses?: string[];
 	error?: string;
 	message?: string;
 }
@@ -67,8 +65,7 @@ const ADVISOR_SYSTEM_PROMPT = `You are a senior engineering advisor. The executo
 
 Your role:
 - You see a curated subset of the executor's context: a truncated transcript, tool activity summaries, and its system prompt
-- You may call the provided read and bash tools when concrete evidence would materially improve your judgment; tool use is optional
-- Use tools for diagnosis only; do not modify project files, and stop once the evidence is sufficient
+- You have no tools; ask the executor to gather additional evidence when needed
 - If the evidence is too thin to judge, say so — never fill gaps with guesses
 - You cannot produce user-facing output; your final response is feedback for the executor
 - Your advice directly shapes the executor's next actions
@@ -81,7 +78,7 @@ What you provide depends on the stage:
 Output format:
 - Lead with a one-sentence verdict: "On track", "Course-correct", or "Not done yet"
 - Follow with numbered action items (max 5) the executor should take next
-- If the transcript lacks evidence, use a provided tool when that is the shortest way to settle the point; otherwise state the uncertainty instead of guessing
+- If the transcript lacks evidence, state the uncertainty and ask the executor to investigate instead of guessing
 - Reference specific files, commands, tool results, or error signals from the transcript
 - If you disagree with evidence the executor gathered, state the conflict explicitly — don't silently override
 
@@ -220,7 +217,7 @@ export default function advisorExtension(pi: ExtensionAPI) {
 		name: "advisor",
 		label: "Consult advisor",
 		description: `Consult a stronger model for strategic guidance. Returns a verdict (On track / Course-correct / Not done yet) plus numbered action items.
-The advisor sees the conversation transcript, your system prompt, and recent tool activity. It may optionally use bounded read and bash tools for diagnosis; it does not receive edit or write tools.`,
+The advisor sees the conversation transcript, your system prompt, and recent tool activity. It cannot call tools.`,
 		promptSnippet: "advisor({ stage? }): consult stronger model for strategic guidance → verdict + action items",
 		promptGuidelines: [
 			"Call advisor({ stage: 'initial' }) for non-trivial tasks after 2-3 reads, before committing to an approach",
@@ -307,28 +304,26 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 					sessionId: ctx.sessionManager.getSessionId(),
 					signal,
 					pi,
-					cwd: ctx.cwd,
 				});
 				const usage: AdvisorUsage = {
 					inputTokens: response.inputTokens,
 					outputTokens: response.outputTokens,
 					model: config.model,
 				};
-				const toolUses = response.toolUses.map((tool) => `${tool.summary}${tool.isError ? " (error)" : ""}`);
 
 				// Detect silent failures: empty content with no error thrown
 				if (!response.text && !response.errorMessage) {
 					return {
 						content: [{ type: "text", text: `(Advisor returned empty response — model: ${config.provider}/${config.model}, stop: ${response.stopReason ?? "unknown"}). Check that the model supports this API format.` }],
-						details: { usage, callNumber: usesThisRun, stage: stageInfo.stage, toolUses, error: "empty_response" } as AdvisorDetails,
+						details: { usage, callNumber: usesThisRun, stage: stageInfo.stage, error: "empty_response" } as AdvisorDetails,
 					};
 				}
 
 				pi.appendEntry("advisor-usage", usage);
 
 				return {
-					content: [{ type: "text", text: response.text || response.errorMessage || "(Advisor returned empty response)" }],
-					details: { usage, callNumber: usesThisRun, stage: stageInfo.stage, toolUses, error: response.errorMessage ? "model_error" : undefined } as AdvisorDetails,
+					content: [{ type: "text", text: response.errorMessage || response.text || "(Advisor returned empty response)" }],
+					details: { usage, callNumber: usesThisRun, stage: stageInfo.stage, error: response.errorMessage ? "model_error" : undefined } as AdvisorDetails,
 				};
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -363,9 +358,6 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 			if (details?.stage) header += " " + theme.fg("muted", stageLabel(details.stage));
 			if (details?.callNumber) header += theme.fg("dim", ` #${details.callNumber}/${config.maxUsesPerRun}`);
 			container.addChild(new Text(header, 0, 0));
-			if (details?.toolUses && details.toolUses.length > 0) {
-				container.addChild(new Text(theme.fg("dim", `Tools: ${details.toolUses.join(" · ")}`), 0, 0));
-			}
 			container.addChild(new Spacer(1));
 
 			if (options.expanded) {

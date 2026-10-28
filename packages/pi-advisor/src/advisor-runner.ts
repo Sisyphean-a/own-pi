@@ -1,7 +1,6 @@
-import { agentLoop, type AgentContext, type AgentMessage, type AgentTool, type AgentLoopConfig } from "@earendil-works/pi-agent-core";
+import { agentLoop, type AgentContext, type AgentMessage, type AgentLoopConfig } from "@earendil-works/pi-agent-core";
 import {
   createInitialSystemMessage,
-  toToolDeclaration,
   type Message,
   type Model,
   type ProviderHeaders,
@@ -12,10 +11,6 @@ import {
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { publishUsage } from "./model-usage.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createAdvisorTools, summarizeAdvisorToolCall } from "./advisor-tools.ts";
-
-const MAX_ADVISOR_TURNS = 6;
-const MAX_ADVISOR_TOOL_CALLS = 12;
 
 export interface AdvisorRunResult {
   text: string;
@@ -23,7 +18,6 @@ export interface AdvisorRunResult {
   outputTokens: number;
   stopReason?: string;
   errorMessage?: string;
-  toolUses: Array<{ name: string; summary: string; isError: boolean }>;
 }
 
 interface RunAdvisorOptions {
@@ -36,9 +30,7 @@ interface RunAdvisorOptions {
   reasoning: ThinkingLevel;
   sessionId?: string;
   signal?: AbortSignal;
-  maxTurns?: number;
   pi: ExtensionAPI;
-  cwd: string;
   agentLoop?: typeof agentLoop;
 }
 
@@ -73,23 +65,11 @@ function textFromAssistant(result: AssistantResult | undefined): { text: string;
 }
 
 export async function runAdvisor(options: RunAdvisorOptions): Promise<AdvisorRunResult> {
-  let toolCallCount = 0;
-  const tools = createAdvisorTools(options.pi, options.cwd, () => {
-    toolCallCount++;
-    if (toolCallCount > MAX_ADVISOR_TOOL_CALLS) {
-      throw new Error(`Advisor tool-call limit reached (${MAX_ADVISOR_TOOL_CALLS})`);
-    }
-  }) as AgentTool[];
-  const systemMessage = createInitialSystemMessage(
-    options.systemPrompt,
-    tools.map(toToolDeclaration),
-  );
+  const systemMessage = createInitialSystemMessage(options.systemPrompt, []);
   const context: AgentContext = {
     messages: systemMessage ? [systemMessage] : [],
-    tools,
+    tools: [],
   };
-  const maxTurns = options.maxTurns && options.maxTurns > 0 ? options.maxTurns : MAX_ADVISOR_TURNS;
-  let turnCount = 0;
   const config: AgentLoopConfig = {
     model: options.model,
     apiKey: options.apiKey,
@@ -98,11 +78,7 @@ export async function runAdvisor(options: RunAdvisorOptions): Promise<AdvisorRun
     reasoning: options.reasoning,
     sessionId: options.sessionId,
     convertToLlm: (messages) => messages as Message[],
-    toolExecution: "sequential",
-    finishTurn: () => {
-      turnCount++;
-      return turnCount >= maxTurns ? { action: "end" } : undefined;
-    },
+    finishTurn: () => ({ action: "end" }),
   };
 
   const loop = options.agentLoop ?? agentLoop;
@@ -113,22 +89,9 @@ export async function runAdvisor(options: RunAdvisorOptions): Promise<AdvisorRun
     options.signal,
     streamSimple,
   );
-  const pending = new Map<string, string>();
-  const toolUses: AdvisorRunResult["toolUses"] = [];
-
   for await (const event of stream) {
     if (event.type === "message_end") {
       try { publishUsage(options.pi.events, event.message); } catch { /* Failure: 旧宿主上下文不可用时只跳过统计。 */ }
-    }
-    if (event.type === "tool_execution_start") {
-      pending.set(event.toolCallId, summarizeAdvisorToolCall(event.toolName, event.args));
-    } else if (event.type === "tool_execution_end") {
-      toolUses.push({
-        name: event.toolName,
-        summary: pending.get(event.toolCallId) ?? event.toolName,
-        isError: event.isError,
-      });
-      pending.delete(event.toolCallId);
     }
   }
 
@@ -136,8 +99,9 @@ export async function runAdvisor(options: RunAdvisorOptions): Promise<AdvisorRun
   const assistants = assistantResults(messages);
   const result = assistants.at(-1);
   const { text, thinking } = textFromAssistant(result);
-  const errorMessage = typeof result?.errorMessage === "string" ? result.errorMessage : undefined;
   const stopReason = typeof result?.stopReason === "string" ? result.stopReason : undefined;
+  const errorMessage = typeof result?.errorMessage === "string" ? result.errorMessage :
+    stopReason === "toolUse" ? "Advisor returned an unexpected tool call; no tools are available." : undefined;
 
   return {
     text: text || (thinking ? `(thinking)\n${thinking}` : ""),
@@ -145,6 +109,5 @@ export async function runAdvisor(options: RunAdvisorOptions): Promise<AdvisorRun
     outputTokens: assistants.reduce((total, assistant) => total + numericUsage(assistant.usage?.output), 0),
     stopReason,
     errorMessage,
-    toolUses,
   };
 }

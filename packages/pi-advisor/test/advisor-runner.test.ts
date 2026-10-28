@@ -3,64 +3,43 @@ import test from "node:test";
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { runAdvisor } from "../src/advisor-runner.ts";
 
-function firstText(result: { content: unknown[] }): string {
-  const block = result.content[0];
-  if (!block || typeof block !== "object") throw new Error("expected text content");
-  const record = block as Record<string, unknown>;
-  if (record.type !== "text" || typeof record.text !== "string") throw new Error("expected text content");
-  return record.text;
-}
-
-test("runs an advisor-selected bash tool inside the internal agent loop", async () => {
-  const calls: string[] = [];
-  const pi = {
-    exec: async (_command: string, _args: string[]) => {
-      calls.push("diagnostic");
-      return { stdout: "diagnostic output", stderr: "", code: 0, killed: false };
-    },
-  } as any;
-  let toolOutput = "";
-  let systemPrompt = "";
-  const fakeAgentLoop = ((prompts: unknown[], context: { messages: any[]; tools?: any[] }) => {
-    systemPrompt = getCurrentSystemPrompt(context.messages);
-    const stream = {
-      async *[Symbol.asyncIterator]() {
-        const tool = context.tools?.find((candidate) => candidate.name === "bash");
-        assert.ok(tool, "the advisor loop should receive the bash tool");
-        yield { type: "tool_execution_start", toolCallId: "bash-1", toolName: "bash", args: { command: "diagnose" } };
-        toolOutput = firstText(await tool.execute("bash-1", { command: "diagnose" }));
-        yield { type: "tool_execution_end", toolCallId: "bash-1", toolName: "bash", result: toolOutput, isError: false };
-      },
-      async result() {
-        return [
-          ...prompts,
-          {
-            role: "assistant",
-            content: [{ type: "text", text: `On track\n1. ${toolOutput}` }],
-            usage: { input: 10, output: 5 },
-            stopReason: "stop",
-          },
-        ];
-      },
+test("顾问请求不提供工具，保留提示词、用量和取消信号", async () => {
+  const controller = new AbortController();
+  const events: unknown[] = [];
+  const fakeAgentLoop = ((prompts: unknown[], context: { messages: any[]; tools?: any[] }, config: any, signal: AbortSignal) => {
+    assert.deepEqual(context.tools, []);
+    assert.equal(getCurrentSystemPrompt(context.messages), "You are an advisor");
+    assert.equal(signal, controller.signal);
+    assert.deepEqual(config.finishTurn(), { action: "end" });
+    const message = { role: "assistant", content: [{ type: "text", text: "On track" }], usage: { input: 10, output: 5 }, stopReason: "stop" };
+    return {
+      async *[Symbol.asyncIterator]() { yield { type: "message_end", message }; },
+      async result() { return [...prompts, message]; },
     };
-    return stream;
   }) as any;
-
   const result = await runAdvisor({
-    model: {} as any,
-    messages: [{ role: "user", content: "Assess this task" }] as any,
-    systemPrompt: "You are an advisor",
-    maxTokens: 100,
-    reasoning: "high",
-    pi,
-    cwd: process.cwd(),
-    agentLoop: fakeAgentLoop,
+    model: {} as any, messages: [{ role: "user", content: "Assess" }] as any,
+    systemPrompt: "You are an advisor", maxTokens: 100, reasoning: "high",
+    pi: { events: { emit: (_: string, data: unknown) => events.push(data) } } as any,
+    signal: controller.signal, agentLoop: fakeAgentLoop,
   });
-
-  assert.equal(calls.length, 1);
-  assert.equal(systemPrompt, "You are an advisor");
-  assert.match(result.text, /On track/);
-  assert.deepEqual(result.toolUses, [{ name: "bash", summary: "$ diagnose", isError: false }]);
+  assert.equal(result.text, "On track");
   assert.equal(result.inputTokens, 10);
   assert.equal(result.outputTokens, 5);
+  assert.equal(events.length, 1);
+});
+
+test("意外工具调用作为错误返回，不提供可执行工具", async () => {
+  const fakeAgentLoop = ((_: unknown, context: { tools?: unknown[] }) => {
+    assert.deepEqual(context.tools, []);
+    return {
+      async *[Symbol.asyncIterator]() {},
+      async result() { return [{ role: "assistant", content: [], stopReason: "toolUse" }]; },
+    };
+  }) as any;
+  const result = await runAdvisor({
+    model: {} as any, messages: [] as any, systemPrompt: "advisor", maxTokens: 100,
+    reasoning: "high", pi: {} as any, agentLoop: fakeAgentLoop,
+  });
+  assert.match(result.errorMessage!, /unexpected tool call/);
 });
