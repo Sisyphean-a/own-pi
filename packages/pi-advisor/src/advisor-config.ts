@@ -11,6 +11,8 @@ export interface AdvisorConfig {
   maxTokens: number;
   reasoning: ThinkingLevel;
   maxContextMessages: number;
+  timeoutMs: number;
+  includeToolEvidence: boolean;
   skipWhenCurrentModel: string[];
 }
 
@@ -19,11 +21,12 @@ export const DEFAULT_CONFIG: AdvisorConfig = {
   provider: "anthropic",
   model: "claude-fable-5",
   maxUsesPerRun: 3,
-  // Adaptive-thinking models count thinking tokens against the output cap;
-  // 8k left too little room for the actual advice at reasoning=high.
+  // 自适应思考计入输出上限；high 推理下 8k 曾不足以容纳实际建议。
   maxTokens: 16384,
   reasoning: "high",
   maxContextMessages: 18,
+  timeoutMs: 60000,
+  includeToolEvidence: false,
   skipWhenCurrentModel: [],
 };
 
@@ -61,6 +64,9 @@ export function loadAdvisorConfig(): AdvisorConfig {
       maxContextMessages: typeof raw.maxContextMessages === "number"
         ? raw.maxContextMessages
         : DEFAULT_CONFIG.maxContextMessages,
+      timeoutMs: typeof raw.timeoutMs === "number" && Number.isInteger(raw.timeoutMs) && raw.timeoutMs >= 1000 && raw.timeoutMs <= 2147483647
+        ? raw.timeoutMs : DEFAULT_CONFIG.timeoutMs,
+      includeToolEvidence: raw.includeToolEvidence === true,
       skipWhenCurrentModel: normalizeSkipWhenCurrentModel(raw.skipWhenCurrentModel),
     };
   } catch {

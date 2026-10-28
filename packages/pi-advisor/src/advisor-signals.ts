@@ -1,8 +1,4 @@
-/**
- * Pure logic for turning tool results into advisor signals: per-run event
- * summaries and stage detection. Deliberately free of pi imports so it stays
- * unit-testable with plain `node --test`.
- */
+/** 工具摘要、有限原始证据和阶段判断；不依赖 Pi 运行时。 */
 
 export type AdvisorStage = "initial" | "recovery" | "final-check";
 
@@ -17,6 +13,8 @@ export interface RunToolEvent {
 	command?: string;
 	isError: boolean;
 	timestamp: number;
+	toolCallId?: string;
+	evidence?: string;
 }
 
 export type ExecutorSignals = {
@@ -26,9 +24,10 @@ export type ExecutorSignals = {
 	recentFailures: string[];
 };
 
-/** Structural subset of pi's ToolResultEvent — keeps this module pi-free. */
+/** 只使用当前调用方已收到的工具结果，不额外读取文件。 */
 export type ToolResultLike = {
 	toolName: string;
+	toolCallId?: string;
 	input?: Record<string, unknown>;
 	content?: unknown;
 	isError: boolean;
@@ -49,7 +48,7 @@ function extractPrimaryText(content: unknown): string {
 }
 
 export function extractBashExitCode(text: string): number | undefined {
-	// Pi's bash tool reports failures as "Command exited with code N".
+	// Pi 的 Bash 失败结果带有退出码文本。
 	const match = text.match(/exit(?:ed)?\s+(?:with\s+)?code:?\s*(\d+)/i);
 	if (!match) return undefined;
 	const code = Number.parseInt(match[1], 10);
@@ -67,6 +66,59 @@ export function countPatchChanges(patch: string): { added: number; removed: numb
 	return { added, removed };
 }
 
+export const TOOL_EVIDENCE_WINDOW = 16;
+const MAX_EVIDENCE_EXCERPT_CHARS = 1600;
+const MAX_EVIDENCE_ITEMS = 6;
+const MAX_EVIDENCE_CHARS = 12000;
+
+export function captureToolEvidence(event: ToolResultLike): string {
+	const patch = (event.details as { patch?: unknown } | undefined)?.patch;
+	const text = event.toolName === "edit" && typeof patch === "string"
+		? patch
+		: event.toolName === "write" && typeof event.input?.content === "string"
+			? event.input.content
+			: extractPrimaryText(event.content);
+	if (text.length <= MAX_EVIDENCE_EXCERPT_CHARS) return text;
+	// Rule: 同时保留源码/日志首尾，明确暴露中间缺口，不把截断当作完整证据。
+	const marker = "\n[tool evidence truncated: middle omitted]\n";
+	const half = Math.floor((MAX_EVIDENCE_EXCERPT_CHARS - marker.length) / 2);
+	return text.slice(0, half) + marker + text.slice(-half);
+}
+
+export function buildToolEvidence(events: RunToolEvent[]): string {
+	const recent = events.slice(-TOOL_EVIDENCE_WINDOW).filter((event) => event.evidence).reverse();
+	const selected = new Set<RunToolEvent>();
+	// Rule: 先保留最近失败、验证、修改、读取，再用最新结果补足，避免只采纳执行者观点。
+	for (const predicate of [
+		(event: RunToolEvent) => event.isError,
+		(event: RunToolEvent) => isVerificationCommand(event.command),
+		(event: RunToolEvent) => event.toolName === "edit" || event.toolName === "write",
+		(event: RunToolEvent) => event.toolName === "read",
+	]) {
+		const event = recent.find(predicate);
+		if (event) selected.add(event);
+	}
+	for (const event of recent) {
+		if (selected.size >= MAX_EVIDENCE_ITEMS) break;
+		selected.add(event);
+	}
+	const blocks: string[] = [];
+	let chars = 0;
+	for (const event of selected) {
+		const block = JSON.stringify({
+			toolCallId: event.toolCallId?.slice(0, 100),
+			timestamp: event.timestamp,
+			isError: event.isError,
+			source: event.summary.slice(0, 300),
+			excerpt: event.evidence,
+		});
+		if (chars + block.length + 1 > MAX_EVIDENCE_CHARS - 150) continue;
+		blocks.push(block);
+		chars += block.length + 1;
+	}
+	return `Tool evidence: ${blocks.length} excerpts from the latest ${TOOL_EVIDENCE_WINDOW} tool events; ${recent.length - blocks.length} available excerpts omitted. Older evidence may be missing.\n${blocks.join("\n") || "No raw tool evidence captured."}`;
+}
+
 export function summarizeToolResult(event: ToolResultLike): RunToolEvent {
 	const { toolName, input, content, isError } = event;
 	const text = extractPrimaryText(content);
@@ -75,7 +127,9 @@ export function summarizeToolResult(event: ToolResultLike): RunToolEvent {
 	switch (toolName) {
 		case "read": {
 			const path = typeof input?.path === "string" ? input.path : "(unknown path)";
-			return { toolName, summary: `read ${path}`, isError, timestamp: Date.now() };
+			const offset = typeof input?.offset === "number" ? ` offset=${input.offset}` : "";
+			const limit = typeof input?.limit === "number" ? ` limit=${input.limit}` : "";
+			return { toolName, summary: `read ${path}${offset}${limit}`, isError, timestamp: Date.now() };
 		}
 		case "edit":
 		case "write": {
@@ -122,8 +176,7 @@ const VERIFICATION_SEGMENT_PATTERNS: RegExp[] = [
 
 export function isVerificationCommand(command?: string): boolean {
 	if (!command) return false;
-	// Match per pipeline segment against the leading token, so paths like
-	// `cat tests/foo.test.ts` don't register as verification runs.
+	// 只匹配管道段的命令开头，避免把读取测试文件误判为验证。
 	return command.split(/&&|\|\||;|\|/).some((segment) => {
 		const normalized = segment.trim().replace(/^(?:\w+=\S+\s+)+/, "");
 		return VERIFICATION_SEGMENT_PATTERNS.some((pattern) => pattern.test(normalized));
