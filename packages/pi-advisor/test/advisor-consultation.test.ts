@@ -41,6 +41,9 @@ test("真实工具入口按配置自动附证据，问题必填，失败仍记�
       events: { emit: (channel: string, data: any) => notifications.push({ channel, data }) },
     } as any;
     const ctx = {
+      cwd: dir,
+      tools: [{ name: "read" }],
+      executeTool: async () => { throw new Error("This scenario should answer without reading"); },
       model: { provider: "executor", id: "worker" },
       modelRegistry: { find: () => model, getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-only" }) },
       sessionManager: { getSessionId: () => "local-session", getBranch: () => [
@@ -54,6 +57,9 @@ test("真实工具入口按配置自动附证据，问题必填，失败仍记�
     assert.ok(tool.parameters.required.includes("question"));
     const invalid = await tool.execute("missing", { question: "  " }, undefined, undefined, ctx);
     assert.equal(invalid.details.error, "missing_question");
+    assert.equal(requests.length, 0);
+    const unavailable = await tool.execute("unavailable", { question: "Read the implementation?" }, undefined, undefined, { ...ctx, tools: [] });
+    assert.equal(unavailable.details.error, "read_unavailable");
     assert.equal(requests.length, 0);
     await handlers.get("tool_result")?.({ toolCallId: "read-secret", toolName: "read", input: { path: "source.ts" }, content: [{ type: "text", text: "RAW_SOURCE_OPT_IN_ONLY" }], isError: false });
     const first = await tool.execute("one", { question: "Serialize or retry?", context: "I think retries suffice" }, undefined, undefined, ctx);

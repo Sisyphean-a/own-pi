@@ -13,10 +13,12 @@ const base = {
   model: { provider: "test", id: "advisor" } as any,
   messages: [{ role: "user", content: "Assess" }] as any,
   systemPrompt: "You are an advisor", maxTokens: 100, reasoning: "high" as const,
-  timeoutMs: 1000, pi: {} as any,
+  timeoutMs: 1000, pi: {} as any, cwd: "/project",
+  read: async () => ({ content: [{ type: "text" as const, text: "source" }], details: undefined }),
 };
 function loopFor(message: any, inspect?: (...args: any[]) => void) {
   return ((...args: any[]) => {
+    args[2].prepareRequest?.({ context: args[1], model: base.model });
     inspect?.(...args);
     return {
       async *[Symbol.asyncIterator]() { yield { type: "message_end", message }; },
@@ -25,7 +27,7 @@ function loopFor(message: any, inspect?: (...args: any[]) => void) {
   }) as any;
 }
 
-test("顾问无工具且只有单轮，保留推理配置、完整用量和外部取消信号", async () => {
+test("顾问仅提供 read，直接回答时只调用一次模型，保留推理配置、用量和取消信号", async () => {
   const controller = new AbortController();
   const events: any[] = [];
   const history = answer({ usage: { input: 99999, output: 99999 } });
@@ -34,9 +36,10 @@ test("顾问无工具且只有单轮，保留推理配置、完整用量和外�
     pi: { events: { emit: (channel: string, data: any) => { assert.equal(channel, "pi:model-usage:v1"); events.push(data); } } } as any,
     signal: controller.signal,
     agentLoop: loopFor(answer(), (_prompts, context, config, signal) => {
-      assert.deepEqual(context.tools, []);
-      assert.equal(getCurrentSystemPrompt(context.messages), base.systemPrompt);
-      assert.deepEqual(config.finishTurn(), { action: "end" });
+      assert.deepEqual(context.tools.map((tool: any) => tool.name), ["read"]);
+      assert.ok(getCurrentSystemPrompt(context.messages)!.startsWith(base.systemPrompt));
+      assert.match(getCurrentSystemPrompt(context.messages)!, /working directory: "\/project"/);
+      assert.deepEqual(config.finishTurn({ message: answer() }), { action: "end" });
       assert.equal(config.reasoning, "high");
       assert.equal(config.maxTokens, 100);
       controller.abort();
@@ -45,6 +48,8 @@ test("顾问无工具且只有单轮，保留推理配置、完整用量和外�
   });
   assert.match(result.errorMessage!, /cancelled/);
   assert.equal(result.text, "On track");
+  assert.equal(result.modelRequests, 1);
+  assert.equal(result.readCalls, 0);
   assert.equal(result.inputTokens, 10);
   assert.equal(result.outputTokens, 5);
   assert.equal(result.cacheReadTokens, 20);
@@ -116,4 +121,48 @@ test("超时向模型传递取消信号并显式报错，不自动重试或伪�
   assert.equal(result.stopReason, "aborted");
   assert.equal(result.inputTokens, undefined);
   assert.equal(calls, 1);
+});
+
+test("咨询超时也取消正在进行的读取，保留此前模型已报告用量", async () => {
+  let readAborted = false;
+  const read = async (_args: any, signal?: AbortSignal) => {
+    await new Promise<void>((_resolve, reject) => signal!.addEventListener("abort", () => {
+      readAborted = true;
+      reject(signal!.reason);
+    }, { once: true }));
+    return { content: [], details: undefined };
+  };
+  const agentLoop = ((_prompts: any, context: any, config: any, signal: AbortSignal) => ({
+    async *[Symbol.asyncIterator]() {
+      config.prepareRequest({ context });
+      yield { type: "message_end", message: answer({ stopReason: "toolUse", content: [] }) };
+      await context.tools[0].execute("read-timeout", { path: "source.ts" }, signal);
+    },
+    async result() { return []; },
+  })) as any;
+  const result = await runAdvisor({ ...base, read, timeoutMs: 10, agentLoop });
+  assert.equal(readAborted, true);
+  assert.equal(result.readCalls, 1);
+  assert.equal(result.inputTokens, 10);
+  assert.match(result.errorMessage!, /timed out/);
+});
+
+test("后续请求没有最终用量时总量保持未知，已完成响应仍单独发布", async () => {
+  const notifications: any[] = [];
+  const agentLoop = ((_prompts: any, context: any, config: any) => ({
+    async *[Symbol.asyncIterator]() {
+      config.prepareRequest({ context });
+      yield { type: "message_end", message: answer({ stopReason: "toolUse", content: [] }) };
+      config.prepareRequest({ context });
+      throw new Error("connection lost before final usage");
+    },
+    async result() { return []; },
+  })) as any;
+  const result = await runAdvisor({ ...base, agentLoop, pi: { events: { emit: (_channel: string, data: any) => notifications.push(data) } } as any });
+  assert.equal(result.modelRequests, 2);
+  assert.equal(result.inputTokens, undefined);
+  assert.equal(result.usage, undefined);
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].usage.input, 10);
+  assert.match(result.errorMessage!, /connection lost/);
 });

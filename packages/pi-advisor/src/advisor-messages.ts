@@ -126,7 +126,7 @@ export function buildAdvisorMessages(
 	contextBlocks.push(`Why this stage: ${stageInfo.reason}`);
 	if (signals) contextBlocks.push(buildSignalsBlock(signals));
 	contextBlocks.push(recentToolActivity ? `Recent tool activity:\n${recentToolActivity}` : "Recent tool activity: none yet");
-	contextBlocks.push("Answer the decision question. State evidence and the largest uncertainty. Do not sign off on unseen implementation or infer success from a command being run. Request the smallest missing evidence if needed.");
+	contextBlocks.push("Answer the decision question. State evidence and the largest uncertainty. Use read to fill missing file evidence before deciding. Do not sign off on unseen implementation or infer success from a command being run. Ask the executor only for evidence unavailable through read, such as running tests.");
 
 	const closingContextMessage: AdvisorMessage = {
 		role: "user",
