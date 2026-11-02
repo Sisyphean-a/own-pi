@@ -1,0 +1,14 @@
+{
+  "name": "pi-deepseek-search",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DeepSeek web search tool for Pi",
+  "keywords": ["pi-package", "pi-extension", "search"],
+  "files": ["extensions/", "README.md"],
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "peerDependencies": { "typebox": "*" },
+  "peerDependenciesMeta": { "typebox": { "optional": true } },
+  "devDependencies": { "typebox": "^1.2.8" },
+  "pi": { "extensions": ["./extensions/index.js"] }
+}

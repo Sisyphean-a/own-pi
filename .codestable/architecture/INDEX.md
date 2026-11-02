@@ -12,6 +12,8 @@
 
 - `package:pi-token-stats`：所有者 `packages/pi-token-stats`；[包架构](packages/pi-token-stats.md)；入口 `extensions/index.ts`，代码 `src/index.ts`、`src/record.ts`、`src/pricing.ts`、`src/writer.ts`、`src/query.ts`、`src/report.ts`。
 
+- `package:pi-deepseek-search`：所有者 `packages/pi-deepseek-search`；[包架构](packages/pi-deepseek-search.md)；入口 `extensions/index.js`。
+
 ## 共享机制
 
 - [可选扩展依赖](shared/optional-extension-dependencies.md)：所有扩展对外部插件、可选 peer 和运行时能力的降级契约。

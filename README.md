@@ -1,6 +1,6 @@
 # own-pi
 
-本仓库维护六个可独立安装的 Pi 扩展包。下面的命令都在仓库根目录运行。
+本仓库维护七个可独立安装的 Pi 扩展包。下面的命令都在仓库根目录运行。
 
 ## 一键重新安装当前目录扩展
 
@@ -86,5 +86,16 @@ pi install ./packages/pi-token-stats
 ```
 
 详见 [`packages/pi-token-stats/README.md`](packages/pi-token-stats/README.md)。
+
+## pi-deepseek-search
+
+通过 DeepSeek API 搜索网页，返回来源和摘要；通过 Pi 原生登录管理独立搜索密钥。
+
+```bash
+pi -e ./packages/pi-deepseek-search
+pi install ./packages/pi-deepseek-search
+```
+
+详见 [`packages/pi-deepseek-search/README.md`](packages/pi-deepseek-search/README.md)。
 
 所有包对可选外部能力采用软依赖：缺少对应插件或运行时 API 时只停用受影响的逻辑，不阻断 Pi 或其他扩展启动。
