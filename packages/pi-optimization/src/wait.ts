@@ -7,6 +7,17 @@ import type {
 const STATUS_KEY = "wait";
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const RETRY_DELAY_MS = 30_000;
+const HELP_TEXT = [
+  "用法：/wait <时间> [-- <任务>]",
+  "  /wait 30m                     等待下一条普通输入，到期后发送",
+  "  /wait 2小时15分钟 -- 跑测试    直接保存任务",
+  "  /wait 09:30                   绝对时间，也支持 2026-08-30 09:30",
+  "  /wait list                    查看待发送任务",
+  "  /wait cancel [<任务 ID>]      取消任务，ID 支持前缀",
+  "  /wait help                    显示本说明",
+  "时间单位：毫秒/秒/分钟/小时/天（ms/s/m/h/d），可多段相加，如 2h15m",
+  "限制：任务只存当前 Pi 进程内存，reload、切换会话或退出 Pi 后清除",
+].join("\n");
 
 type WaitContent = string | Array<Record<string, unknown>>;
 
@@ -293,11 +304,16 @@ export function activateWaitExtension(
   });
 
   pi.registerCommand("wait", {
-    description: "延迟发送下一条普通任务输入，不提前调用 AI",
+    description: "延迟发送下一条普通任务输入（/wait help 查看用法）",
     handler: async (rawArgs, ctx) => {
       const args = rawArgs.trim();
       if (!args) {
-        notify(ctx, "用法：/wait <时间>，然后输入任务；或 /wait <时间> -- <任务>", "warning");
+        notify(ctx, HELP_TEXT, "warning");
+        return;
+      }
+
+      if (args === "help") {
+        notify(ctx, HELP_TEXT, "info");
         return;
       }
 
@@ -345,7 +361,8 @@ export function activateWaitExtension(
       try {
         dueAt = parseWaitTime(time, runtime.now());
       } catch (error) {
-        notify(ctx, error instanceof Error ? error.message : String(error), "warning");
+        const message = error instanceof Error ? error.message : String(error);
+        notify(ctx, `${message}\n/wait help 查看用法`, "warning");
         return;
       }
 
@@ -357,7 +374,7 @@ export function activateWaitExtension(
 
       armedDueAt = dueAt;
       updateStatus(ctx);
-      notify(ctx, `请发送下一条普通任务；它会在 ${formatTime(dueAt)} 才交给 AI`, "info");
+      notify(ctx, `请发送下一条普通任务；它会在 ${formatTime(dueAt)} 发送`, "info");
     },
   });
 }

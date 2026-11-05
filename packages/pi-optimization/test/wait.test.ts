@@ -184,3 +184,29 @@ test("retries after a synchronous Pi rejection without sending early", async () 
   harness.advance(1);
   assert.deepEqual(harness.sent.map((item) => item.content), ["retry me"]);
 });
+
+test("shows usage for help and points to it on missing or invalid time", async () => {
+  const harness = createHarness();
+  await harness.handlers.get("session_start")?.({}, harness.ctx);
+
+  await harness.commands.get("wait")?.("", harness.ctx);
+  assert.ok(harness.notifications.at(-1)?.includes("/wait help"));
+  assert.ok(harness.notifications.at(-1)?.includes("/wait list"));
+
+  await harness.commands.get("wait")?.("help", harness.ctx);
+  const help = harness.notifications.at(-1) ?? "";
+  for (const entry of [
+    "/wait <时间> [-- <任务>]",
+    "/wait 30m",
+    "/wait list",
+    "/wait cancel",
+    "/wait help",
+    "2h15m",
+  ]) {
+    assert.ok(help.includes(entry), `help 必须包含 ${entry}`);
+  }
+
+  await harness.commands.get("wait")?.("bogus", harness.ctx);
+  assert.ok(harness.notifications.at(-1)?.includes("/wait help"));
+  assert.equal(harness.sent.length, 0);
+});

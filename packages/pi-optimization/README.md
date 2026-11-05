@@ -6,7 +6,7 @@
 - `fullscreen-scroll`：在 Windows fullscreen TUI 中提高鼠标滚轮的每次滚动行数；
 - `fullscreen-right-click-copy`：fullscreen 右键在关闭“选中即复制”且有选区时复制；无选区时粘贴到当前聚焦组件；
 - `auto-extension-update`：Pi 检查到扩展包更新时，不显示更新提示，只在不可见的独立进程中更新实际有变化的扩展；
-- `wait`：在 Pi 进程内暂存任务，到指定时间后才交给 AI，不提前发起模型请求。
+- `wait`：在 Pi 进程内暂存任务，到指定时间后才发送。
 
 ## 安装
 
@@ -30,7 +30,7 @@ pi install ./packages/pi-optimization
 
 - `/nulfix [on|off|manual-on|manual-off|preview <bash command>]`
 - `/fullscreen-scroll [on|off|<每次滚动行数>]`
-- `/wait <时间> [-- <任务>]`、`/wait list`、`/wait cancel [<任务 ID>]`
+- `/wait <时间> [-- <任务>]`、`/wait list`、`/wait cancel [<任务 ID>]`、`/wait help`
 
 `nul` 修复还支持环境变量：`PI_FIX_NUL_REDIRECT=0` 关闭总开关，`PI_FIX_NUL_USER_BASH=0` 不接管手动 `!`/`!!` 命令，`PI_FIX_NUL_NOTIFY=1` 在首次修复时提示。
 
@@ -47,7 +47,7 @@ pi install ./packages/pi-optimization
 
 也可以在 Pi 内执行 `/fullscreen-scroll 5` 立即改为每次 5 行，或用 `/fullscreen-scroll off` 关闭。Pi 运行时没有公开该参数时，此功能自动跳过，不影响其他功能。
 
-`/wait 30m` 会等待下一条普通输入；`/wait 2小时 -- 运行测试并修复失败` 可直接保存任务。任务只保存在当前 Pi 进程内存中，reload、切换/fork/clone 会话或退出 Pi 后会清除，Pi 未运行时不会后台执行。
+`/wait 30m` 会等待下一条普通输入；`/wait 2小时15分钟 -- 运行测试并修复失败` 可直接保存任务。忘了用法时执行 `/wait help`（不带参数也会显示同一份说明），时间解析失败时提示里也会指向该命令。任务只保存在当前 Pi 进程内存中，reload、切换/fork/clone 会话或退出 Pi 后会清除，Pi 未运行时不会后台执行。
 
 Pi 0.84.4+ 的 fullscreen 选中复制是 Pi 自带设置，不属于本插件配置。若不希望“选中即复制”，在全局 `~/.pi/agent/settings.json` 设置 `"fullscreenCopyOnSelect": false`；关闭后仍可用 `Ctrl+X` 复制当前选区。本插件在 fullscreen 中，关闭“选中即复制”且有非空选区时，右键复制该选区（不要求右键落在高亮范围内）；成功后自动取消该选区，复制失败或期间重新选中其他内容则保留选区；没有选区时复用 Pi 的右键粘贴回调，将剪贴板文本粘贴到当前聚焦组件。已有选区且重新打开“选中即复制”时，仍沿用 Pi 原有右键处理。功能依赖终端向 Pi 发送右键鼠标事件及当前 Pi 的 fullscreen 鼠标处理接口；粘贴回调不可用时不接管无选区右键。
 
