@@ -1,7 +1,7 @@
 /** 按需战略咨询：顾问可只读补证据，执行者负责命令、修改和最终交付。 */
 
 import { type Message, type ThinkingLevel, type Usage } from "@earendil-works/pi-ai";
-import { keyHint, type ExtensionAPI, type ExtensionContext, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { buildAdvisorMessages } from "./advisor-messages.ts";
 import {
 	buildExecutorSignals,
@@ -362,7 +362,7 @@ Ask one specific decision question. Optional context contains your alternatives,
 			return new Container();
 		},
 
-		renderResult(result, options: ToolRenderResultOptions, theme, _context) {
+		renderResult(result, options: ToolRenderResultOptions, theme, context) {
 			const details = result.details as AdvisorDetails | undefined;
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "(no advice)";
 
@@ -389,9 +389,9 @@ Ask one specific decision question. Optional context contains your alternatives,
 			} else {
 				const preview = buildPreview(text, 6);
 				container.addChild(new Text(preview.preview, 0, 0));
-				if (preview.truncated) {
+				if (preview.truncated && typeof context.keyHint === "function") {
 					container.addChild(new Spacer(1));
-					container.addChild(new Text(theme.fg("muted", keyHint("app.tools.expand", "to expand")), 0, 0));
+					container.addChild(new Text(theme.fg("muted", context.keyHint("app.tools.expand", "to expand")), 0, 0));
 				}
 			}
 

@@ -4,7 +4,7 @@
 
 ## 编译与验证基线
 
-- 当前基线是 Pi `1.2`。对 Pi 核心包（`@earendil-works/pi-coding-agent`、`@earendil-works/pi-ai`、`@earendil-works/pi-agent-core`、`@earendil-works/pi-tui`）只声明 `*` peer dependency，不打包、不在运行时固定版本；开发依赖固定到当前基线，用于类型检查与测试。
+- 当前基线是 Pi `1.5.0`。对 Pi 核心包（`@earendil-works/pi-coding-agent`、`@earendil-works/pi-ai`、`@earendil-works/pi-agent-core`、`@earendil-works/pi-tui`）只声明 `*` peer dependency，不打包、不在运行时固定版本；开发依赖固定到当前基线，用于类型检查与测试。
 - `pi-advisor`、`pi-observational-memory`、`pi-optimization`、`pi-token-stats`、`pi-tui-enhancements` 提供 `npm run typecheck`（`tsc --noEmit`）与 `npm run check`（类型检查加测试）；提升 Pi 基线时必须先让两者通过。`pi-lsp-feedback` 是纯 JavaScript 包，没有类型检查入口。
 
 ## 内部 agent loop 上下文
@@ -22,6 +22,8 @@
 - `SessionEntry` 联合包含 `context_edit`（`replacement: null` 表示从模型上下文省略目标条目）；读取 `sessionManager.getBranch()` 的消费者按未知类型跳过（`pi-tui-enhancements` 的上下文视图只统计 `message` 条目）。
 
 ## 类型边界
+
+- TypeBox 的 `Type`、`Static`、`TSchema` 从 `typebox` 导入；Pi 1.5 的 `pi-ai` 不再原生导出它们，扩展加载器的兼容导出不适用于原生 Node 测试或独立类型检查。
 
 - `ExtensionContext.thinkingLevel` 可为 `undefined`（模型未确定或会话未选择时）；面向 `ModelThinkingLevel`（`"off" | ThinkingLevel`）的接口在缺失时按 `"off"` 处理。
 - `ProviderHeaders` 的值可为 `null`，不能直接赋给或当作 `Record<string, string>`；透传给 Pi 流函数时保留原类型。

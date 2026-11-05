@@ -7,6 +7,35 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
 import advisorExtension from "../src/advisor.ts";
 
+test("顾问折叠提示使用渲染上下文注入的快捷键", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-advisor-render-"));
+  const previousDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  try {
+    let tool: any;
+    advisorExtension({
+      on() {}, registerCommand() {},
+      registerTool(value: any) { tool = value; },
+    } as any);
+    const calls: unknown[][] = [];
+    const result = { content: [{ type: "text", text: Array.from({ length: 8 }, (_, i) => `line ${i}`).join("\n") }] };
+    const options = { expanded: false, isPartial: false };
+    const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value };
+    const component = tool.renderResult(result, options, theme,
+      { keyHint: (...args: unknown[]) => { calls.push(args); return "F12 to expand"; } },
+    );
+    assert.deepEqual(calls, [["app.tools.expand", "to expand"]]);
+    assert.match(component.render(80).join("\n"), /F12 to expand/);
+    const withoutHints = tool.renderResult(result, options, theme, {}).render(80).join("\n");
+    assert.match(withoutHints, /line 0/);
+    assert.doesNotMatch(withoutHints, /to expand/);
+  } finally {
+    if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousDir;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // 使用本地假 provider 穿过真实 agent loop；不访问网络或生产配置。
 test("真实工具入口按配置自动附证据，问题必填，失败仍记录和返回完整用量", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-advisor-consult-"));

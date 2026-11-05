@@ -1,7 +1,7 @@
 import { agentLoop, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import { createInitialSystemMessage, toToolDeclaration, Type, type Message, type Model, type ModelThinkingLevel, type ProviderHeaders } from "@earendil-works/pi-ai";
+import { createInitialSystemMessage, toToolDeclaration, type Message, type Model, type ModelThinkingLevel, type ProviderHeaders } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
-import type { Static } from "typebox";
+import { Type, type Static } from "typebox";
 import { hashId } from "../../ids.js";
 import { recordDiagnosticError } from "../../debug-log.js";
 import { logAgentStreamError, WorkerStreamError } from "../stream-errors.js";

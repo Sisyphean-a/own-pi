@@ -1,4 +1,4 @@
-import { recordDiagnosticError } from "../debug-log.js";
+import { recordDiagnosticError } from "../debug-log.ts";
 
 type UsageEvents = { emit(channel: string, data: unknown): void };
 export function publishUsage(events: UsageEvents | undefined, value: unknown): void {
