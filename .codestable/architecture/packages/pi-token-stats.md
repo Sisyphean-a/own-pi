@@ -17,11 +17,10 @@
 唯一协议所有者是本包，通道 `pi:model-usage:v1` 通过 `pi.events` 通知。生产者在每个 finalized assistant 后发送：`provider/model/responseModel/responseId/timestamp/durationMs/stopReason`，及 `usage.input/output/cacheRead/cacheWrite/cacheWrite1h/totalTokens`。不发送正文、提示词、厂商费用或认证。消费者同步入有界缓冲，不能阻塞流或反向控制模型；生产者必须隔离缺能力、订阅者异常与 stale-ctx。工具汇总 usage 不重复累计。
 
 生产者接线：
-- 顾问：`packages/pi-advisor/src/advisor-runner.ts` 与 `src/model-usage.ts`。
 - 观察/反思/精简：`packages/pi-observational-memory/src/agents/*/agent.ts` 的可选 onUsage，经 `src/hooks/consolidation-trigger.ts` 和 `src/agents/model-usage.ts` 发布。
 - 翻译：`packages/pi-tui-enhancements/src/panel/description-translations.ts` 在校验结果之前发布，`src/panel/index.ts` 注入总线，`src/model-usage.ts` 提取计数。
 
-三个生产者的轻量提取器保持自包含，以便扩展单独分发；不引入统计包运行时硬依赖。继续遵循 [可选扩展依赖](../shared/optional-extension-dependencies.md)。
+现役生产者的轻量提取器保持自包含，以便扩展单独分发；不引入统计包运行时硬依赖。继续遵循 [可选扩展依赖](../shared/optional-extension-dependencies.md)。
 
 ## 验证与版本边界
 

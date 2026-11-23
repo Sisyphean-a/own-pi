@@ -1,6 +1,6 @@
 # own-pi
 
-本仓库维护七个可独立安装的 Pi 扩展包。下面的命令都在仓库根目录运行。
+本仓库维护六个可独立安装的 Pi 扩展包。停止开发的包归档在 `old-packages/`，不参与自动安装。下面的命令都在仓库根目录运行。
 
 ## 一键重新安装当前目录扩展
 
@@ -53,17 +53,6 @@ pi install ./packages/pi-optimization
 ```
 
 详见 [`packages/pi-optimization/README.md`](packages/pi-optimization/README.md)。
-
-## pi-advisor
-
-战略顾问扩展。主模型在复杂任务的探索、纠偏或最终检查阶段，可调用更强模型获得第二意见；顾问可按需使用受限的 `read`/`bash` 诊断工具，不获得 `edit`/`write` 工具，也不注册自动状态栏提醒。可配置当前执行模型命中规则时跳过顾问调用。
-
-```bash
-pi -e ./packages/pi-advisor
-pi install ./packages/pi-advisor
-```
-
-详见 [`packages/pi-advisor/README.md`](packages/pi-advisor/README.md)。
 
 ## pi-observational-memory
 

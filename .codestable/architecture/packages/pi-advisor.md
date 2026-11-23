@@ -1,5 +1,7 @@
 # pi-advisor
 
+已归档至 `old-packages/pi-advisor`，不再开发，也不参与自动安装；以下描述保留归档时的设计。
+
 ## 职责
 
 `pi-advisor` 是一个战略顾问 Pi 扩展：执行模型继续负责主要工作，遇到复杂任务时可调用更强的顾问模型获得方向、纠偏或收尾检查建议。顾问可通过执行者现有的 `read` 只读补齐文件证据；运行命令、修改文件和外部调查仍由执行模型负责。
@@ -26,11 +28,5 @@
 
 ## 代码锚点
 
-- Pi 入口：`packages/pi-advisor/extensions/index.ts`
-- 顾问编排、命令和 UI：`packages/pi-advisor/src/advisor.ts`
-- 顾问 agent loop：`packages/pi-advisor/src/advisor-runner.ts`
-- 主动只读工具：`packages/pi-advisor/src/advisor-read.ts`
-- 上下文裁剪：`packages/pi-advisor/src/advisor-messages.ts`
-- 阶段与工具信号：`packages/pi-advisor/src/advisor-signals.ts`
-- 主动读取与预算集成测试：`packages/pi-advisor/test/advisor-read.test.ts`
-- 回归测试：`packages/pi-advisor/test/advisor-config.test.ts`、`packages/pi-advisor/test/advisor-skip.test.ts`、`packages/pi-advisor/test/advisor-signals.test.ts`、`packages/pi-advisor/test/advisor-runner.test.ts`、`packages/pi-advisor/test/advisor-lifecycle.test.ts`
+- 归档包入口：`old-packages/pi-advisor/extensions/index.ts`
+- 实现与测试：`old-packages/pi-advisor/src/`、`old-packages/pi-advisor/test/`

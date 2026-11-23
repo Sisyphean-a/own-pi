@@ -181,7 +181,7 @@ export class QuickPanel {
     // Text reserves one cell on each side; align the two footer groups within
     // its actual content width so the usage block cannot wrap at minWidth.
     this.help.setText(this.renderHelp(Math.max(1, innerWidth - 2)));
-    if (width < 4) return this.container.render(width);
+    if (width < 4) return [...this.container.render(width)];
 
     const content = this.container.render(innerWidth).map((line) =>
       frameRow(line, innerWidth, this.theme, FRAME_WIDTH_UTILS, FRAME_COLOR));

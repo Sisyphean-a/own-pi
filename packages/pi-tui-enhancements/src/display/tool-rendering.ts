@@ -82,6 +82,7 @@ type ContainerMouseChild = { component: Renderable; height: number };
 type ContainerLike = {
   children: Renderable[];
   mouseLayout?: { width: number; children: ContainerMouseChild[] };
+  childLines?: { width: number; children: Renderable[]; parts: readonly (readonly string[])[]; lines: readonly string[] };
 };
 type ContainerPrototype = {
   render(this: ContainerLike, width: number): string[];
@@ -683,6 +684,13 @@ export function installContainerParentTracking(): void {
     }
 
     this.mouseLayout = { width, children: mouseChildren };
+    // Pi 1.6 使用 childLines 计算命中高度，必须与合并后的绘制行一致。
+    this.childLines = {
+      width,
+      children: mouseChildren.map((child) => child.component),
+      parts: mouseChildren.map((child) => Array<string>(child.height).fill("")),
+      lines,
+    };
     return lines;
   };
   prototype[CONTAINER_PATCH] = { originalRender } satisfies ContainerPatch;

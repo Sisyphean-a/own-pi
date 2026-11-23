@@ -250,7 +250,7 @@ export class CommandPalette {
   render(width: number): string[] {
     const innerWidth = Math.max(1, width - 2);
     this.help.setText(this.theme.fg("dim", this.helpText()));
-    if (width < 4) return this.container.render(width);
+    if (width < 4) return [...this.container.render(width)];
 
     const content = this.container.render(innerWidth).map((line) =>
       frameRow(line, innerWidth, this.theme, FRAME_WIDTH_UTILS, FRAME_COLOR));

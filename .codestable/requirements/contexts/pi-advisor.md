@@ -1,16 +1,18 @@
 ---
 scope: context:pi-advisor
 code-paths:
-  - packages/pi-advisor
+  - old-packages/pi-advisor
 ---
 
 # 顾问上下文
+
+本包已归档，不再开发；下述规则仅记录归档时的行为。
 
 ## 作用域
 
 - 上下文：`pi-advisor`
 - 实现包：`pi-advisor`
-- 入口与证据：`packages/pi-advisor/extensions/index.ts`、`src/advisor.ts`、`src/advisor-config.ts`、`src/advisor-runner.ts`、`src/advisor-read.ts`、`src/advisor-messages.ts`、`src/advisor-signals.ts` 与 `README.md`
+- 入口与证据：`old-packages/pi-advisor/extensions/index.ts`、`src/advisor.ts`、`src/advisor-config.ts`、`src/advisor-runner.ts`、`src/advisor-read.ts`、`src/advisor-messages.ts`、`src/advisor-signals.ts` 与 `README.md`
 
 ## 术语
 

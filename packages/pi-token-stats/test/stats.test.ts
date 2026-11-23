@@ -10,7 +10,6 @@ import { withIndex, importSessions, overview, aggregates, persistedWarnings } fr
 import { writeReport } from "../src/report.ts";
 import { register } from "../src/index.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { publishUsage as advisorUsage } from "../../pi-advisor/src/model-usage.ts";
 import { publishUsage as memoryUsage } from "../../pi-observational-memory/src/agents/model-usage.ts";
 import { publishUsage as translationUsage } from "../../pi-tui-enhancements/src/model-usage.ts";
 
@@ -34,8 +33,8 @@ test("模型按官方价匹配，厂商金额不参与；缓存与推理不重�
   assert.notEqual(record({ model: "gpt-5.4" }).model, a.model);
   assert.equal(record({ model: "claude-opus-4.6" }).model, "claude-opus-4-6");
 });
-test("三个独立生产者的协议不泄漏正文、费用或认证，消费者失败不影响请求", () => {
-  for (const publish of [advisorUsage, memoryUsage, translationUsage]) {
+test("现役生产者的协议不泄漏正文、费用或认证，消费者失败不影响请求", () => {
+  for (const publish of [memoryUsage, translationUsage]) {
     let payload: any;
     publish({ emit: (channel, value) => { assert.equal(channel, "pi:model-usage:v1"); payload = value; } }, message({ content: "PRIVATE", apiKey: "PRIVATE", usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: { total: 99 } } }));
     assert.equal(payload.usage.input, 1); assert.ok(!JSON.stringify(payload).includes("PRIVATE")); assert.ok(!JSON.stringify(payload).includes("cost"));
